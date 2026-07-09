@@ -1,45 +1,61 @@
-🚀 阶段一：开机进入开发状态
-每次启动进入 Ubuntu 系统后，按照以下三步唤醒你的开发环境：
+标准开发工作流
+在目前的开发阶段，你每次修改代码的标准闭环操作应该是这样的：
 
-唤醒地面站： 打开 QGroundControl，检查左上角设置中是否勾选了虚拟游戏手柄 (Virtual Joystick)，确保底层飞控解锁安全机制通过。
+清场： 终端输入 
 
-进入主控台： 打开 VSCode，直接加载 ~/AstraDroneOpen 文件夹。
+tmux kill-server 
 
-呼出终端： 使用快捷键 Ctrl + `（反引号）在底部呼出终端面板。建议点击 + 号开启两个终端：一个专门用来跑仿真脚本，一个用来编译 C++ 代码。
+彻底关闭上一次的仿真。
 
-💻 阶段二：修改业务代码与初次启动
-当你需要调整任务逻辑（例如将起飞高度参数修改为 2.0，编写位置指令发布器）时，修改和生效的流程如下：
+写代码： 在 VSCode 里修改 .cpp 源码，并按 Ctrl + S 确保保存。
 
-定位核心代码：
-在 VSCode 左侧目录树进入 ~/AstraDroneOpen/AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/。在此处的源文件中编写你的控制节点代码。
+编译代码： 在工作空间根目录下 
 
-编译代码生效（仅限 C++）：
-如果你修改的是 Python 脚本或 .launch 配置文件，直接保存即可。如果你修改的是 C++ 源码，请在备用终端中执行编译：
+cd ~/AstraDroneOpen/AstraDrone_ros1_ws 
 
-Bash
-cd ~/AstraDroneOpen/AstraDrone_ros1_ws/
+运行：
+
 catkin_make
-一键拉起世界与飞机：
-在主终端中，运行开源项目的集成启动脚本，这会同步拉起 ROS、Gazebo 仿真环境以及飞控：
 
-Bash
-cd ~/AstraDroneOpen/
+刷新并运行：
+
 ./scripts/run_sh/pc_example.sh
-(此时你应该能看到 Gazebo 窗口弹出，无人机按照你代码中的逻辑起飞执行任务。)
 
-🔄 阶段三：调试修改与重新仿真循环
-在算法开发过程中，你一定会频繁修改参数并重新验证效果。不需要关掉终端，只需在运行仿真脚本的主终端中执行以下“重启三连”：
 
-优雅退出当前任务：
-在终端中按下 Ctrl + C，等待几秒钟，让所有节点有序退出，直到绿色输入提示符重新出现。
+🚀 极速迭代工作流（标准推荐）
+以后每次你想换一种飞行模式测试，只需要在 VSCode 和 Gazebo 之间循环以下四个步骤：
 
-彻底清理幽灵进程：
-为了防止端口被占用或 Gazebo 渲染卡死，强制清理后台残余：
+第一步：强制中断当前飞行 (VSCode)
+在你运行 roslaunch 的那个 VSCode 终端里，直接按下 Ctrl + C。
+
+现象： 你的控制节点被杀死。飞控收不到位置指令，会触发失控保护，无人机会在 Gazebo 里就地缓慢降落。
+
+第二步：等待锁定 (Gazebo)
+切记：这一步是关键！ 不要急着马上跑新代码。看一眼 QGroundControl 地面站或者 Gazebo 画面，等无人机完全降落到地面，并且螺旋桨完全停转（系统进入 Disarmed 锁定状态）。通常这只需要几秒钟。
+
+第三步：切代码与编译 (VSCode)
+无人机落地后，你就可以放心地去改 C++ 代码，或者用 Git Graph 切换分支。
+修改完后，在 VSCode 终端里直接编译：
 
 Bash
-killall -9 roscore rosmaster gzserver gzclient px4
-按需重新编译并再次起飞：
+catkin_make
+第四步：一键“热启动” (VSCode)
+编译完成后，不用管飞机现在停在 Gazebo 的哪里，直接重新运行：
 
-如果是 C++，切回备用终端再跑一次 catkin_make。
+Bash
+source devel/setup.bash
+roslaunch offboard autoarming_control.launch
+现象： 飞机会原地解锁，起飞，然后自动斜线飞向 (0, 0) 原点的上空，到达指定高度后，完美开始执行你刚写的新轨迹！
 
-回到主终端，按键盘的 ↑ (上方向键) 调出历史命令 killall -9 ...，再按一次 ↑ 调出 ./scripts/run_sh/pc_example.sh，按下回车直接重飞。
+强迫症专属：如何把飞机物理“瞬移”回原点？
+如果你觉得重新启动时，飞机从远处飞回原点的过程太慢，或者你就是有强迫症，必须让它在每次起飞前都物理上端端正正地停在 Gazebo 坐标轴的正中央 (0,0,0)，你可以用 Gazebo 提供的“重置”功能：
+
+先等飞机落地并停转（和上面的第二步一样，必须等螺旋桨停下，否则飞控的卡尔曼滤波器 EKF 会因为传感器数据突变而彻底崩溃报错）。
+
+点击 Gazebo 仿真窗口顶部的菜单栏：Edit -> Reset Model Poses（或者使用快捷键 Ctrl + Shift + R）。
+
+飞机就会瞬间“瞬移”回世界的最中心，姿态也会回正。
+
+然后再去 VSCode 里 catkin_make 和 roslaunch。
+
+⚠️ 避坑警告：在 Gazebo 的 Edit 菜单里，绝对不要点 Reset World。它会把仿真的时间也清零重置，这会导致 ROS 和飞控的时间戳彻底错乱，接下来的所有起飞指令都会失效，你只能痛苦地 tmux kill-server 重启所有东西了。只点 Reset Model Poses！
