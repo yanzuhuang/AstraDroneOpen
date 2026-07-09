@@ -3,7 +3,7 @@
 
 清场： 终端输入 
 
-tmux kill-server 
+ tmux kill-server 
 
 彻底关闭上一次的仿真。
 
