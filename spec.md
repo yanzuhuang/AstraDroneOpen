@@ -1,1709 +1,959 @@
 # AstraDroneOpen 仿真自主控制开发说明
 
-> 本文基于当前工作区 `/home/yanzu/AstraDroneOpen` 的源码、launch、config、scripts、world、sdf、rviz 和 README 静态阅读整理。重点只放在“仿真环境中让无人机按照你的设想运动起来”。真机移植只在最后作为后续注意事项简单提及。  
-> 文中行号基于当前工作区文件的 `nl -ba` 输出；如果你后续改过代码，行号可能前后移动。  
-> 未找到或无法从当前代码确认的内容，会明确写“未能从代码中确认”。没有 README 说明但可从代码判断的内容，会标注“根据代码推断”。
+> 审阅基线：当前工作区 `HEAD 754f3f5b536bf595db27d5edafc0565303c053eb`，审阅日期 2026-07-10。本文行号均以该基线的源码为准；以后源码增删行后，应重新用 `nl -ba <文件>` 核对。
 
-## 1. 仿真相关整体结构
+本文面向当前阶段的核心目标：理解并修改项目，使 PX4 无人机在 Gazebo 仿真中按指定轨迹、速度、高度、航向和动作序列自主运动。本文只记录当前代码事实、明确标注的推断和可实施建议，不把 README 中的规划性描述当成已经实现的功能。
 
-### 1.1 根目录关键文件
+标记约定：
 
-| 路径 | 作用 |
-|---|---|
-| `README.md` | 项目总览和默认运行说明，提到 `./scripts/run_sh/pc_example.sh` 是 PC 端仿真示例入口。 |
-| `docs/00-AstraDrone开发教程.md` | 项目架构和基础开发教程。 |
-| `docs/01-安装脚本详解.md` | 安装、编译、启动脚本说明，其中说明 `pc_example.sh` 会启动 PX4/Gazebo、FAST-LIO、Offboard 控制。 |
-| `docs/02-仿真源码详细介绍.md` | 仿真目录说明，覆盖 Gazebo world、models、PX4 SDF、仿真工作区等。 |
-| `docs/03-Ros源码详细介绍.md` | ROS 源码模块说明；部分描述和当前文件状态不完全一致，实际开发应以源码为准。 |
-| `order.md` | 你的本地操作记录。第 18、41 行提到 `catkin_make`；第 22 行是 `pc_example.sh`；第 47 行是单独重启 `autoarming_control.launch`；第 55-61 行提醒 Gazebo 只用 `Reset Model Poses`，不要点 `Reset World`。 |
-| `spec.md` | 当前文档。 |
+- **代码事实**：可以从当前仓库源码、launch、配置或构建产物直接确认。
+- **推断**：根据调用链或命名推断，尚未通过一次完整运行实验确认。
+- **建议**：面向后续仿真实验的修改方案，本文没有替用户修改原代码。
+- **当前阻断**：不先处理就无法形成预期闭环的问题。
 
-### 1.2 启动脚本
+为缩短表格，文中的 `offboard/` 统一指 `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/`，`plan_manage/` 统一指 `AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/`，`uav_simulator/` 统一指 `AstraDrone_ros1_ws/src/Planner/ego-planner/uav_simulator/`。首次分析某文件时仍给出完整仓库路径。
 
-| 路径 | 关键行 | 作用 |
-|---|---:|---|
-| `scripts/run_sh/pc_example.sh` | 15-32 | 默认仿真启动脚本：开 tmux，依次启动 `roscore`、PX4/Gazebo/MAVROS、FAST-LIO、Offboard 控制、QGroundControl。 |
-| `scripts/run_sh/echo.sh` | 13-22 | 调试脚本：查看 `/mavros/local_position/pose`、`/mavros/state`、`/mavros/setpoint_position/local`、`/mavros/setpoint_raw/local`。 |
-| `scripts/run_sh/record.sh` | 未逐行展开 | 录包脚本，用于记录图像、点云、MAVROS 状态、TF、Livox、battery 等。根据代码推断，适合验证仿真数据流。 |
+## 0. 先看结论
 
-默认仿真入口在 `scripts/run_sh/pc_example.sh`：
-
-```bash
-./scripts/run_sh/pc_example.sh
-```
-
-它的实际启动链路是：
+当前最直接、最适合先修改的飞行控制链是：
 
 ```text
-pc_example.sh:15        roscore
-pc_example.sh:19        roslaunch px4 astra_example.launch
-pc_example.sh:24        roslaunch fast_lio mapping_mid360.launch rviz:=false
-pc_example.sh:29        roslaunch offboard autoarming_control.launch
-pc_example.sh:32        qgc
-```
-
-### 1.3 PX4/Gazebo/MAVROS 仿真入口
-
-核心文件：
-
-```text
-simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch
-```
-
-关键行：
-
-| 行号 | 内容 | 作用 |
-|---:|---|---|
-| 6-11 | `x/y/z/R/P/Y` | 无人机初始位姿参数。 |
-| 13 | `est=ekf2` | PX4 估计器类型。 |
-| 14 | `vehicle=iris_mid360` | 默认无人机模型名。 |
-| 15 | `world=.../example.world` | 默认 Gazebo 世界。 |
-| 16 | `sdf=.../$(arg vehicle).sdf` | 按模型名加载 SDF。 |
-| 25 | `fcu_url=udp://:14540@localhost:14557` | MAVROS 连接 PX4 SITL 的 UDP 地址。 |
-| 30-46 | include `px4/launch/posix_sitl.launch` | 启动 PX4 SITL、Gazebo，并生成无人机模型。 |
-| 48-53 | include `mavros/launch/px4.launch` | 启动 MAVROS。 |
-
-如果你只想换 world 或初始位置，优先改这个 launch。
-
-### 1.4 无人机模型和传感器模型
-
-默认模型：
-
-```text
-simulation/px4_sim_files/px4_iris_sdf/iris_mid360/iris_mid360.sdf
-```
-
-关键行：
-
-| 行号 | 内容 | 作用 |
-|---:|---|---|
-| 2 | `<model name='iris_mid360'>` | 默认无人机模型名。 |
-| 3-5 | include `model://iris_without_GPS` | PX4 Iris 基础机体。 |
-| 7-21 | include 并固定 `mid360` | Livox Mid360 雷达安装在机体上。 |
-| 39-54 | include 并固定 `D435i` | RealSense D435i 相机。 |
-| 57-71 | include 并固定 `fpv_cam` | 前视相机。 |
-
-基础机体 SDF：
-
-```text
-simulation/px4_sim_files/px4_iris_sdf/iris_without_GPS/iris_without_GPS.sdf
-```
-
-关键行：
-
-| 行号 | 内容 | 作用 |
-|---:|---|---|
-| 3 | `<model name='iris_without_GPS'>` | 基础无人机模型名。 |
-| 452-471 | `mavlink_interface` 插件 | PX4/Gazebo/MAVLink 接口。 |
-| 458 | `mavlink_tcp_port=4560` | MAVLink TCP 端口。 |
-| 459 | `mavlink_udp_port=14560` | MAVLink UDP 端口。 |
-| 464 | `qgc_udp_port=14550` | QGroundControl 端口。 |
-| 466 | `sdk_udp_port=14540` | MAVROS SDK 端口，对应 `astra_example.launch` 第 25 行。 |
-| 470-471 | `send_odometry=1`、`enable_lockstep=1` | 发送里程计并启用 lockstep。 |
-
-Mid360 模型：
-
-```text
-simulation/astra_gazebo_models/mid360/mid360.sdf
-```
-
-关键行：
-
-| 行号 | 内容 | 作用 |
-|---:|---|---|
-| 35-77 | ray sensor + `liblivox_laser_simulation.so` | 生成 Livox 点云。 |
-| 74 | `<ros_topic>livox/lidar</ros_topic>` | 点云话题，实际 ROS 中通常为 `/livox/lidar`。 |
-| 80-113 | IMU sensor + `libgazebo_ros_imu_sensor.so` | 生成 Livox IMU。 |
-| 104-105 | namespace `/livox`、topic `/livox/imu` | IMU 话题。 |
-
-多机传感器模型也存在：
-
-- `simulation/astra_gazebo_models/mid360_0/mid360_0.sdf`：第 74 行 `uav0/livox/lidar`，第 105 行 `uav0/livox/imu`。
-- `simulation/astra_gazebo_models/mid360_1/mid360_1.sdf`：第 74 行 `uav1/livox/lidar`，第 105 行 `uav1/livox/imu`。
-- `simulation/astra_gazebo_models/mid360_2/mid360_2.sdf`：第 74 行 `uav2/livox/lidar`，第 105 行 `uav2/livox/imu`。
-
-### 1.5 Gazebo world 和场景
-
-world 文件目录：
-
-```text
-simulation/astra_gazebo_worlds
-```
-
-当前能看到的主要 world：
-
-```text
-cangku.world
-craic_2026.world
-dynamic_avoidance.world
-example.world
-forest.world
-generated/craic_2026_runtime.world
-suv.world
-test.world
-```
-
-默认 world：
-
-```text
-simulation/astra_gazebo_worlds/example.world
-```
-
-关键行：
-
-| 行号 | 内容 | 作用 |
-|---:|---|---|
-| 1-2 | SDF world 开始 | world 名为 `default`。 |
-| 21-68 | `ground_plane` | 地面。 |
-| 69-76 | gravity、physics | 重力和仿真物理步长。 |
-| 90-165 | `Oak_tree` | 一棵橡树模型。 |
-| 166-201 | `water_tower` | 水塔模型。 |
-| 202-277 | `Pine_Tree` | 一棵松树模型。 |
-
-动态避障 world：
-
-```text
-simulation/astra_gazebo_worlds/dynamic_avoidance.world
-```
-
-关键行：
-
-| 行号 | 内容 | 作用 |
-|---:|---|---|
-| 94-337 | 静态障碍物 | 树、房子等。 |
-| 343-347 | `obstacle_cylinder_1` | 可移动圆柱。 |
-| 350-354 | `obstacle_cylinder_2` | 可移动圆柱。 |
-| 357-361 | `obstacle_cylinder_3` | 可移动圆柱。 |
-| 364-368 | `obstacle_box_1` | 可移动方块。 |
-| 371-375 | `obstacle_box_2` | 可移动方块。 |
-
-动态障碍物控制器：
-
-| 路径 | 关键行 | 作用 |
-|---|---:|---|
-| `simulation/sim_workspace/src/dynamic_obstacle_controller/launch/astra_dynamic_avoidance_static.launch` | 10-12、24-46 | 启动 PX4/Gazebo/MAVROS，并加载 `dynamic_avoidance.world`。 |
-| `simulation/sim_workspace/src/dynamic_obstacle_controller/launch/astra_dynamic_avoidance_moving.launch` | 3-7 | 先 include 静态 launch，再启动障碍物控制节点。 |
-| `simulation/sim_workspace/src/dynamic_obstacle_controller/config/obstacle_params.yaml` | 6-44 | 配置移动障碍物的运动方式、速度、中心、半径、航点。 |
-| `simulation/sim_workspace/src/dynamic_obstacle_controller/src/obstacle_controller.py` | 10-18、26-47、49-79、81-113 | 通过 `/gazebo/set_model_state` 服务移动模型。 |
-
-### 1.6 Offboard 自主控制模块
-
-核心目录：
-
-```text
-AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard
-```
-
-关键文件：
-
-| 路径 | 关键行 | 作用 |
-|---|---:|---|
-| `src/autoarming_control.cpp` | 82-273 | 默认自动解锁、起飞、轨迹飞行、降落控制器。 |
-| `launch/autoarming_control.launch` | 11-24 | 单机自动飞行参数和 MAVROS 话题。 |
-| `launch/autoarming_Mult.launch` | 7-33 | 三机控制节点和 `/uav0`、`/uav1`、`/uav2` MAVROS remap。 |
-| `src/position_control_lib.cpp` | 15-52 | 简单目标点控制：订阅 `/drone_control/goal_position`，发布 MAVROS setpoint。 |
-| `launch/position_control.launch` | 4-10 | 位置控制节点启动文件。 |
-| `CMakeLists.txt` | 127-148 | 编译 `position_control` 和 `autoarming_control`。 |
-| `rviz_config/drone_path.rviz` | 未逐行展开 | Offboard 轨迹可视化配置。 |
-
-`autoarming_control.cpp` 的关键结构：
-
-| 行号 | 内容 | 作用 |
-|---:|---|---|
-| 15-18 | 全局状态和高度变量 | 保存 MAVROS 状态、当前位置、目标高度 `hight`。 |
-| 21-26 | `FlightPhase` | 飞行阶段：起飞、轨迹、降落、完成。 |
-| 28-34 | `state_cb`、`pose_cb` | 接收 MAVROS 状态和当前位置。 |
-| 36-40 | `calculate_distance` | 计算当前点到目标点距离。 |
-| 43-56 | `get_square_position` | 方形轨迹生成。 |
-| 58-63 | `get_circle_position` | 圆形轨迹生成。 |
-| 65-80 | `Lock` | 发送 MAVLink command 上锁。 |
-| 88-97 | 读取参数 | `flight_mode`、`hight`、`target_laps`、`side_length`、`radius`。 |
-| 99-104 | 订阅/发布/服务 | 连接 MAVROS topic 和 service。 |
-| 106 | `ros::Rate rate(20.0)` | 控制循环 20Hz。 |
-| 117-125 | 预热 setpoint | 切 Offboard 前先发送 100 个 setpoint。 |
-| 135-144 | 初始化飞行阶段和轨迹长度 | 根据圆/方形计算轨迹长度。 |
-| 145-270 | 主循环 | 切 Offboard、解锁、起飞、轨迹飞行、降落。 |
-| 192-204 | `TAKEOFF` | 飞到 `(0,0,hight)`。 |
-| 205-252 | `TRACKING` | 生成圆形/方形目标点并发布。 |
-| 253-266 | `LANDING` | 回到 `(0,0,initial_height)`，接近地面后上锁。 |
-
-### 1.7 FAST-LIO 仿真 SLAM
-
-默认示例会启动 FAST-LIO，但默认 Offboard 控制器不直接使用 FAST-LIO 的 `/Odometry`。
-
-| 路径 | 关键行 | 作用 |
-|---|---:|---|
-| `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/launch/mapping_mid360.launch` | 6-15 | 加载 `mid360.yaml` 并启动 `fastlio_mapping`。 |
-| `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/config/mid360.yaml` | 1-35 | Mid360 点云、IMU、外参、发布配置。 |
-| `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/src/laserMapping.cpp` | 762-769 | 读取 `lid_topic`、`imu_topic` 等参数。 |
-| `laserMapping.cpp` | 847-861 | 订阅 `/livox/lidar`、`/livox/imu`，发布 `/cloud_registered`、`/Odometry`、`/path` 等。 |
-| `laserMapping.cpp` | 592-620 | `/Odometry` frame 为 `camera_init`，child frame 为 `body`，并发布 `camera_init -> body` TF。 |
-
-`mid360.yaml` 关键参数：
-
-```yaml
-common:
-    lid_topic:  "/livox/lidar"   # 第 2 行
-    imu_topic:  "/livox/imu"     # 第 3 行
-mapping:
-    fov_degree: 360              # 第 18 行
-    det_range: 100.0             # 第 19 行
-    extrinsic_T: [ -0.011, -0.02329, 0.04412 ]  # 第 21 行
-publish:
-    dense_publish_en: true       # 第 29 行
-```
-
-### 1.8 EGO-Planner 仿真规划器
-
-目录：
-
-```text
-AstraDrone_ros1_ws/src/Planner/ego-planner
-```
-
-注意：当前 EGO-Planner 多个子包存在 `CATKIN_IGNORE`，默认可能没有编译，包括 `plan_manage`、`bspline_opt`、`path_searching`、`plan_env`、`traj_utils`、`waypoint_generator`、`quadrotor_msgs`、`so3_control` 等。运行 EGO 前要先确认这些包是否已启用。
-
-核心文件：
-
-| 路径 | 关键行 | 作用 |
-|---|---:|---|
-| `planner/plan_manage/launch/run_in_sim.launch` | 35-43、71-98 | 手动目标点模式，启动 EGO 自带仿真和规划节点。 |
-| `planner/plan_manage/launch/simple_run.launch` | 35-43、47-67、71-98 | 预设航点模式。 |
-| `planner/plan_manage/launch/advanced_param.xml` | 40-45、48-129 | EGO 主节点、话题 remap、地图、速度、加速度、避障参数。 |
-| `planner/plan_manage/src/ego_replan_fsm.cpp` | 7-55 | 初始化状态机、订阅 odom、发布 B-spline。 |
-| `ego_replan_fsm.cpp` | 57-68 | 读取预设航点并生成全局轨迹。 |
-| `ego_replan_fsm.cpp` | 109-120 | 手动目标点回调；第 119 行把目标高度硬编码为 `1.0`。 |
-| `ego_replan_fsm.cpp` | 420-460 | 局部重规划成功后发布 `/planning/bspline`。 |
-| `planner/plan_manage/src/traj_server.cpp` | 27-69、163-229、238-240 | 订阅 `planning/bspline`，采样轨迹并发布 `/position_cmd`。 |
-
-重要结论：
-
-```text
-EGO-Planner 默认链路:
-waypoint / preset points
-  -> /planning/bspline
-  -> traj_server
-  -> /position_cmd，launch 中 remap 成 planning/pos_cmd
-  -> EGO 自带 SO3 仿真控制
-```
-
-未能从代码中确认：当前仓库没有现成的节点把 `/planning/pos_cmd` 直接转换为 `/mavros/setpoint_position/local`。所以 EGO-Planner 默认不能直接驱动 PX4/Gazebo 的 `iris_mid360`，需要你新增 bridge 或改造控制节点。
-
-### 1.9 README 缺失或为空的模块
-
-这些模块的顶层说明文件当前是 0 行：
-
-```text
-AstraDrone_ros1_ws/src/Control/control_readme.md
-AstraDrone_ros1_ws/src/MissionControl/missioncontrol_readme.md
-AstraDrone_ros1_ws/src/Planner/planner_readme.md
-AstraDrone_ros1_ws/src/SLAM/slam_readme.md
-AstraDrone_ros1_ws/src/Swarm/swarm_readme.md
-AstraDrone_ros1_ws/src/Exploration/exploration_readme.md
-AstraDrone_ros1_ws/src/Track/track_readme.md
-AstraDrone_ros1_ws/src/Land/land_readme.md
-AstraDrone_ros1_ws/src/Utils/utils_readme.md
-```
-
-因此对这些目录的说明主要是“根据代码推断”。尤其是 `Swarm` 和 `Exploration`，当前没有看到可直接运行的集群控制/自主探索实现。
-
-## 2. 仿真启动流程
-
-### 2.1 默认一键启动
-
-运行：
-
-```bash
-./scripts/run_sh/pc_example.sh
-```
-
-流程：
-
-1. `scripts/run_sh/pc_example.sh:15` 启动 `roscore`。
-2. `pc_example.sh:19` 启动 `roslaunch px4 astra_example.launch`。
-3. `astra_example.launch:30-46` include PX4 的 `posix_sitl.launch`，启动 PX4 SITL、Gazebo，并按第 14-16 行加载 `iris_mid360` 和 `example.world`。
-4. `astra_example.launch:48-53` include MAVROS 的 `px4.launch`，MAVROS 通过第 25 行 `fcu_url` 连接 PX4。
-5. `pc_example.sh:24` 启动 FAST-LIO。`mapping_mid360.launch:6-15` 加载 Mid360 配置并启动 `laserMapping`。
-6. `pc_example.sh:29` 启动 `offboard autoarming_control.launch`。
-7. `autoarming_control.launch:11-18` 设置轨迹模式、高度、圈数等参数。
-8. `autoarming_control.cpp:99-104` 连接 MAVROS 话题和服务。
-9. `autoarming_control.cpp:117-125` 先发送 100 次当前位置 setpoint，满足 PX4 Offboard 前置条件。
-10. `autoarming_control.cpp:145-163` 周期性尝试切换 `OFFBOARD` 和解锁。
-11. `autoarming_control.cpp:192-204` 起飞到 `hight`。
-12. `autoarming_control.cpp:205-252` 按圆形或方形轨迹发布目标点。
-13. `autoarming_control.cpp:253-266` 降落并上锁。
-
-核心控制数据流：
-
-```text
-autoarming_control.cpp
+scripts/run_sh/pc_example.sh
+  -> PX4 SITL + Gazebo + iris_mid360
+  -> MAVROS
+  -> offboard/autoarming_control.cpp
   -> /mavros/setpoint_position/local
-  -> MAVROS
-  -> PX4 OFFBOARD
-  -> Gazebo 中的 iris_mid360 运动
+  -> PX4 位置控制器
+  -> Gazebo 无人机运动
 ```
 
-状态反馈流：
+若只想改变默认圆/方形轨迹，优先修改：
+
+1. `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/autoarming_control.launch`
+2. `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/src/autoarming_control.cpp`
+
+最重要的当前事实：
+
+- 默认演示真正控制 PX4/Gazebo 无人机的是 `autoarming_control.cpp`，不是 EGO-Planner。
+- `autoarming_control.launch` 第 18 行的 `speed=1.5` 当前**无效**，源码没有读取 `speed`。
+- launch 第 16 行的 `takeoff_height=1.0` 当前也**无效**；起飞目标直接使用拼写为 `hight` 的参数。
+- 圆半径由源码第 97 行的私有参数 `radius` 控制，但默认 launch 没有设置它，因此当前默认半径是 `2.0 m`。
+- EGO-Planner 及其 SO3 模拟器当前全部带 `CATKIN_IGNORE`，而且它输出到自带四旋翼动力学模拟器，不会直接驱动默认 PX4/Gazebo 无人机。
+- FAST-LIO 在默认演示中负责建图/里程计输出，但没有代码把 `/Odometry` 接入默认 Offboard 控制器；默认飞行不依赖 FAST-LIO 规划。
+- `simulation/px4_sim_files` 中的 PX4 launch、机型和 airframe 会被复制到外部 `~/PX4-Autopilot`。`roslaunch px4 astra_example.launch` 实际读取外部副本，而不是仓库内原文件。
+- 多个 world 参数把 `$(find <package>)` 与 `../../../...` 直接拼接且中间缺少 `/`；当前 `rospack find` 输出没有尾斜杠，因此应修正路径或用绝对 `world:=...` 参数绕过。
+- 任意时刻只应有一个节点持续发布 MAVROS setpoint；不要同时运行 `autoarming_control`、`position_control` 和另一个规划桥接器。
+
+## 1. 项目结构与当前可用状态
+
+### 1.1 根目录
+
+| 路径 | 实际作用 | 仿真阶段是否重点 |
+|---|---|---|
+| `AstraDrone_ros1_ws/` | ROS1 catkin 工作空间；包含 Offboard、FAST-LIO、EGO-Planner 源码及工具包 | 是 |
+| `simulation/` | Gazebo 模型、world、PX4 自定义资源和独立仿真 catkin 工作空间 | 是 |
+| `scripts/` | 环境初始化、工作空间构建、一键运行、录包和实验工具 | 是 |
+| `docs/` | 项目原始说明；部分内容是概览或规划性描述 | 参考 |
+| `third_party/` | Livox SDK、NLopt、AprilTag、GeographicLib、RealSense 等第三方源码 | 间接相关 |
+| `hardware/` | PCB、BOM、结构设计占位 | 当前不是重点 |
+| `media/`、`system_images/` | 图片、视频、系统镜像占位 | 当前不是重点 |
+| `README.md` | 项目总览和安装入口 | 参考 |
+| `spec.md` | 本文，作为仿真控制开发主文档 | 是 |
+
+`AstraDrone_ros1_ws/build/`、`AstraDrone_ros1_ws/devel/`、`simulation/sim_workspace/build/` 和 `devel/` 是生成目录。修改逻辑应改 `src/` 下源码，不要编辑生成文件。
+
+**代码事实**：顶层 README 描述了 ROS2 工作空间，但当前工作区根目录并不存在 `AstraDrone_ros2_ws/`。本文只分析实际存在的 ROS1/PX4/Gazebo 内容。
+
+### 1.2 ROS1 模块真实状态
+
+| 模块 | 当前仓库内容 | 编译状态/说明 |
+|---|---|---|
+| `Communication/` | `serial_tool` | 带 `CATKIN_IGNORE` |
+| `Control/` | `rc_obstacle_avoidance` | 带 `CATKIN_IGNORE`；依赖仓库中不存在的 Fast-Planner 话题约定 |
+| `Detection/` | AprilTag、ArUco、目标预测、YOLO | 当前都带 `CATKIN_IGNORE`，不是默认仿真链 |
+| `Exploration/` | 只有空说明文件 | 无可运行探索节点 |
+| `Land/` | `astra_auto_land` | 带 `CATKIN_IGNORE`；默认演示不用它 |
+| `MissionControl/` | `offboard` | 默认控制核心；当前已生成 `autoarming_control` 等可执行文件 |
+| `Planner/` | EGO-Planner 及其独立 UAV simulator | 所有相关包均带 `CATKIN_IGNORE` |
+| `SLAM/` | FAST-LIO | 默认演示启动；当前已生成 `fastlio_mapping` |
+| `Swarm/` | 只有空说明文件 | 无完整集群算法实现 |
+| `Track/` | `pix_tracker` | 带 `CATKIN_IGNORE` |
+| `Utils/` | 自定义消息、相机/雷达驱动、坐标工具等 | 混合状态；Livox 驱动、`cv_bridge` 等有构建产物，很多工具被忽略 |
+
+这意味着 README 中的“控制、规划、集群、探索”等模块名称不能直接等同于当前已经形成闭环的功能。对本阶段而言，可直接工作的主线是 `offboard + PX4 SITL + Gazebo`。
+
+### 1.3 `simulation/` 结构
 
 ```text
-Gazebo/PX4
-  -> MAVROS
-  -> /mavros/local_position/pose
-  -> autoarming_control.cpp
+simulation/
+├── astra_gazebo_models/          # 数百个 Gazebo 模型资源
+├── astra_gazebo_worlds/          # example/forest/cangku/suv/test/动态避障/CRAIC 场景
+├── px4_sim_files/
+│   ├── px4_iris_params/          # PX4 airframe 启动参数 1046~1054
+│   ├── px4_iris_sdf/             # iris_mid360、无 GPS、多机和下视相机机型
+│   └── px4_launch/               # 默认 astra_example.launch
+└── sim_workspace/src/
+    ├── env_map/                  # Gazebo world 基础启动包
+    ├── sensors/                  # Mid360、通用雷达、RealSense Gazebo 插件
+    ├── dynamic_obstacle_controller/ # 动态障碍物轨迹控制
+    ├── craic_sim/                # CRAIC 2026 场景生成与启动
+    └── ugv_gazebo_sim/           # Hunter/Hunter SE 地面车仿真
 ```
 
-SLAM 数据流：
+与无人机运动最相关的 world：
 
-```text
-Gazebo mid360.sdf
-  -> /livox/lidar, /livox/imu
-  -> FAST-LIO laserMapping
-  -> /Odometry, /cloud_registered, /path
-```
+| 路径 | 用途 |
+|---|---|
+| `simulation/astra_gazebo_worlds/example.world` | 默认演示场景 |
+| `simulation/astra_gazebo_worlds/forest.world` | 森林场景 |
+| `simulation/astra_gazebo_worlds/dynamic_avoidance.world` | 静态树木/房屋和 5 个可移动障碍物 |
+| `simulation/astra_gazebo_worlds/craic_2026.world` | 固定 CRAIC 赛场 |
+| `simulation/astra_gazebo_worlds/generated/craic_2026_runtime.world` | 运行时生成的 CRAIC 场景 |
 
-### 2.2 单独调试控制节点
+## 2. 默认仿真的真实启动链
 
-按 `order.md` 的记录，修改 `autoarming_control.cpp` 或 launch 后常用流程是：
+### 2.1 一键脚本
+
+文件：`scripts/run_sh/pc_example.sh`
+
+| 行号 | 行为 | 结果 |
+|---:|---|---|
+| 2-13 | 重建并划分 `pc_example` tmux 会话 | 创建 5 个运行窗格 |
+| 14-15 | 启动 `roscore` | ROS master |
+| 17-19 | 延时 3 秒后运行 `roslaunch px4 astra_example.launch` | PX4 SITL、Gazebo、MAVROS |
+| 21-24 | 延时 6 秒，执行 `astra` 后启动 FAST-LIO | 加载主 ROS 工作空间并建图 |
+| 26-29 | 延时 10 秒，执行 `astra` 后启动 Offboard | 自动解锁和轨迹控制 |
+| 31-32 | 执行 `qgc` | QGroundControl |
+| 34 | 附着 tmux | 显示所有进程 |
+
+`astra` 和 `qgc` 是安装阶段写入用户 shell 的 alias，不是仓库内可执行文件。`astra` 的作用是 source `AstraDrone_ros1_ws/devel/setup.bash`。
+
+**建议**：开发阶段不要每次都从一键脚本开始。先分别启动 PX4/Gazebo、FAST-LIO、控制节点，更容易判断问题属于仿真、定位还是控制。
+
+### 2.2 PX4/Gazebo/MAVROS 启动文件
+
+仓库源文件：`simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch`
+
+| 行号 | 参数/节点 | 当前值或作用 |
+|---:|---|---|
+| 6-11 | `x y z R P Y` | 初始位置 `(0,0,0.06)`、初始姿态全 0 |
+| 14 | `vehicle` | `iris_mid360` |
+| 15 | `world` | 意图指向 `simulation/astra_gazebo_worlds/example.world`，但当前表达式缺少路径分隔符，见下文 |
+| 16 | `sdf` | 从 PX4 Gazebo 模型目录解析机型 SDF |
+| 19-23 | Gazebo 参数 | GUI 开启、非暂停、默认不 respawn |
+| 25 | `fcu_url` | `udp://:14540@localhost:14557` |
+| 30-46 | `posix_sitl.launch` | 启动 PX4 SITL、Gazebo 和模型 |
+| 48-53 | `mavros/px4.launch` | 启动 MAVROS |
+
+可以不修改文件，直接切换 world：
 
 ```bash
-cd /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws
-catkin_make
-source devel/setup.bash
-roslaunch offboard autoarming_control.launch
+roslaunch px4 astra_example.launch \
+  world:=$HOME/AstraDroneOpen/simulation/astra_gazebo_worlds/forest.world
 ```
 
-验证状态：
-
-```bash
-./scripts/run_sh/echo.sh
-```
-
-或手动查看：
-
-```bash
-rostopic echo /mavros/state
-rostopic echo /mavros/local_position/pose
-rostopic echo /mavros/setpoint_position/local
-```
-
-判断是否生效：
-
-- `/mavros/state` 中 `mode` 应为 `OFFBOARD`。
-- `/mavros/state` 中 `armed` 应为 `True`。
-- `/mavros/setpoint_position/local` 应持续变化。
-- Gazebo 中无人机应按目标高度和轨迹运动。
-
-### 2.3 RViz/Gazebo 的关系
-
-- Gazebo 是物理仿真环境，模型和 world 来自 `simulation`。
-- RViz 是可视化工具，不负责物理仿真。
-- `autoarming_control.launch:27-29` 会按 `rviz` 参数启动 RViz，并加载 `offboard/rviz_config/drone_path.rviz`。
-- FAST-LIO 的 RViz 配置在 `FAST_LIO/rviz_cfg/loam_livox.rviz`，由 `mapping_mid360.launch:17-19` 控制。
-
-如果只想快速验证飞控，不需要 RViz：
-
-```bash
-roslaunch offboard autoarming_control.launch rviz:=false
-```
-
-## 3. 需求一：控制单个无人机的速度和高度
-
-### 3.1 控制飞行高度
-
-最直接修改：
-
-```text
-AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/autoarming_control.launch
-```
-
-相关行：
+**当前阻断**：第 15 行实际写成 `$(find env_map)../../../astra_gazebo_worlds/example.world`。`rospack find env_map` 在当前环境返回的路径不带尾 `/`，所以拼接结果形如 `.../env_map../../../...`，不是有效的父目录路径。应改成：
 
 ```xml
-11    <param name="flight_mode" value="circle" />
-14    <param name="target_laps" value="2"/>
-15    <param name="hight" value="3.0"/>        <!-- 轨迹飞行高度 -->
-16    <param name="takeoff_height" value="1.0"/> <!-- 起飞高度 -->
-17    <param name="side_length" value="8.0"/>
-18    <param name="speed" value="1.5"/>
+<arg name="world"
+     default="$(find env_map)/../../../astra_gazebo_worlds/example.world"/>
 ```
 
-源码读取位置：
+修正仓库源文件后还要按第 2.3 节同步外部 PX4 副本。开发时传入上述绝对 `world:=...` 参数可立即绕过该问题。
 
-```text
-autoarming_control.cpp:88-97
-```
+### 2.3 仓库资源与外部 PX4 副本
 
-当前代码：
+当前环境中：
 
-```cpp
-88    std::string flight_mode;
-89    int target_laps;
-90    double side_length;
-91    double radius;
+- `rospack find px4` 指向 `~/PX4-Autopilot`。
+- `astra_example.launch` 实际运行副本位于 `~/PX4-Autopilot/launch/astra_launch/astra_example.launch`。
+- `iris_mid360.sdf` 实际运行副本位于 PX4 Gazebo 模型目录。
+- `1046_gazebo-classic_iris_mid360` 实际运行副本位于 PX4 的 `build/px4_sitl_default/etc/init.d-posix/airframes/`。
+- 审阅时仓库源文件与这三份外部副本内容一致，但它们是普通文件，不是符号链接。
 
-93    nh.param<std::string>("flight_mode", flight_mode, "square");
-94    nh_private.param("hight", hight, 3.0);
-95    nh_private.param("target_laps", target_laps, 1);
-96    nh_private.param("side_length", side_length, 8.0);
-97    nh_private.param("radius", radius, 2.0);
-```
-
-当前代码作用：
-
-- 第 94 行读取私有参数 `~hight`，赋值给全局变量 `hight`。
-- 第 192-204 行起飞阶段把目标高度设置为 `hight`。
-- 第 213-215 行轨迹阶段也持续把目标 z 设置为 `hight`。
-
-修改前：
-
-```xml
-<param name="hight" value="3.0"/>
-```
-
-修改后，例如飞到 5 米：
-
-```xml
-<param name="hight" value="5.0"/>
-```
-
-注意：
-
-- 参数名是 `hight`，不是 `height`。这是当前代码的实际拼写。
-- `autoarming_control.launch:16` 的 `takeoff_height` 当前没有被 `autoarming_control.cpp` 读取，所以改它不会改变默认自动飞行高度。
-
-运行验证：
+因此，修改 `simulation/px4_sim_files/**` 后必须先确认外部副本已同步。可用：
 
 ```bash
-cd /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws
-catkin_make
-source devel/setup.bash
-roslaunch offboard autoarming_control.launch
+cmp simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch \
+    "$HOME/PX4-Autopilot/launch/astra_launch/astra_example.launch"
 ```
 
-另开终端：
+若 `cmp` 返回非 0，运行项目的仿真构建/安装流程使其重新复制，或者在明确目标路径后手动同步。只改仓库源文件但不同步，不会改变 `roslaunch px4 astra_example.launch` 的结果。
 
-```bash
-rostopic echo /mavros/setpoint_position/local/pose/position/z
-rostopic echo /mavros/local_position/pose/pose/position/z
+### 2.4 默认话题闭环
+
+```text
+Gazebo iris_mid360
+  ├─ /livox/lidar ─┐
+  └─ /livox/imu ───┴─> FAST-LIO ─> /Odometry, /cloud_registered, TF
+
+PX4 SITL <─MAVLink─> MAVROS
+  ├─ /mavros/state --------------------> autoarming_control::state_cb
+  ├─ /mavros/local_position/pose ------> autoarming_control::pose_cb
+  ├─ /mavros/set_mode <---------------- autoarming_control
+  ├─ /mavros/cmd/arming <-------------- autoarming_control
+  └─ /mavros/setpoint_position/local <- autoarming_control
 ```
 
-预期：
+**代码事实**：`autoarming_control.cpp` 不订阅 `/Odometry` 或 `/cloud_registered`。`autoarming_control.launch` 第 7-8 行仅发布 `map -> camera_init` 静态 TF，不会把 FAST-LIO 里程计送进 PX4，也不会让默认轨迹自动避障。
 
-- setpoint z 接近你设置的 `hight`。
-- 当前 z 最终接近这个高度。
+**推断**：无 GPS 模型 SDF 的 MAVLink 插件第 469-470 行配置 `send_vision_estimation=0`、`send_odometry=1`，结合 PX4 airframe 的外部视觉 EKF 参数，默认 PX4 局部位姿主要由 Gazebo 模拟里程计链提供，而不是由另行启动的 FAST-LIO 提供。需要运行时检查 PX4 estimator 状态才能最终确认。
 
-### 3.2 控制飞行速度
+## 3. 默认 Offboard 控制器逐段分析
 
-当前 launch 有速度参数：
+核心文件：`AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/src/autoarming_control.cpp`
+
+### 3.1 类/函数/代码段索引
+
+该文件不是类封装，而是全局状态加 `main()` 状态机。
+
+| 行号 | 函数/符号 | 作用 |
+|---:|---|---|
+| 15-18 | `current_state`、`current_pose`、`hight`、`initial_height` | 保存 MAVROS 状态、当前位置和高度 |
+| 21-26 | `enum class FlightPhase` | `TAKEOFF -> TRACKING -> LANDING -> COMPLETED` |
+| 28-30 | `state_cb` | 接收 `/mavros/state` |
+| 32-34 | `pose_cb` | 接收 `/mavros/local_position/pose` |
+| 36-41 | `calculate_distance` | 三维目标误差 |
+| 43-56 | `get_square_position` | 正方形按周长归一化参数 `t∈[0,1)` 取点 |
+| 58-63 | `get_circle_position` | 圆形按角度 `2πt` 取点 |
+| 65-80 | `Lock` | 通过 MAVLink command 400 请求上锁 |
+| 82-273 | `main` | 参数读取、连接、预热、模式切换、解锁、飞行和降落 |
+| 93-97 | 参数读取 | `flight_mode`、`hight`、圈数、边长、半径 |
+| 99-104 | ROS 接口 | MAVROS 订阅、发布和 service client |
+| 106 | `ros::Rate(20.0)` | 主循环 20 Hz |
+| 108-115 | FCU 等待和初始高度 | 只等待 state 连接后记录当前 z |
+| 117-125 | 预热 | 100 个当前位置 setpoint，即约 5 秒 |
+| 127-163 | OFFBOARD/解锁 | 每隔 5 秒尝试切模式或解锁 |
+| 192-204 | `TAKEOFF` | 飞到 `(0,0,hight)` |
+| 205-252 | `TRACKING` | 生成圆/方形位置 setpoint |
+| 253-266 | `LANDING` | 飞回 `(0,0,initial_height)` 并上锁 |
+
+### 3.2 launch 参数：哪些生效，哪些不生效
+
+文件：`AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/autoarming_control.launch`
+
+| launch 行 | 参数 | 当前值 | 是否生效 | 修改效果 |
+|---:|---|---:|---|---|
+| 11 | `/flight_mode` | `circle` | 是 | `square` 走方形；任何非 `square` 字符串都会落入圆形分支 |
+| 14 | `~target_laps` | `2` | 是 | 改变轨迹圈数 |
+| 15 | `~hight` | `3.0` | 是 | 同时改变起飞、巡航目标高度；保留当前拼写 |
+| 16 | `~takeoff_height` | `1.0` | **否** | 源码未读取，修改无效果 |
+| 17 | `~side_length` | `8.0` | 方形模式生效 | 改变正方形边长 |
+| 18 | `~speed` | `1.5` | **否** | 源码未读取，修改无效果 |
+| 未设置 | `~radius` | 源码默认 `2.0` | 圆形模式生效 | 应在 node 内新增 `<param name="radius" value="..."/>` |
+| 4 | launch arg `rviz` | `true` | 是 | `rviz:=false` 可不启动 Offboard RViz |
+
+注意命名空间：`flight_mode` 当前在 `<node>` 外，是全局参数，源码第 93 行用普通 `nh` 读取；其他参数在 `<node>` 内，源码第 94-97 行用私有 `nh_private` 读取。若把 `flight_mode` 移进 node，必须同时把第 93 行改为 `nh_private.param(...)`，否则会读不到。
+
+最小参数实验示例：
 
 ```xml
-autoarming_control.launch:18
-<param name="speed" value="1.5"/>
+<!-- 保持 flight_mode 在 node 外，或同步修改源码为私有参数 -->
+<param name="flight_mode" value="circle" />
+<node pkg="offboard" type="autoarming_control" name="autoarming_control" output="screen">
+  <param name="target_laps" value="3"/>
+  <param name="hight" value="2.0"/>
+  <param name="radius" value="4.0"/>
+</node>
 ```
 
-但源码 `autoarming_control.cpp:88-97` 没有读取 `speed`。因此当前只改 launch 第 18 行不会生效。
+效果：无人机目标高度变为 2 m，以原点为圆心、4 m 为半径飞 3 圈后返回原点降落。这里仍没有可靠的速度控制。
 
-当前轨迹推进逻辑在：
+### 3.3 当前轨迹推进算法为什么不是速度控制
 
-```text
-autoarming_control.cpp:219-233
-```
-
-当前代码：
-
-```cpp
-219    double d = calculate_distance(current_pose, target_pose);
-220    if (d < 1.0) {
-221        double advance = 1.0 - d;
-222        double delta_t = advance / trajectory_length;
-223        t_target += delta_t;
-224        if (t_target >= 1.0) {
-225            t_target -= 1.0;
-226            completed_laps++;
-```
-
-当前代码作用：
-
-- `t_target` 是轨迹进度，范围大致是 0 到 1。
-- 只有当无人机离目标点距离 `d < 1.0` 时，才推进轨迹。
-- 推进量由 `1.0 - d` 决定，不是由 launch 中的 `speed` 决定。
-
-建议修改位置：
-
-```text
-autoarming_control.cpp:88-97
-autoarming_control.cpp:106
-autoarming_control.cpp:219-233
-```
-
-修改前：
-
-```cpp
-double side_length;
-double radius;
-
-nh_private.param("radius", radius, 2.0);
-```
-
-修改后：
-
-```cpp
-double side_length;
-double radius;
-double speed;
-
-nh_private.param("radius", radius, 2.0);
-nh_private.param("speed", speed, 1.5);
-```
-
-再把第 219-233 行附近改成按速度推进。简单版本：
+关键代码：`autoarming_control.cpp` 第 219-233 行。
 
 ```cpp
 double d = calculate_distance(current_pose, target_pose);
 if (d < 1.0) {
-    double delta_t = speed / trajectory_length / 20.0;  // 第 106 行 rate 是 20Hz
+    double advance = 1.0 - d;
+    double delta_t = advance / trajectory_length;
     t_target += delta_t;
-    if (t_target >= 1.0) {
-        t_target -= 1.0;
-        completed_laps++;
-        ROS_INFO("[TRACK] Completed lap %d/%d", completed_laps, target_laps);
-        if (completed_laps >= target_laps) {
-            ROS_INFO("[PHASE] All laps done, switching to LANDING");
-            flight_phase = FlightPhase::LANDING;
-        }
-    }
+    ...
 }
 ```
 
-更稳的版本是使用真实时间差。可在 `double t_target = 0.0;` 后面增加：
+当前逻辑的含义是：当无人机离当前目标小于 1 m 时，把目标沿轨迹向前推 `1-d` 米左右。它没有使用真实时间 `dt`，因此参考速度受循环频率、跟踪误差和 PX4 响应共同影响。把循环从 20 Hz 改成 40 Hz 通常会加快目标推进，但这不是可复现的“m/s”速度控制。
 
-```cpp
-ros::Time last_track_time = ros::Time::now();
-```
+**推断**：在误差很小时，每个循环最多前推约 1 m，20 Hz 下理论参考点推进可非常激进；实际飞机会因误差变大而停止推进，形成不均匀的追赶行为。方形拐角尤其可能出现切角或停顿。
 
-然后在轨迹推进处：
+### 3.4 当前控制器的实验风险点
 
-```cpp
-double d = calculate_distance(current_pose, target_pose);
-double dt = (ros::Time::now() - last_track_time).toSec();
-last_track_time = ros::Time::now();
+| 位置 | 问题 | 对仿真实验的影响 | 建议 |
+|---|---|---|---|
+| 第 93 行 | 非 `square` 一律当圆处理 | 拼写错误不会报警 | 显式校验 `circle/square/custom` |
+| 第 115 行 | 连接后立即记录 `current_pose.z` | pose 尚未到达时可能记录默认 0 | 增加 `have_pose` 标志并等待首帧 |
+| 第 143、188-190 行 | 默认构造的 orientation 未赋合法四元数 | 发布的四元数可能为 `(0,0,0,0)` | 至少设置 `orientation.w=1.0` |
+| 第 192-195 行 | 起飞目标固定 `(0,0,hight)` | 非原点出生时会先横移 | 记录初始 x/y 并相对起飞 |
+| 第 207-210 行 | 圆/方形中心固定在世界原点 | 更换出生点后轨迹仍围绕原点 | 增加 `center_x/center_y` |
+| 第 219-233 行 | 轨迹推进不基于时间 | `speed` 无效、速度不稳定 | 改成弧长/时间参数化 |
+| 第 220 行 | 跟踪门限硬编码 1 m | 小场景偏大，快速轨迹可能停住 | 参数化为 `max_tracking_error` |
+| 第 253-265 行 | 降落直线回 `(0,0)` | 可能穿过障碍物 | 增加返航路径/规划 |
+| 第 260-263 行 | 无论 `Lock()` 是否成功都结束状态机 | 可能尚未真正上锁 | 让 `Lock` 返回 bool，成功后再结束 |
+| 全文件 | 无碰撞检测、无 geofence、无急停输入 | 轨迹会直接穿越障碍物 | 先在空场验证，再接规划器 |
 
-if (d < 1.0) {
-    t_target += speed * dt / trajectory_length;
-    if (t_target >= 1.0) {
-        t_target -= 1.0;
-        completed_laps++;
-        ROS_INFO("[TRACK] Completed lap %d/%d", completed_laps, target_laps);
-        if (completed_laps >= target_laps) {
-            flight_phase = FlightPhase::LANDING;
-        }
-    }
-}
-```
+## 4. 如何精确修改无人机运动方式
 
-运行验证：
+### 4.1 只改高度、圈数、尺寸和场景
 
-1. 修改 `autoarming_control.launch:18`：
+无需改 C++ 的修改点：
 
-   ```xml
-   <param name="speed" value="0.8"/>
+| 目标 | 文件与行号 | 修改内容 | 结果 |
+|---|---|---|---|
+| 巡航高度 | `offboard/launch/autoarming_control.launch:15` | `hight` | 起飞和轨迹 z 同时改变 |
+| 圈数 | 同文件 `:14` | `target_laps` | 完成指定圈数后降落 |
+| 方形边长 | 同文件 `:17` | `side_length` | `flight_mode=square` 时改变边长 |
+| 圆半径 | 同文件 node 内新增参数 | `radius` | 覆盖源码第 97 行默认 2 m |
+| 圆/方形选择 | 同文件 `:11` | `circle` 或 `square` | 切换轨迹函数 |
+| 初始位置 | `simulation/.../astra_example.launch:6-11` | `x y z R P Y` | 改模型出生位姿 |
+| world | 同文件 `:15` 或 roslaunch arg | world 路径 | 切换环境和障碍物 |
+
+`hight` 是当前代码真实参数名。只把 launch 改成 `height` 会导致源码继续使用默认 3 m；若要纠正拼写，必须同时改源码第 17、94、143、195、202、215 行附近的变量/读取逻辑。
+
+### 4.2 让 `speed` 真正生效
+
+修改文件：`offboard/src/autoarming_control.cpp`
+
+建议涉及的精确位置：
+
+1. 第 12-13 行 include 区新增 `#include <algorithm>`，供 `std::max` 使用。
+2. 第 88-92 行变量区新增 `double speed; double max_tracking_error;`。
+3. 第 94-97 行参数读取区新增：
+
+   ```cpp
+   nh_private.param("speed", speed, 1.5);
+   nh_private.param("max_tracking_error", max_tracking_error, 0.5);
    ```
 
-2. 编译并运行：
+4. 第 140-142 行状态变量区新增 `ros::Time last_track_time;`。
+5. 第 197-201 行进入 `TRACKING` 时设置：
 
-   ```bash
-   cd /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws
-   catkin_make
-   source devel/setup.bash
-   roslaunch offboard autoarming_control.launch
+   ```cpp
+   last_track_time = ros::Time::now();
    ```
 
-3. 观察控制节点终端输出：
+6. 用以下思路替换第 219-233 行基于 `1-d` 的推进逻辑：
 
-   ```text
-   [TRACK] t=...
+   ```cpp
+   const ros::Time now = ros::Time::now();
+   const double dt = std::max(0.0, (now - last_track_time).toSec());
+   last_track_time = now;
+
+   const double d = calculate_distance(current_pose, target_pose);
+   if (d <= max_tracking_error) {
+       t_target += speed * dt / trajectory_length;
+       while (t_target >= 1.0) {
+           t_target -= 1.0;
+           ++completed_laps;
+       }
+       if (completed_laps >= target_laps) {
+           flight_phase = FlightPhase::LANDING;
+       }
+   }
    ```
 
-4. 把 `speed` 改成 `2.0` 再运行。预期 `t` 增长更快，完成一圈时间更短。
+7. launch 第 18 行的 `speed` 保持为私有参数，并在 node 内增加 `max_tracking_error`。
 
-注意：
+效果：圆和正方形的参考点按约 `speed m/s` 沿弧长推进；当飞机落后超过门限时暂停参考点，避免目标持续跑远。`speed=0.5` 更平缓，`speed=2.0` 更快。位置 setpoint 方式下，这仍是“参考轨迹速度”，实际机体速度要用 `/mavros/local_position/odom` 的 twist 验证。
 
-- 这里的 `speed` 是“参考轨迹点沿轨迹前进的速度”，不是 PX4 内部最大速度。
-- 如果设得太大，无人机可能追不上 setpoint，会切角、滞后或震荡。
-- 如果后续使用 EGO-Planner，速度应改 `simple_run.launch:35-36` 和 `advanced_param.xml:111-129`。
-
-## 4. 需求二：控制飞行轨迹并规划路线
-
-### 4.1 修改默认圆形/方形轨迹
-
-默认轨迹函数在：
-
-```text
-autoarming_control.cpp:43-63
-```
-
-方形轨迹：
+建议再加保护：
 
 ```cpp
-43    std::pair<double, double> get_square_position(double t, double side_length) {
-44        double perimeter = 4 * side_length;
-45        double distance = t * perimeter;
-...
-56    }
+speed = std::max(0.05, speed);
+max_tracking_error = std::max(0.1, max_tracking_error);
 ```
 
-圆形轨迹：
+### 4.3 改圆/方形的中心、起点和方向
+
+当前 `get_square_position` 位于第 43-56 行，`get_circle_position` 位于第 58-63 行。
+
+圆形建议改为支持中心和方向：
 
 ```cpp
-58    std::pair<double, double> get_circle_position(double t, double radius) {
-59        double angle = t * 2 * M_PI;
-60        double x = radius * cos(angle);
-61        double y = radius * sin(angle);
-62        return {x, y};
-63    }
-```
-
-轨迹选择在：
-
-```text
-autoarming_control.cpp:205-245
-```
-
-当前代码：
-
-```cpp
-206    std::pair<double, double> target_xy;
-207    if (flight_mode == "square") {
-208        target_xy = get_square_position(t_target, side_length);
-209    } else {
-210        target_xy = get_circle_position(t_target, radius);
-211    }
-```
-
-launch 中设置模式：
-
-```xml
-autoarming_control.launch:11
-<param name="flight_mode" value="circle" />
-```
-
-修改前：
-
-```xml
-<param name="flight_mode" value="circle" />
-<param name="side_length" value="8.0"/>
-```
-
-修改后，改成方形并扩大边长：
-
-```xml
-<param name="flight_mode" value="square" />
-<param name="side_length" value="12.0"/>
-```
-
-注意：`autoarming_control.launch` 当前没有设置 `radius`，但 `autoarming_control.cpp:97` 支持读取私有参数 `radius`。如果想调圆半径，建议在 node 内增加：
-
-```xml
-<param name="radius" value="4.0"/>
-```
-
-### 4.2 增加自己的轨迹函数
-
-例如增加 8 字形轨迹。
-
-修改文件：
-
-```text
-AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/src/autoarming_control.cpp
-```
-
-建议插入位置：
-
-```text
-autoarming_control.cpp:58-63 后面
-```
-
-新增代码：
-
-```cpp
-std::pair<double, double> get_figure8_position(double t, double radius) {
-    double angle = t * 2 * M_PI;
-    double x = radius * std::sin(angle);
-    double y = radius * std::sin(angle) * std::cos(angle);
-    return {x, y};
+std::pair<double, double> get_circle_position(
+    double t, double radius, double center_x, double center_y, bool clockwise) {
+    const double sign = clockwise ? -1.0 : 1.0;
+    const double angle = sign * t * 2.0 * M_PI;
+    return {center_x + radius * std::cos(angle),
+            center_y + radius * std::sin(angle)};
 }
 ```
 
-修改轨迹选择位置：
+并在第 88-97 行附近读取 `center_x`、`center_y`、`clockwise`，在第 210、241 行调用时传入。效果是轨迹不再强制绕世界原点，可顺/逆时针飞行。
 
-```text
-autoarming_control.cpp:207-211
-```
+正方形当前起点是 `(-side/2,-side/2)`。无人机起飞到 `(0,0,hight)` 后会先追向左下角。若希望从当前点平滑进入轨迹，可：
 
-修改前：
+- 把方形中心平移到初始位置；
+- 增加 `APPROACH_START` 阶段，先到首点再开始计时；
+- 或把轨迹函数的 `t=0` 设计成当前起飞点。
+
+### 4.4 增加“8 字、椭圆、螺旋”等轨迹
+
+修改位置：在 `get_circle_position` 后、第 65 行前新增函数，并在 `TRACKING` 的第 207-211、236-244 行增加分支。
+
+8 字轨迹示例：
 
 ```cpp
-if (flight_mode == "square") {
-    target_xy = get_square_position(t_target, side_length);
-} else {
-    target_xy = get_circle_position(t_target, radius);
+std::pair<double, double> get_figure8_position(
+    double t, double a, double b, double cx, double cy) {
+    const double u = 2.0 * M_PI * t;
+    return {cx + a * std::sin(u),
+            cy + b * std::sin(u) * std::cos(u)};
 }
 ```
 
-修改后：
+效果：x 方向幅值为 `a`，y 方向幅值约为 `b/2`，在中心交叉。若要求 `speed` 代表严格恒定弧长速度，不能直接假设 `t` 与弧长线性；应预采样轨迹、累计弧长，再按弧长查表。
+
+螺旋上升不能只返回 `(x,y)`，还需在第 215 行把固定 `z=hight` 改为随总相位变化，例如：
 
 ```cpp
-if (flight_mode == "square") {
-    target_xy = get_square_position(t_target, side_length);
-} else if (flight_mode == "figure8") {
-    target_xy = get_figure8_position(t_target, radius);
-} else {
-    target_xy = get_circle_position(t_target, radius);
-}
+const double total_phase = completed_laps + t_target;
+target_pose.pose.position.z = base_height + climb_per_lap * total_phase;
 ```
 
-注意：同一个逻辑在第 235-245 行又重复计算了一次目标点，也要同步增加 `figure8` 分支，否则最终发布的目标点仍然只会是 square 或 circle。
+并设置 `max_height` 限制。效果是每圈上升 `climb_per_lap` 米。
 
-launch 修改：
+### 4.5 控制航向角 yaw
 
-```xml
-<param name="flight_mode" value="figure8" />
-<param name="radius" value="3.0"/>
+当前圆/方形轨迹没有设置目标姿态，`target_pose` 的四元数默认无效。至少在第 143 行后设置：
+
+```cpp
+target_pose.pose.orientation.w = 1.0;
 ```
 
-运行验证：
+另外在第 188-190 行创建每周期 `pose` 后设置 `pose.pose.orientation.w = 1.0`，否则 TAKEOFF 和 LANDING 使用的临时消息仍是零四元数。
 
-```bash
-cd /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws
-catkin_make
-source devel/setup.bash
-roslaunch offboard autoarming_control.launch
+若希望机头始终朝速度方向，可在生成当前点和下一个小步点后计算：
+
+```cpp
+const double yaw = std::atan2(next_y - current_y, next_x - current_x);
+target_pose.pose.orientation.z = std::sin(yaw * 0.5);
+target_pose.pose.orientation.w = std::cos(yaw * 0.5);
 ```
 
-观察：
+同时把 `x/y` 四元数分量置 0。效果是无人机沿轨迹切线转头。为避免过零点或方形拐角瞬间跳变，应对 yaw 做角度展开和最大角速度限制。
 
-```bash
-rostopic echo /mavros/setpoint_position/local/pose/position
-```
+### 4.6 动作序列：起飞—悬停—前进—转向—降落
 
-预期 x/y 按 8 字形变化。
-
-### 4.3 用航点控制路线
-
-已有目标点控制接口：
+最适合修改的位置是第 21-26 行的 `FlightPhase` 和第 192-266 行状态机。建议扩展为：
 
 ```text
-AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/src/position_control_lib.cpp
+TAKEOFF -> HOVER -> MOVE_TO_WAYPOINT -> TURN -> TRACKING -> RETURN_HOME -> LANDING
 ```
 
-关键行：
+每个阶段需要：目标、进入时间、完成条件和超时。示例逻辑可放在源码中，但本次没有实际改动：
 
-| 行号 | 内容 | 作用 |
+```cpp
+case HOVER:
+  publish(hold_pose);
+  if ((ros::Time::now() - phase_start).toSec() >= hover_seconds)
+    enter(MOVE_TO_WAYPOINT);
+  break;
+```
+
+不要只用固定 `sleep` 控制飞行动作；回调会停、setpoint 也会中断，PX4 可能退出 Offboard。状态机主循环必须持续发布 setpoint。
+
+### 4.7 用航点控制，而不是写解析轨迹
+
+项目已有 `position_control`，但当前实现不建议直接用于实验：
+
+| 文件/行号 | 当前问题 |
+|---|---|
+| `offboard/src/position_control_lib.cpp:6-10` | 构造函数直接进入无限循环 |
+| 同文件 `:15-31` | 循环没有 `ros::Rate::sleep()`，会满速发布并占用 CPU |
+| 同文件 `:34-39` | `ReadParams()` 定义了但从未调用，launch 的初始目标不会读取 |
+| 同文件 `:42-51` | 只复制位置，不更新 header 和合法 orientation |
+| `offboard/src/position_control.cpp:5-14` | 没有 FCU 等待、OFFBOARD 切换或解锁逻辑 |
+| `offboard/launch/position_control.launch:4-6` | 初始目标参数存在，但因上述原因当前无效 |
+
+若继续使用它，至少应：
+
+1. 构造函数只初始化 pub/sub、调用 `ReadParams()`，不要阻塞。
+2. 使用 timer 或带 `ros::Rate(20)` 的主循环。
+3. 每次发布更新 `header.stamp`、`frame_id` 和 orientation。
+4. 复用 `autoarming_control` 的 FCU、OFFBOARD、arming 状态机。
+5. 增加航点数组、当前索引、到达门限和每段超时。
+
+**当前阻断**：`position_control` 与 `autoarming_control` 同时运行会争抢 `/mavros/setpoint_position/local`，不能用前者发航点、后者只负责解锁而不做隔离。应合并为单一控制节点，或让一个节点独占 setpoint 发布。
+
+## 5. EGO-Planner：能改什么，以及为何默认不控制 PX4
+
+### 5.1 当前 EGO 独立仿真链
+
+```text
+RViz goal / 预设航点
+ -> waypoint_generator
+ -> EGOReplanFSM
+ -> /planning/bspline
+ -> traj_server
+ -> /planning/pos_cmd (quadrotor_msgs/PositionCommand)
+ -> SO3ControlNodelet
+ -> so3_cmd
+ -> so3_quadrotor_simulator
+ -> /visual_slam/odom
+```
+
+证据：
+
+- `plan_manage/launch/simulator.xml:76-86` 启动自带 `so3_quadrotor_simulator`。
+- 同文件 `:88-104` 启动 SO3 控制器并订阅 `/planning/pos_cmd`。
+- `traj_server.cpp:238-242` 订阅 B-spline、发布 `PositionCommand`，定时器为 0.01 秒即 100 Hz。
+- `simulator.xml:82` 把自带动力学模拟器里程计发布为 `/visual_slam/odom`。
+- 这条链中没有 MAVROS publisher/service。
+
+所有 `planner/*`、`uav_simulator/*` 相关包当前都有 `CATKIN_IGNORE`。因此默认主工作空间重新编译时不会编译它们。
+
+### 5.2 EGO 的精确可修改点
+
+入口：`AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/launch/run_in_sim.launch`
+
+| 行号 | 参数 | 效果 |
 |---:|---|---|
-| 18 | 订阅 `/drone_control/goal_position` | 外部给目标点。 |
-| 19 | 发布 `mavros/setpoint_position/local` | 转发给 MAVROS。 |
-| 24-28 | 循环发布 `goal_position` | 持续发送 setpoint。 |
-| 34-39 | `ReadParams()` | 读取 `/goal_init_x/y/z`，但当前未看到调用。 |
-| 42-50 | `position_CallBack` | 收到目标点后更新 `goal_position`。 |
+| 3-5 | `map_size_x/y/z` | 规划占据栅格范围 |
+| 8 | `odom_topic=/visual_slam/odom` | 规划器和模拟器的里程计输入 |
+| 21-26 | 相机 pose/depth/cloud 话题 | 障碍物感知输入 |
+| 35-36 | `max_vel=2.0`、`max_acc=3.0` | 规划轨迹的速度/加速度上限 |
+| 39 | `planning_horizon=7.5` | 局部规划视野 |
+| 43 | `flight_type=1` | 1 为 RViz 单目标；2 为预设航点 |
+| 47-67 | 5 个预设航点 | `flight_type=2` 时生效 |
+| 72-77 | `traj_server` | B-spline 转连续控制指令 |
+| 79-84 | `waypoint_generator` | RViz `/move_base_simple/goal` 转规划目标 |
+| 87-96 | `simulator.xml` | 启动独立地图、SO3 控制器和动力学模拟器 |
 
-启动文件：
+高级参数：`plan_manage/launch/advanced_param.xml`
 
-```text
-offboard/launch/position_control.launch
-```
-
-关键行：
-
-```xml
-4    <rosparam param="goal_init_x">0.0</rosparam> 
-5    <rosparam param="goal_init_y">0.0</rosparam> 
-6    <rosparam param="goal_init_z">1.0</rosparam> 
-9    <node pkg="offboard" type="position_control" name="position_control" output="screen">
-```
-
-未能从代码中确认：`position_control_lib.cpp:34-39` 的 `ReadParams()` 当前没有在构造函数或主循环中被调用，因此 `goal_init_x/y/z` 是否实际生效需要进一步检查或修改。
-
-如果要使用这个接口，你可以写一个航点发布节点，向 `/drone_control/goal_position` 发布：
-
-```python
-#!/usr/bin/env python3
-import rospy
-from geometry_msgs.msg import PoseStamped
-
-rospy.init_node("route_publisher")
-pub = rospy.Publisher("/drone_control/goal_position", PoseStamped, queue_size=10)
-rate = rospy.Rate(1)
-
-route = [(0, 0, 3), (4, 0, 3), (4, 4, 3), (0, 4, 3), (0, 0, 3)]
-
-for x, y, z in route:
-    msg = PoseStamped()
-    msg.header.stamp = rospy.Time.now()
-    msg.header.frame_id = "map"
-    msg.pose.position.x = x
-    msg.pose.position.y = y
-    msg.pose.position.z = z
-    msg.pose.orientation.w = 1.0
-    for _ in range(5):
-        pub.publish(msg)
-        rate.sleep()
-```
-
-但要注意：`position_control` 本身不负责切换 Offboard 和解锁。你需要确认 PX4 已进入 Offboard，或把 Offboard/arming 逻辑合并进自己的节点。
-
-### 4.4 用 EGO-Planner 规划路线
-
-适合做避障路线规划，但当前不是默认 PX4/MAVROS 控制链。
-
-预设航点文件：
-
-```text
-AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/launch/simple_run.launch
-```
-
-关键行：
-
-```xml
-35    <arg name="max_vel" value="2.0" />
-36    <arg name="max_acc" value="3.0" />
-43    <arg name="flight_type" value="2" />
-47    <arg name="point_num" value="5" />
-49-67 point0 到 point4 的 x/y/z
-72-77 traj_server
-79-84 waypoint_generator
-87-98 EGO 自带 simulator 和 RViz
-```
-
-修改前：
-
-```xml
-<arg name="point0_x" value="-15.0" />
-<arg name="point0_y" value="0.0" />
-<arg name="point0_z" value="1.0" />
-```
-
-修改后，例如把第一个点改成 `(0,0,2)`：
-
-```xml
-<arg name="point0_x" value="0.0" />
-<arg name="point0_y" value="0.0" />
-<arg name="point0_z" value="2.0" />
-```
-
-规划参数文件：
-
-```text
-planner/plan_manage/launch/advanced_param.xml
-```
-
-关键行：
-
-| 行号 | 参数 | 作用 |
+| 行号 | 参数组 | 作用 |
 |---:|---|---|
-| 48 | `fsm/flight_type` | 1 手动目标，2 预设航点。 |
-| 55-70 | `fsm/waypoint*` | 预设航点。 |
-| 72-79 | `grid_map/*` | 地图大小、分辨率、障碍膨胀。 |
-| 104-108 | `virtual_ceil_height`、`frame_id` | 虚拟高度上限和规划坐标系。 |
-| 111-113 | `manager/max_vel/max_acc/max_jerk` | 规划速度、加速度、jerk 限制。 |
-| 119-129 | `optimization/*`、`bspline/*` | 轨迹优化和 B-spline 限制。 |
+| 48-53 | `fsm/*` | 重规划距离、时间和应急阈值 |
+| 55-70 | `fsm/waypoint*` | 把预设航点传给 FSM |
+| 72-81 | `grid_map` 尺寸/分辨率/膨胀 | 障碍物地图和安全边界 |
+| 88-102 | 深度过滤与概率参数 | 深度图融合质量 |
+| 104-105 | 虚拟天花板 2.5 m | 限制可规划高度；高于此值的目标不合适 |
+| 111-116 | `manager/max_vel/max_acc/max_jerk` | 轨迹动力学约束 |
+| 119-125 | 优化权重 | 平滑、碰撞、可行性、贴合代价 |
+| 127-129 | B-spline 限制 | 最终速度/加速度约束 |
 
-手动目标高度硬编码位置：
-
-```text
-ego_replan_fsm.cpp:109-120
-```
-
-当前代码：
-
-```cpp
-119    end_pt_ << msg->poses[0].pose.position.x, msg->poses[0].pose.position.y, 1.0;
-```
-
-如果你希望 RViz 目标点或外部目标点的 z 生效，可改为：
+非常重要的高度问题：`ego_replan_fsm.cpp:109-120` 的手动目标回调在第 119 行把目标 z **硬编码为 1.0**：
 
 ```cpp
 end_pt_ << msg->poses[0].pose.position.x,
            msg->poses[0].pose.position.y,
-           msg->poses[0].pose.position.z;
+           1.0;
 ```
 
-未能从代码中确认：当前没有看到 EGO 到 MAVROS 的现成桥接节点。`traj_server.cpp:238-240` 订阅 `planning/bspline` 并发布 `/position_cmd`，`simple_run.launch:72-77` 把它 remap 到 `planning/pos_cmd`，但它不是 `/mavros/setpoint_position/local`。
+若要让 RViz 目标高度生效，应把 `1.0` 改为 `msg->poses[0].pose.position.z`，并确保它低于 `advanced_param.xml:104` 的虚拟天花板，或同步提高天花板和地图 z 范围。
 
-要让 EGO 规划结果控制 PX4 仿真，你需要新增 bridge：
+预设航点由 `ego_replan_fsm.cpp:22-28` 读取，`planGlobalTrajbyGivenWps()` 位于第 57-107 行。修改 `run_in_sim.launch:47-67` 可改变航点顺序、高度和闭合路线。
 
-```text
-/planning/pos_cmd
-  -> bridge 节点
-  -> /mavros/setpoint_position/local 或 /mavros/setpoint_raw/local
-```
+### 5.3 waypoint generator 中的内置轨迹
 
-新增 C++ bridge 时，还要改：
+文件：`uav_simulator/Utils/waypoint_generator/src/sample_waypoints.h`
 
-```text
-offboard/CMakeLists.txt:127-148
-```
+| 行号 | 函数 | 可改参数 |
+|---:|---|---|
+| 8-59 | `point()` | 第 15-16 行高度 `h`、缩放 `scale`，以及各离散点 |
+| 62-128 | `circle()` | 第 64-65 行 `h/scale`；实际是离散航点组合，不是解析圆 |
+| 131-212 | `eight()` | 第 134-137 行偏移、半径 `r`、高度 `h` |
 
-仿照第 145-148 行的 `autoarming_control` 增加：
+但 `run_in_sim.launch:83` 当前设置 `waypoint_type=manual-lonely-waypoint`，因此修改这些函数不会自动生效。`waypoint_generator.cpp:158-179` 显示，只有把类型改为 `circle`、`eight` 或 `points` 并触发 goal，才会调用相应函数。
 
-```cmake
-add_executable(ego_to_mavros_bridge src/ego_to_mavros_bridge.cpp)
-target_link_libraries(ego_to_mavros_bridge
-  ${catkin_LIBRARIES}
-)
-```
+另有命名不一致：goal 回调第 166 行识别 `points`，trigger 回调第 235 行识别 `point`。实验时要根据实际触发入口使用对应字符串，或统一源码命名。
 
-运行验证 EGO 自带仿真：
+### 5.4 把 EGO 接到 PX4/Gazebo 所需的工作
 
-```bash
-cd /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws
-catkin_make
-source devel/setup.bash
-roslaunch ego_planner simple_run.launch
-```
+这是可行方向，但当前仓库没有完整桥接。至少需要：
 
-如果提示找不到包，先检查是否存在 `CATKIN_IGNORE`：
+1. **启用包**：移除相关包的 `CATKIN_IGNORE` 并重新编译。最小集合包括 `quadrotor_msgs`、`pose_utils/uav_utils` 等依赖、`bspline_opt`、`path_searching`、`plan_env`、`traj_utils`、`plan_manage`、`waypoint_generator`。实际依赖应以 catkin 报错继续补齐。
+2. **替换里程计**：把 `run_in_sim.launch:8` 从 `/visual_slam/odom` 改为 `/mavros/local_position/odom`，或经过坐标对齐后的 FAST-LIO `/Odometry`。
+3. **替换感知输入**：把第 26 行 cloud 改为适合规划的点云，例如 `/cloud_registered`，并确认 frame、时间戳和局部范围一致。
+4. **停用内部模拟器**：不要再 include `run_in_sim.launch:87-96` 的 `simulator.xml`，否则会同时存在另一套无人机动力学和 `/visual_slam/odom`。
+5. **实现桥接器**：订阅 `/planning/pos_cmd` 的 `quadrotor_msgs/PositionCommand`，转换成 MAVROS 的位置/速度/加速度/yaw setpoint。
+6. **实现 OFFBOARD/arming 状态机**：桥接器持续预热 setpoint、切换 OFFBOARD、解锁并监控 failsafe。
+7. **保证唯一 publisher**：接入 EGO 时停掉 `autoarming_control` 的 setpoint 发布。
 
-```bash
-find AstraDrone_ros1_ws/src/Planner/ego-planner -name CATKIN_IGNORE
-```
+桥接消息建议优先使用 `mavros_msgs/PositionTarget`，可保留 `PositionCommand` 中的 position、velocity、acceleration、yaw、yaw_dot。只转 `PoseStamped` 会丢失速度和加速度前馈。
 
-## 5. 需求三：增加仿真中的无人机数量
+**推断**：FAST-LIO 使用 `camera_init/body`，MAVROS 局部坐标通常使用另一套 ENU/local frame。直接 remap 而不做初始原点和姿态对齐，可能导致轨迹旋转、平移或高度偏置。接入前应在静止和单轴移动实验中比较两个 odometry。
 
-### 5.1 当前已有的多机控制文件
+## 6. `rc_obstacle_avoidance`：可借鉴，但当前不能直接闭环
 
-控制 launch：
+文件：`AstraDrone_ros1_ws/src/Control/rc_obstacle_avoidance/src/rc_obstacle_avoidance_node.cpp`
 
-```text
-AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/autoarming_Mult.launch
-```
+该节点的设计是：RC 输入生成目标，Fast-Planner 生成位置/速度轨迹，节点再转发到 MAVROS。关键位置：
 
-关键行：
+| 行号 | 类/函数 | 作用 |
+|---:|---|---|
+| 14-329 | `RcObstacleAvoidance` | 完整节点类 |
+| 28-58 | 构造参数读取 | 全部通过私有 NodeHandle `~` 读取 |
+| 60-78 | pub/sub/timer | RC、pose、规划输出与 MAVROS 输出 |
+| 139-150 | `normalizeChannel` | PWM 映射到 `[-1,1]` |
+| 152-173 | `poseCallback` | 初始 1 m 起飞目标 |
+| 191-250 | `rcCallback` | 机体系 RC 偏移转世界系目标 |
+| 252-282 | `publishTarget` | 发布规划目标和超时悬停 |
+| 284-313 | `forwardPlannerCommand` | 优先位置、其次速度地转发到 MAVROS |
+
+当前有三个阻断：
+
+1. 包根目录存在 `CATKIN_IGNORE`。
+2. 仓库内没有名为 Fast-Planner 的实现；只有 EGO-Planner，且话题和消息接口不同。
+3. `launch/rc_obstacle_avoidance.launch:3` 在 node 外加载 YAML，参数进入全局命名空间；源码第 28-58 行却读取私有参数。因此当前 YAML 的值不会覆盖源码默认值。
+
+第 3 点的正确 launch 结构应是：
 
 ```xml
-7     <param name="flight_mode" value="circle" />
-9-16  第 1 个 autoarming_control，remap 到 /uav0/mavros/...
-18-25 第 2 个 autoarming_control，remap 到 /uav1/mavros/...
-27-34 第 3 个 autoarming_control，remap 到 /uav2/mavros/...
-```
-
-当前问题：
-
-- 第 9、18、27 行三个节点都叫 `name="autoarming_control"`，多机启动时可能发生节点重名。
-- 这个 launch 只启动控制节点，不启动多架 PX4/Gazebo/MAVROS。
-- 未能从代码中确认：当前仓库没有提供完整可直接运行的 `multi_uav_mavros_sitl.launch`。`AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/README.md:25` 提到了它，但实际搜索当前项目只找到 README 中的引用。
-
-建议先改节点名：
-
-修改前：
-
-```xml
-<node pkg="offboard" type="autoarming_control" name="autoarming_control" output="screen">
-```
-
-修改后：
-
-```xml
-<node pkg="offboard" type="autoarming_control" name="autoarming_control_uav0" output="screen">
-```
-
-另外两个改成：
-
-```xml
-name="autoarming_control_uav1"
-name="autoarming_control_uav2"
-```
-
-### 5.2 当前已有的多机模型和端口
-
-已有多机模型：
-
-```text
-simulation/px4_sim_files/px4_iris_sdf/iris_mid360_0/iris_mid360_0.sdf
-simulation/px4_sim_files/px4_iris_sdf/iris_mid360_1/iris_mid360_1.sdf
-simulation/px4_sim_files/px4_iris_sdf/iris_mid360_2/iris_mid360_2.sdf
-```
-
-基础机体端口：
-
-| 模型 | 关键行 | 端口 |
-|---|---:|---|
-| `iris_without_GPS_0.sdf` | 456-464 | TCP 4560、UDP 14560、QGC 14550、SDK 14540 |
-| `iris_without_GPS_1.sdf` | 457-465 | TCP 4561、UDP 14561、QGC 14551、SDK 14541 |
-| `iris_without_GPS_2.sdf` | 457-465 | TCP 4562、UDP 14562、QGC 14552、SDK 14542 |
-
-多机 PX4 airframe 参数：
-
-```text
-simulation/px4_sim_files/px4_iris_params/1048_gazebo-classic_iris_mid360_0
-simulation/px4_sim_files/px4_iris_params/1049_gazebo-classic_iris_mid360_1
-simulation/px4_sim_files/px4_iris_params/1050_gazebo-classic_iris_mid360_2
-```
-
-这些文件第 10-14 行附近设置了 EKF2 外部视觉/no GPS 相关参数，例如：
-
-```text
-EKF2_EV_DELAY
-EKF2_EV_CTRL
-EKF2_HGT_REF
-EKF2_GPS_CTRL
-```
-
-### 5.3 增加第 4 架无人机的修改思路
-
-未能从代码中确认：当前没有现成的 `iris_mid360_3`、`iris_without_GPS_3` 和完整四机 launch。需要你自己补齐。
-
-最少需要：
-
-1. 复制 `iris_without_GPS_2` 为 `iris_without_GPS_3`，修改模型名和端口。
-
-   示例：
-
-   ```xml
-   <model name='iris_without_GPS_3'>
-   <mavlink_tcp_port>4563</mavlink_tcp_port>
-   <mavlink_udp_port>14563</mavlink_udp_port>
-   <qgc_udp_port>14553</qgc_udp_port>
-   <sdk_udp_port>14543</sdk_udp_port>
-   ```
-
-2. 复制 `iris_mid360_2` 为 `iris_mid360_3`，把 include 改为：
-
-   ```xml
-   <uri>model://iris_without_GPS_3</uri>
-   ```
-
-3. 新增 `mid360_3` 或复用普通 `mid360`。如果要每架机独立 SLAM，建议新增 `uav3/livox/lidar` 和 `uav3/livox/imu`。
-
-4. 新增 PX4 airframe 参数文件，例如：
-
-   ```text
-   simulation/px4_sim_files/px4_iris_params/1051_gazebo-classic_iris_mid360_3
-   ```
-
-5. 新增或扩展多机 PX4 launch，让 Gazebo 生成第 4 个模型、启动第 4 个 PX4 实例和第 4 个 MAVROS namespace。
-
-6. 在 `autoarming_Mult.launch` 增加 `/uav3/mavros/...` 的控制节点。
-
-控制节点示例：
-
-```xml
-<node pkg="offboard" type="autoarming_control" name="autoarming_control_uav3" output="screen">
-    <param name="hight" value="8.0" />
-    <remap from="/mavros/state" to="/uav3/mavros/state" />
-    <remap from="/mavros/local_position/pose" to="/uav3/mavros/local_position/pose" />
-    <remap from="/mavros/setpoint_position/local" to="/uav3/mavros/setpoint_position/local" />
-    <remap from="/mavros/set_mode" to="/uav3/mavros/set_mode" />
-    <remap from="/mavros/cmd/arming" to="/uav3/mavros/cmd/arming" />
+<node pkg="rc_obstacle_avoidance"
+      type="rc_obstacle_avoidance_node"
+      name="rc_obstacle_avoidance"
+      output="screen">
+  <rosparam command="load"
+            file="$(find rc_obstacle_avoidance)/config/rc_obstacle_avoidance.yaml"/>
 </node>
 ```
 
-运行验证：
+当前真正会使用的源码默认值在第 28-58 行，例如 `max_xy_step=1.0`、`max_z_step=0.6`、`publish_rate=20`；配置文件第 17-21 行写的 `2.0/2.0/30.0` 目前不会生效。
+
+该节点也不负责切 OFFBOARD 或解锁。它适合作为未来“规划输出转 MAVROS”的参考，但不能直接当作当前自主避障方案。
+
+## 7. 仿真场景、动态障碍物与传感器
+
+### 7.1 切换静态场景
+
+推荐通过 launch 参数切换，不先修改默认文件：
 
 ```bash
-rostopic list | grep /uav
-rostopic echo /uav0/mavros/state
-rostopic echo /uav1/mavros/state
-rostopic echo /uav2/mavros/state
+roslaunch px4 astra_example.launch \
+  world:=$HOME/AstraDroneOpen/simulation/astra_gazebo_worlds/dynamic_avoidance.world
 ```
 
-预期：
+同类缺少 `/` 的表达式还存在于：
 
-- 每架机都有独立 `/uavX/mavros/state`。
-- 每架机都有独立 `/uavX/mavros/local_position/pose`。
-- 每架机的 PX4/MAVROS 端口不冲突。
+- `simulation/sim_workspace/src/env_map/launch/map_test.launch:5`
+- `simulation/sim_workspace/src/dynamic_obstacle_controller/launch/astra_dynamic_avoidance_static.launch:11`
+- `simulation/sim_workspace/src/craic_sim/launch/astra_craic_2026.launch:12`
+- `simulation/sim_workspace/src/craic_sim/launch/astra_craic_2026_runtime.launch:14`
 
-## 6. 需求四：操控集群无人机
+分别把 `$(find env_map)../../../...`、`$(find craic_sim)../../../...` 改为 `$(find env_map)/../../../...`、`$(find craic_sim)/../../../...`，或在命令行传入绝对 world 路径。
 
-### 6.1 当前项目的集群基础
+修改 world 中 `<model>` 的 `<pose>x y z roll pitch yaw</pose>` 会改变障碍物位置；修改 `<static>` 决定其是否受物理作用。做轨迹实验时应同时记录无人机轨迹和障碍物位置，不能只看 Gazebo 画面。
 
-当前 `AstraDrone_ros1_ws/src/Swarm/swarm_readme.md` 是空文件，未能从代码中确认已有完整集群控制实现。
-
-当前可利用的基础是：
-
-- `autoarming_Mult.launch:9-34`：三个控制节点，分别 remap 到 `/uav0`、`/uav1`、`/uav2`。
-- `autoarming_control.cpp:205-245`：每个控制节点独立生成轨迹并发布 setpoint。
-- 多机 SDF 和端口变体：`iris_mid360_0/1/2`、`iris_without_GPS_0/1/2`。
-
-### 6.2 最简单集群控制：同轨迹，不同高度
-
-当前 `autoarming_Mult.launch` 已经这么做：
-
-```xml
-10    <param name="hight" value="5.0" />
-19    <param name="hight" value="6.0" />
-28    <param name="hight" value="7.0" />
-```
-
-作用：
-
-- 三架机走同一 XY 圆形轨迹。
-- 用不同 z 高度分层，降低碰撞概率。
-
-问题：
-
-- XY 轨迹完全重合，不是安全的真实编队控制。
-- 所有节点名相同，需要先改唯一节点名。
-
-验证：
-
-```bash
-rostopic echo /uav0/mavros/setpoint_position/local
-rostopic echo /uav1/mavros/setpoint_position/local
-rostopic echo /uav2/mavros/setpoint_position/local
-```
-
-预期：
-
-- x/y 类似。
-- z 分别是 5、6、7。
-
-### 6.3 推荐改造：中心偏移和相位偏移
-
-修改文件：
-
-```text
-offboard/src/autoarming_control.cpp
-offboard/launch/autoarming_Mult.launch
-```
-
-建议在 `autoarming_control.cpp:88-97` 增加参数：
-
-```cpp
-double center_x, center_y, phase_offset;
-nh_private.param("center_x", center_x, 0.0);
-nh_private.param("center_y", center_y, 0.0);
-nh_private.param("phase_offset", phase_offset, 0.0);
-```
-
-在 `autoarming_control.cpp:205-211` 使用相位：
-
-```cpp
-double t_eval = std::fmod(t_target + phase_offset, 1.0);
-
-if (flight_mode == "square") {
-    target_xy = get_square_position(t_eval, side_length);
-} else {
-    target_xy = get_circle_position(t_eval, radius);
-}
-```
-
-在 `autoarming_control.cpp:213-215` 使用中心偏移：
-
-```cpp
-target_pose.pose.position.x = center_x + target_xy.first;
-target_pose.pose.position.y = center_y + target_xy.second;
-target_pose.pose.position.z = hight;
-```
-
-launch 示例：
-
-```xml
-<param name="center_x" value="0.0"/>
-<param name="center_y" value="0.0"/>
-<param name="phase_offset" value="0.0"/>
-```
-
-```xml
-<param name="center_x" value="6.0"/>
-<param name="center_y" value="0.0"/>
-<param name="phase_offset" value="0.33"/>
-```
-
-```xml
-<param name="center_x" value="-6.0"/>
-<param name="center_y" value="0.0"/>
-<param name="phase_offset" value="0.66"/>
-```
-
-注意：第 235-245 行重复计算目标点，也要同步使用 `t_eval`、`center_x`、`center_y`，否则最终发布点可能又回到未偏移轨迹。
-
-运行验证：
-
-```bash
-rostopic echo /uav0/mavros/setpoint_position/local/pose/position
-rostopic echo /uav1/mavros/setpoint_position/local/pose/position
-rostopic echo /uav2/mavros/setpoint_position/local/pose/position
-```
-
-预期：
-
-- 三架机 setpoint 的 x/y 不再完全重合。
-- 同一时刻相位错开。
-
-### 6.4 更完整的编队控制
-
-根据代码推断，当前项目没有中心化 swarm controller。你可以新增一个节点，例如：
-
-```text
-offboard/src/swarm_formation_control.cpp
-offboard/launch/swarm_formation_control.launch
-```
-
-节点逻辑：
-
-```text
-订阅 /uav0/mavros/local_position/pose
-订阅 /uav1/mavros/local_position/pose
-订阅 /uav2/mavros/local_position/pose
-
-生成 leader 轨迹
-为每架机加 formation offset
-
-发布 /uav0/mavros/setpoint_position/local
-发布 /uav1/mavros/setpoint_position/local
-发布 /uav2/mavros/setpoint_position/local
-```
-
-新增 C++ 节点后，还要修改：
-
-```text
-offboard/CMakeLists.txt:127-148
-```
-
-仿照：
-
-```cmake
-add_executable(autoarming_control src/autoarming_control.cpp)
-target_link_libraries(autoarming_control
-  ${catkin_LIBRARIES}
-)
-```
-
-增加：
-
-```cmake
-add_executable(swarm_formation_control src/swarm_formation_control.cpp)
-target_link_libraries(swarm_formation_control
-  ${catkin_LIBRARIES}
-)
-```
-
-集群注意事项：
-
-- 每架机必须持续收到自己的 setpoint，否则 PX4 会退出 Offboard。
-- 每架机必须独立 arming、set_mode。
-- 端口、命名空间、模型名、传感器话题都要唯一。
-- 当前没有看到多机互相避障实现，初期应使用高度差、中心偏移、相位偏移保证安全。
-
-## 7. 需求五：改变仿真世界、地图、障碍物或场景
-
-### 7.1 切换 world
-
-默认 world 在：
-
-```text
-simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch:15
-```
-
-当前：
-
-```xml
-<arg name="world" default="$(find env_map)../../../astra_gazebo_worlds/example.world"/>
-```
-
-修改为森林：
-
-```xml
-<arg name="world" default="$(find env_map)../../../astra_gazebo_worlds/forest.world"/>
-```
-
-或启动时传参：
-
-```bash
-roslaunch px4 astra_example.launch world:=/home/yanzu/AstraDroneOpen/simulation/astra_gazebo_worlds/forest.world
-```
-
-验证：
-
-- Gazebo 加载的模型应变成对应 world 的场景。
-- 终端没有 `Unable to find uri model://...`。
-- 无人机仍能起飞并发布 `/mavros/local_position/pose`。
-
-### 7.2 修改静态障碍物
-
-直接改 world 文件，例如：
-
-```text
-simulation/astra_gazebo_worlds/example.world
-```
-
-可参考第 90-277 行已有模型写法。新增一个模型示例：
-
-```xml
-<include>
-  <uri>model://box_target_red</uri>
-  <name>my_red_box</name>
-  <pose>3 2 0.5 0 0 0</pose>
-</include>
-```
-
-模型来源：
-
-```text
-simulation/astra_gazebo_models/box_target_red
-```
-
-根据代码推断，`simulation/astra_gazebo_models` 是项目自己的 Gazebo 模型库；如果 world 中写 `model://xxx`，Gazebo 必须能在 model path 中找到对应目录。
-
-### 7.3 修改动态障碍物
+### 7.2 动态障碍物
 
 启动文件：
 
-```text
-simulation/sim_workspace/src/dynamic_obstacle_controller/launch/astra_dynamic_avoidance_moving.launch
-```
+- 静态障碍场景：`simulation/sim_workspace/src/dynamic_obstacle_controller/launch/astra_dynamic_avoidance_static.launch`
+- 动态障碍场景：`.../astra_dynamic_avoidance_moving.launch`
+- 运动参数：`.../config/obstacle_params.yaml`
+- 运动实现：`.../src/obstacle_controller.py`
 
-关键行：
+`obstacle_params.yaml` 的可修改点：
 
-```xml
-3    <include file="$(find dynamic_obstacle_controller)/launch/astra_dynamic_avoidance_static.launch"/>
-5-7  启动 obstacle_controller.py 并加载 obstacle_params.yaml
-```
+| 行号 | 参数 | 效果 |
+|---:|---|---|
+| 6 | `update_rate=100` | Gazebo model state 更新频率 |
+| 10-15 | `obstacle_cylinder_1` | x 轴正弦往返；幅值 3 m、最大速度约 0.8 m/s |
+| 18-23 | `obstacle_cylinder_2` | y 轴往返；幅值 4 m |
+| 26-31 | `obstacle_cylinder_3` | 对角线往返 |
+| 34-38 | `obstacle_box_1` | 半径 3 m 的圆周运动 |
+| 41-44 | `obstacle_box_2` | 航点巡逻 |
 
-world 中动态障碍物名字必须和 yaml 对上：
+实现对应关系：
 
-```text
-dynamic_avoidance.world:343-375
-```
+- `ObstacleMover.compute_linear()`：第 26-36 行，`amplitude*sin(speed*t/amplitude)`，`speed` 是最大线速度。
+- `compute_circle()`：第 38-47 行，角速度为 `speed/radius`，切向速度为 `speed`。
+- `compute_waypoint()`：第 49-79 行，按路径长度以指定速度循环。
+- `set_model_pose()`：第 81-92 行，通过 `/gazebo/set_model_state` 设置位姿。
+- `run()`：第 94-114 行，按 `update_rate` 更新全部障碍物。
 
-yaml：
+YAML 中的 `name` 必须与 `dynamic_avoidance.world:345-374` 的模型名称完全一致，否则 service 调用不会移动目标模型。
 
-```text
-dynamic_obstacle_controller/config/obstacle_params.yaml:6-44
-```
+**代码事实**：动态障碍控制器只移动 Gazebo 模型，不提供无人机避障。默认 `autoarming_control` 会继续沿圆/方形飞行，可能直接碰撞。必须另接占据地图和规划器才能自主绕行。
 
-修改前：
+### 7.3 CRAIC 场景
 
-```yaml
-10  - name: "obstacle_cylinder_1"
-11    type: "linear"
-12    axis: [1, 0, 0]
-13    amplitude: 3.0
-14    speed: 0.8
-15    center: [0, 6, 2]
-```
+- 固定场景启动：`craic_sim/launch/astra_craic_2026.launch:3-47`
+- 运行时场景启动：`craic_sim/launch/astra_craic_2026_runtime.launch:3-64`
+- 场景生成器：`craic_sim/scripts/generate_craic_2026_world.py`
 
-修改后，例如让它运动更慢、幅度更大：
+生成器第 21-41 行集中定义场地、障碍物、起飞区和圆环尺寸/位置。第 48-49 行 `rule_to_world_xy()` 定义竞赛规则坐标到 Gazebo 世界坐标的换算。修改竞赛轨迹前，应先统一使用规则坐标还是 world 坐标，不要在控制器中重复平移/反转 y。
 
-```yaml
-- name: "obstacle_cylinder_1"
-  type: "linear"
-  axis: [1, 0, 0]
-  amplitude: 5.0
-  speed: 0.4
-  center: [0, 6, 2]
-```
+### 7.4 Mid360 与 FAST-LIO
 
-控制器源码：
+机体挂载：`simulation/px4_sim_files/px4_iris_sdf/iris_mid360/iris_mid360.sdf`
 
-```text
-obstacle_controller.py:10-18     初始化节点、读取参数、连接 /gazebo/set_model_state
-obstacle_controller.py:26-47     linear/circle 轨迹计算
-obstacle_controller.py:49-79     waypoint 轨迹计算
-obstacle_controller.py:81-113    设置模型位姿并循环更新
-```
+| 行号 | 内容 | 修改效果 |
+|---:|---|---|
+| 3-5 | include `iris_without_GPS` | 基础机体 |
+| 7-21 | Mid360 include、pose、joint | 改第 9 行可移动雷达安装位置 |
+| 39-54 | D435i include/joint | 第 41 行改变相机外参 |
+| 57-71 | FPV camera include/joint | 第 59 行改变 FPV 相机外参 |
 
-运行验证：
+Mid360 模型：`simulation/astra_gazebo_models/mid360/mid360.sdf`
 
-```bash
-roslaunch dynamic_obstacle_controller astra_dynamic_avoidance_moving.launch
-```
+| 行号 | 参数 | 当前值/效果 |
+|---:|---|---|
+| 35-39 | LiDAR sensor/update | 10 Hz |
+| 45-56 | 水平/垂直采样角 | 当前均为 `[-π,π]` |
+| 58-67 | range/noise | 0.2~40 m、零高斯噪声 |
+| 70-75 | samples/downsample/topic | 20000 点，`livox/lidar` |
+| 80-112 | IMU | `/livox/imu`、外参和噪声 |
 
-另开终端：
+FAST-LIO：
 
-```bash
-rosservice list | grep set_model_state
-rostopic echo /gazebo/model_states
-```
+| 文件/行号 | 参数/代码 | 作用 |
+|---|---|---|
+| `FAST_LIO/launch/mapping_mid360.launch:6-15` | 加载 YAML、滤波分辨率、启动 mapping | 默认 SLAM 入口 |
+| `FAST_LIO/config/mid360.yaml:2-3` | `/livox/lidar`、`/livox/imu` | 与模型话题匹配 |
+| 同 YAML `:18-24` | FOV、探测距离、外参 | 改感知范围/雷达-IMU 标定 |
+| 同 YAML `:26-34` | 点云/path/PCD 发布 | 改输出和保存 |
+| `laserMapping.cpp:592-620` | `/Odometry` frame/TF | `camera_init -> body` |
+| `laserMapping.cpp:762-794` | 参数读取 | YAML 到运行变量 |
+| `laserMapping.cpp:847-860` | 订阅和发布 | LiDAR/IMU 输入，点云/里程计输出 |
 
-预期：
+雷达模型第 81 行 IMU 平移外参与 FAST-LIO YAML 第 21 行一致。修改挂载或 IMU 外参时必须同步，否则建图会漂移或扭曲。
 
-- Gazebo 中 `obstacle_cylinder_1` 等模型会移动。
-- `/gazebo/model_states` 中对应模型 pose 持续变化。
+## 8. PX4 机型与控制参数边界
 
-### 7.4 改传感器仿真配置
+默认 airframe：`simulation/px4_sim_files/px4_iris_params/1046_gazebo-classic_iris_mid360`
 
-如果你改了雷达话题或使用多机雷达，需要同步改 FAST-LIO 配置：
+| 行号 | 参数 | 含义 |
+|---:|---|---|
+| 8 | source `10015_gazebo-classic_iris` | 继承 Iris 基础参数 |
+| 11 | `EKF2_EV_DELAY=5` | 外部视觉延迟参数 |
+| 12 | `EKF2_EV_CTRL=15` | 外部视觉融合配置 |
+| 13 | `EKF2_HGT_REF=3` | 高度参考配置 |
+| 14 | `EKF2_GPS_CTRL=0` | 禁用 GPS 融合 |
+| 15 | `SYS_HAS_MAG=0` | 声明无磁罗盘 |
+| 16 | `COM_RC_IN_MODE=1` | RC 输入模式 |
 
-```text
-AstraDrone_ros1_ws/src/SLAM/FAST_LIO/config/mid360.yaml:1-5
-```
+机体动力学主要在 `iris_without_GPS.sdf`：
 
-单机默认：
+- 第 8-15 行：机体质量和惯量。
+- 第 348-420 行：多旋翼基座和四个电机模型；电机时间常数、最大转速、推力/力矩常数会改变响应。
+- 第 446-470 行：气压计和 MAVLink interface。
 
-```yaml
-lid_topic:  "/livox/lidar"
-imu_topic:  "/livox/imu"
-```
+除非实验目标就是系统辨识或底层动力学，不建议先改质量、电机常数或 PX4 内环增益。先用上层轨迹参数验证 setpoint 链，再逐步调 PX4 参数，避免把规划、Offboard 和动力学问题混在一起。
 
-多机示例：
+## 9. 多机与集群的当前真实状态
 
-```yaml
-lid_topic:  "/uav0/livox/lidar"
-imu_topic:  "/uav0/livox/imu"
-```
+项目有多机资源，但没有完整可直接运行的集群闭环：
 
-注意：多机时每架机都需要独立 FAST-LIO 节点名、参数命名空间、话题命名空间。当前默认 `mapping_mid360.launch:15` 节点名固定为 `laserMapping`，多机同时启动时需要改唯一名字或使用 namespace。
+- `px4_iris_params/1048~1053` 和 `px4_iris_sdf/iris_mid360_0~2`、`iris_without_GPS_0~2` 提供三机变体。
+- `offboard/launch/autoarming_Mult.launch:9-34` 尝试为 `/uav0`、`/uav1`、`/uav2` 启动三个控制器。
+- `Swarm/` 当前没有控制源码。
 
-### 7.5 改模型传感器挂载位置
+`autoarming_Mult.launch` 存在明显问题：第 9、18、27 行三个 node 都叫 `autoarming_control`，同一 namespace 下节点名重复，roslaunch 不能可靠启动三者。应分别命名为 `autoarming_control_uav0/uav1/uav2` 或放入各自 namespace。
 
-默认无人机传感器挂载在：
+该 launch 也只启动控制节点，不启动三套 PX4 SITL/MAVROS；README 提到的 `multi_uav_mavros_sitl.launch` 不在本仓库的自定义 launch 中。要做多机实验，还需明确每架机的：
 
-```text
-simulation/px4_sim_files/px4_iris_sdf/iris_mid360/iris_mid360.sdf
-```
+- PX4 instance、MAV_SYS_ID；
+- MAVLink UDP/TCP 端口；
+- Gazebo 模型名和出生点；
+- ROS namespace；
+- MAVROS `fcu_url`；
+- setpoint publisher；
+- 局部坐标原点和编队坐标变换。
 
-例如 Mid360 位姿：
+**建议**：先完成单机轨迹、速度、yaw 和安全降落，再复制为第二架机；不要一开始同时排查三套端口、namespace 和控制逻辑。
 
-```xml
-7    <include>
-8      <uri>model://mid360</uri>
-9      <pose>0 0 0.08 0 0 0</pose>
-10   </include>
-```
+## 10. 面向仿真实验的推荐操作流程
 
-如果改了第 9 行的雷达安装位姿，可能还要同步改：
+### 10.0 修改后是否需要编译
 
-```text
-AstraDrone_ros1_ws/src/SLAM/FAST_LIO/config/mid360.yaml:20-24
-```
+- 只改 `.launch`、`.yaml` 或 `.world`：通常重启相应节点即可；PX4 外部副本例外，仍需按第 2.3 节同步。
+- 改 `autoarming_control.cpp` 或 `position_control*.cpp`：必须重新编译主 ROS1 工作空间并重新 source。`offboard/CMakeLists.txt:130-148` 分别构建位置控制库、`position_control` 和 `autoarming_control`。
+- 改 Gazebo 插件 C++：必须重新编译 `simulation/sim_workspace`，并确认加载的是新生成的 `.so`。
+- 改 EGO 源码：先处理 `CATKIN_IGNORE` 和依赖，再重新编译；不能只依赖当前 `devel/` 中可能残留的旧产物。
 
-尤其是：
-
-```yaml
-extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
-extrinsic_R: [ 1, 0, 0,
-               0, 1, 0,
-               0, 0, 1]
-```
-
-否则仿真雷达和 SLAM 外参不一致。
-
-## 8. 无法精确确认的内容和建议检查命令
-
-### 8.1 多机 PX4 launch
-
-未能从代码中确认：当前仓库没有找到完整可直接运行的多机 PX4/MAVROS launch。README 里提到：
-
-```text
-AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/README.md:25
-roslaunch px4 multi_uav_mavros_sitl.launch
-```
-
-但当前项目内搜索只看到 README 引用，没有看到这个 launch 文件。
-
-建议检查：
+增量编译 Offboard 的常用方式：
 
 ```bash
-find /home/yanzu/AstraDroneOpen -name '*multi*launch*' -o -name 'multi_uav_mavros_sitl.launch'
+cd "$HOME/AstraDroneOpen/AstraDrone_ros1_ws"
+catkin_make --pkg offboard
+source devel/setup.bash
 ```
 
-### 8.2 EGO 到 MAVROS 的 bridge
+`scripts/build_AstraDrone_ros1_x86.bin` 和 `scripts/build_sim_workspace_x86.bin` 当前是已编译 ELF 工具，无法像 shell 脚本一样静态审阅内部每一步。顶层 README 说明它们会清理并重建工作空间；日常单文件开发优先增量 `catkin_make`，需要重新部署 PX4/Gazebo 资源时再运行项目构建工具。
 
-未能从代码中确认：当前没有看到 `/planning/pos_cmd` 到 `/mavros/setpoint_position/local` 的桥接节点。
+### 10.1 分阶段启动
 
-建议检查：
+终端 1：
 
 ```bash
-rg -n "planning/pos_cmd|PositionCommand|setpoint_position/local|setpoint_raw/local" AstraDrone_ros1_ws/src
+roscore
 ```
 
-### 8.3 默认被忽略的 ROS 包
-
-很多包有 `CATKIN_IGNORE`，包括 EGO-Planner、rc_obstacle_avoidance、pix_tracker、Land 等。运行前检查：
+终端 2：
 
 ```bash
-find AstraDrone_ros1_ws/src -name CATKIN_IGNORE
+source simulation/sim_workspace/devel/setup.bash
+roslaunch px4 astra_example.launch
 ```
 
-如果某个包没有被编译，`roslaunch` 会找不到包或节点。启用方法要结合项目脚本或手动移除对应 `CATKIN_IGNORE`，再重新 `catkin_make`。
-
-### 8.4 空 README 模块
-
-`Swarm`、`Exploration`、`Planner`、`SLAM` 等顶层 readme 当前为空，本文对这些模块的说明是“根据代码推断”。如果要深入用某个模块，应优先读它的 launch、src、config，而不是依赖顶层 README。
-
-## 9. 仿真开发路线建议
-
-### 第 1 阶段：先跑通默认仿真
-
-目标：确认 Gazebo、PX4、MAVROS、Offboard 控制都能工作。
-
-运行：
+终端 3，可选建图：
 
 ```bash
-./scripts/run_sh/pc_example.sh
+source AstraDrone_ros1_ws/devel/setup.bash
+roslaunch fast_lio mapping_mid360.launch rviz:=false
 ```
 
-验证：
+终端 4，最后启动控制：
 
 ```bash
-rostopic echo /mavros/state
-rostopic echo /mavros/local_position/pose
+source AstraDrone_ros1_ws/devel/setup.bash
+roslaunch offboard autoarming_control.launch rviz:=false
+```
+
+### 10.2 启动控制前检查
+
+```bash
+rostopic echo -n 1 /mavros/state
+rostopic echo -n 1 /mavros/local_position/pose
+rostopic hz /mavros/local_position/pose
+rostopic info /mavros/setpoint_position/local
+```
+
+重点确认：
+
+- `connected: True`；
+- 局部 pose 持续更新且没有 NaN；
+- setpoint topic 没有意外的其他 publisher；
+- Gazebo 未暂停；
+- QGC 没有 estimator/failsafe 严重报警。
+
+### 10.3 运行中验证“改动是否真的生效”
+
+```bash
+rosparam get /flight_mode
+rosparam get /autoarming_control/hight
+rosparam get /autoarming_control/target_laps
+rosparam get /autoarming_control/radius
+rostopic hz /mavros/setpoint_position/local
 rostopic echo /mavros/setpoint_position/local
+rostopic echo /mavros/local_position/odom
 ```
 
-你要看到：
+如果 `speed` 尚未按第 4.2 节接入源码，`rosparam get` 能看到它也不代表代码在使用它。
 
-- `/mavros/state` connected 为 true。
-- 控制节点进入 OFFBOARD。
-- 无人机解锁、起飞、绕圈、降落。
+### 10.4 记录实验
 
-### 第 2 阶段：只改高度和基础参数
+`scripts/run_sh/record.sh:5-8` 已录制 MAVROS pose/odom/setpoint、Livox、TF、电池等关键话题。建议每次实验另外记录：
 
-先不要改 C++。
+- 参数文件或 `rosparam dump`；
+- Git commit/diff；
+- world 名称；
+- 目标轨迹；
+- 实际位置、速度和偏航误差；
+- 碰撞/超时/模式切换事件。
 
-修改：
+评价轨迹不能只看“飞起来了”，至少计算：
 
 ```text
-offboard/launch/autoarming_control.launch:11-18
+位置 RMSE、最大位置误差、速度峰值、加速度峰值、完成时间、最小障碍距离、OFFBOARD 丢失次数
 ```
 
-建议顺序：
+## 11. 常见现象与定位顺序
 
-1. 改 `hight`。
-2. 改 `target_laps`。
-3. 改 `flight_mode`。
-4. 增加或改 `radius`。
-5. 改 `side_length`。
+### 无人机不解锁或不进入 OFFBOARD
 
-验证：
+1. 检查 `/mavros/state` 是否 connected。
+2. 检查 setpoint 是否以 20 Hz 左右持续发布；源码第 117-125 行会预热约 5 秒。
+3. 检查 PX4 estimator 和 QGC 报警。
+4. 检查是否有多个 setpoint publisher。
+5. 检查 `fcu_url` 是否与当前 PX4 instance 匹配。
 
-```bash
-roslaunch offboard autoarming_control.launch
-```
+### 改了 `speed` 但速度不变
 
-### 第 3 阶段：让 `speed` 真正生效
+这是当前预期行为：launch 有参数，源码没有读取。按第 4.2 节修改并重新编译主 ROS 工作空间。
 
-修改：
+### 改了 `takeoff_height` 但还是直接飞到 3 m
 
-```text
-offboard/src/autoarming_control.cpp:88-97
-offboard/src/autoarming_control.cpp:219-233
-```
+也是当前预期行为：源码 `TAKEOFF` 第 195 行直接使用 `hight`。要么只改 `hight`，要么新增并实际读取 `takeoff_height`，再在达到该高度后进入下一阶段。
 
-目标：
+### 改了仓库中的 `astra_example.launch` 但场景没变
 
-- 增加 `speed` 参数读取。
-- 用 `speed` 推进 `t_target`。
+大概率运行的是 `~/PX4-Autopilot/launch/...` 外部副本。先用 `rospack find px4` 和 `cmp` 检查同步状态。
 
-验证：
+### FAST-LIO 正常建图，但飞机不避障
 
-- `speed=0.5` 时轨迹慢。
-- `speed=2.0` 时轨迹快。
-- 无人机仍能稳定跟踪。
+这是当前架构预期：FAST-LIO 输出地图，默认控制器不订阅地图也不调用规划器。需要按第 5.4 节建立 EGO/其他规划器到 MAVROS 的闭环。
 
-### 第 4 阶段：改轨迹
+### EGO 的 `max_vel` 改了，PX4 无人机没有变化
 
-修改：
+EGO 当前控制的是 `so3_quadrotor_simulator`，不是 PX4/Gazebo 模型；且包默认被忽略。先完成桥接和编译启用。
 
-```text
-offboard/src/autoarming_control.cpp:43-63
-offboard/src/autoarming_control.cpp:205-245
-```
+### `position_control.launch` 的初始目标没有生效
 
-建议先做：
+`DroneControl::ReadParams()` 当前没有调用；而且构造函数已进入无限循环。需按第 4.7 节整改。
 
-1. 改圆半径。
-2. 改方形边长。
-3. 加 8 字形。
-4. 加航点数组。
+### `rc_obstacle_avoidance.yaml` 改了但参数没变
 
-验证：
+launch 把参数加载到全局，代码从私有 namespace 读取。把 `<rosparam>` 放入 `<node>` 内后重启。
 
-```bash
-rostopic echo /mavros/setpoint_position/local/pose/position
-```
+## 12. 推荐开发路线
 
-确认 setpoint 的 x/y/z 和你设计的轨迹一致。
+### 阶段 A：建立可复现实验基线
 
-### 第 5 阶段：做路线规划
+- 空场启动默认单机。
+- 只改 `hight`、`radius/side_length`、`target_laps`。
+- 记录 setpoint 和实际 odom。
+- 修复合法四元数、首帧 pose 等待和上锁结果检查。
 
-先用简单航点，再用 EGO-Planner。
+### 阶段 B：实现真正的轨迹速度和航向
 
-简单航点：
+- 按第 4.2 节把 `speed` 接入时间/弧长参数化。
+- 参数化跟踪误差、到达误差、最大高度和超时。
+- 加入切线 yaw 和 yaw rate 限制。
+- 用圆、方形、8 字依次验证。
 
-```text
-position_control_lib.cpp:18-28
-```
+### 阶段 C：改为航点/动作状态机
 
-EGO-Planner：
+- 用单一节点管理解锁、起飞、悬停、航点、返航、降落。
+- 每段都有到达条件和超时；始终持续发布 setpoint。
+- 增加急停/悬停指令和 geofence。
 
-```text
-simple_run.launch:35-67
-advanced_param.xml:48-129
-ego_replan_fsm.cpp:109-120
-traj_server.cpp:238-240
-```
+### 阶段 D：接入静态避障规划
 
-注意：
+- 先启用 EGO 的独立 simulator，确认其原始示例可运行。
+- 修复手动目标 z 硬编码。
+- 再替换成 MAVROS odom 和真实仿真点云。
+- 实现 `PositionCommand -> MAVROS PositionTarget` 桥接。
+- 停用 EGO 内部 SO3 模拟器和默认 autoarming setpoint。
 
-- EGO 先在自带仿真中跑通。
-- 再写 bridge 接 PX4/MAVROS。
+### 阶段 E：动态障碍和复杂场景
 
-### 第 6 阶段：增加多机
+- 使用 `dynamic_avoidance_static.launch` 验证静态避障。
+- 再使用 moving launch 和 `obstacle_params.yaml` 调速度/轨迹。
+- 最后切 CRAIC/森林等复杂 world。
 
-先不要一口气做集群算法。
+### 阶段 F：多机
 
-顺序：
+- 先复制第二套 PX4/MAVROS 并验证独立悬停。
+- 修复重复节点名、端口和 namespace。
+- 每机独立控制器稳定后，再实现共享航点或编队控制。
 
-1. 确认有 `/uav0/mavros/state`、`/uav1/mavros/state`、`/uav2/mavros/state`。
-2. 改 `autoarming_Mult.launch` 的节点名。
-3. 分别设置不同 `hight`。
-4. 再增加 `center_x`、`center_y`、`phase_offset`。
-5. 最后考虑新增第 4 架机。
+## 13. 最终修改索引
 
-重点文件：
+| 想改变的行为 | 首选文件 | 函数/参数/行号 | 修改后效果 |
+|---|---|---|---|
+| 高度 | `offboard/launch/autoarming_control.launch` | `hight`，第 15 行 | 起飞和巡航高度改变 |
+| 圈数 | 同上 | `target_laps`，第 14 行 | 飞行圈数改变 |
+| 圆半径 | 同上 + `autoarming_control.cpp` | launch 新增 `radius`；源码第 97 行读取 | 圆大小改变 |
+| 方形边长 | 同上 | `side_length`，第 17 行 | 方形大小改变 |
+| 圆/方形 | 同上 | `flight_mode`，第 11 行 | 选择轨迹 |
+| 真实参考速度 | `autoarming_control.cpp` | 参数区第 88-97 行、推进区第 219-233 行 | `speed` 以 m/s 参与轨迹推进 |
+| 轨迹形状 | 同上 | `get_square_position` 第 43-56 行、`get_circle_position` 第 58-63 行、TRACKING 第 205-252 行 | 可做 8 字、椭圆、螺旋、自定义曲线 |
+| 轨迹中心/出生点 | 同上 | TAKEOFF 第 192-204 行、轨迹函数 | 轨迹相对初始点而非固定原点 |
+| 航向 | 同上 | target orientation，第 143、213-217 行附近 | 固定 yaw 或沿切线转头 |
+| 动作顺序 | 同上 | `FlightPhase` 第 21-26 行、状态机第 192-266 行 | 悬停、前进、转向、返航等 |
+| 航点控制 | `position_control_lib.cpp` 或新节点 | `DroneControl_main` 第 15-31 行、callback 第 42-51 行 | 外部航点驱动；需先修复当前实现 |
+| EGO 速度/加速度 | `plan_manage/launch/run_in_sim.launch` | 第 35-36 行 | 仅 EGO 轨迹约束，默认不影响 PX4 |
+| EGO 预设路线 | 同上 | 第 43、47-67 行 | 独立 EGO 仿真按预设航点飞 |
+| EGO 手动目标高度 | `ego_replan_fsm.cpp` | `waypointCallback` 第 109-120 行，尤其第 119 行 | RViz 目标 z 可生效 |
+| EGO 地图安全距离 | `advanced_param.xml` | 第 72-105、119-129 行 | 分辨率、膨胀、碰撞代价改变 |
+| world | `astra_example.launch` | 第 15 行/launch arg | 仿真场景改变 |
+| 动态障碍速度/路径 | `obstacle_params.yaml` | 第 6-44 行 | 障碍物按新轨迹运动 |
+| 雷达范围/频率 | `mid360.sdf` | 第 35-75 行 | 点云频率、范围、采样改变 |
+| FAST-LIO 输入/外参 | `mid360.yaml` | 第 2-24 行 | SLAM 话题、范围、标定改变 |
+| 多机控制 | `autoarming_Mult.launch` | 第 9-34 行 | 需先修复节点名、PX4 实例和 namespace |
 
-```text
-offboard/launch/autoarming_Mult.launch:7-34
-offboard/src/autoarming_control.cpp:88-97, 205-245
-simulation/px4_sim_files/px4_iris_sdf/iris_mid360_0/1/2
-simulation/px4_sim_files/px4_iris_sdf/iris_without_GPS_0/1/2
-```
-
-### 第 7 阶段：做集群控制
-
-先用多个 `autoarming_control` 节点做分散控制，再考虑中心化编队节点。
-
-建议实现顺序：
-
-1. 同轨迹不同高度。
-2. 同轨迹不同相位。
-3. 不同中心点的圆/方形。
-4. leader-follower 编队。
-5. 加入互避逻辑。
-6. 每架机接入独立规划器或中心化规划器。
-
-### 第 8 阶段：改仿真场景和障碍物
-
-先改静态 world，再改动态障碍物。
-
-重点文件：
-
-```text
-simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch:15
-simulation/astra_gazebo_worlds/example.world
-simulation/astra_gazebo_worlds/dynamic_avoidance.world:343-375
-simulation/sim_workspace/src/dynamic_obstacle_controller/config/obstacle_params.yaml:6-44
-simulation/sim_workspace/src/dynamic_obstacle_controller/src/obstacle_controller.py:10-113
-```
-
-验证：
-
-- Gazebo 场景正确加载。
-- 障碍物出现在预期位置。
-- 动态障碍物按 yaml 移动。
-- 无人机仍能进入 OFFBOARD 并运动。
-
-## 10. 后续真机移植的简要注意事项
-
-现阶段你只关注仿真即可。后续如果要移植真机，需要额外关注：
-
-- Offboard 控制的安全保护、遥控接管和失控保护。
-- PX4 参数、EKF 高度源、外部视觉/SLAM 输入是否正确。
-- 传感器真实话题和仿真话题是否一致。
-- 坐标系 ENU/NED、`camera_init/body/map/world` 的 TF 是否正确。
-- 串口、数传、QGroundControl、MAVROS 连接方式。
-- 起飞、降落、上锁逻辑不能照搬仿真自动执行，必须加安全确认。
-
-对当前阶段来说，最稳的路径是：先在仿真中把 `autoarming_control.cpp` 改熟，让无人机稳定按你的高度、速度、轨迹和场景运动起来，再逐步接入规划、多机和集群控制。
+以上索引中，A/B/C 阶段均可围绕 `autoarming_control` 完成；只有需要绕障碍、动态重规划时，才值得进入 EGO 桥接改造。这样能把“轨迹生成问题”“PX4 Offboard 问题”“定位问题”“规划问题”逐层分离，便于快速得到可复现实验结果。
