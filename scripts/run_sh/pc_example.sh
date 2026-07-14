@@ -16,7 +16,7 @@ tmux send-keys "roscore &" C-m
 
 tmux select-pane -t 1
 tmux send-keys "sleep 3s" C-m 
-tmux send-keys "roslaunch px4 astra_example.launch" C-m 
+tmux send-keys "roslaunch $HOME/AstraDroneOpen/simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch" C-m
 
 tmux select-pane -t 2
 tmux send-keys "sleep 6s" C-m 
