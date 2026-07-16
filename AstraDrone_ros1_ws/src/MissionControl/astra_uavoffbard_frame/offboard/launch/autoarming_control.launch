@@ -1,35 +1,60 @@
 <?xml version="1.0"?>
-<launch> 
+<launch>
+    <arg name="rviz" default="true"/>
+    <arg name="mission_file" default="$(find offboard)/config/stage3_waypoints.yaml"/>
+    <arg name="takeoff_height" default="3.0"/>
+    <arg name="initial_hover_duration" default="3.0"/>
+    <arg name="takeoff_tolerance" default="0.15"/>
+    <arg name="horizontal_tolerance" default="0.20"/>
+    <arg name="waypoint_tolerance" default="0.20"/>
+    <arg name="yaw_tolerance_deg" default="10.0"/>
+    <arg name="default_waypoint_hold" default="2.0"/>
+    <arg name="waypoint_timeout" default="30.0"/>
+    <arg name="return_hold_time" default="2.0"/>
+    <arg name="return_timeout" default="45.0"/>
+    <arg name="failsafe_hover_duration" default="5.0"/>
+    <arg name="land_mode_retry_interval" default="1.0"/>
+    <arg name="extended_state_timeout" default="3.0"/>
+    <arg name="phase_timeout" default="60.0"/>
+    <arg name="pose_timeout" default="1.0"/>
 
-    <arg name="rviz" default="true" /> <!-- 是否启动 RViz：true 启动，false 不启动 -->
-    
-    <!-- 发布 map -> camera_init 的静态坐标变换：平移(0,0,0)，四元数(0,0,0,1) -->
-    <node pkg="tf2_ros" type="static_transform_publisher" name="map_to_camera_init"
-        args="0 0 0  0 0 0 1  map  camera_init" />
+    <node pkg="tf2_ros" type="static_transform_publisher"
+          name="map_to_camera_init"
+          args="0 0 0  0 0 0 1  map  camera_init"/>
 
-    <!-- 轨迹类型：square 表示方形，circle 表示圆形；当前 C++ 中其他字符串也会进入圆形分支 -->
-    <param name="flight_mode" value="circle" /> <!-- 全局参数，源码通过普通 NodeHandle 读取 -->
+    <node pkg="offboard" type="autoarming_control"
+          name="autoarming_control" output="screen">
+        <!-- YAML 在节点标签内加载，因此 waypoints 位于节点私有命名空间。 -->
+        <rosparam command="load" file="$(arg mission_file)"/>
+        <param name="takeoff_height" value="$(arg takeoff_height)"/>
+        <param name="initial_hover_duration" value="$(arg initial_hover_duration)"/>
+        <param name="takeoff_tolerance" value="$(arg takeoff_tolerance)"/>
+        <param name="horizontal_tolerance" value="$(arg horizontal_tolerance)"/>
+        <param name="waypoint_tolerance" value="$(arg waypoint_tolerance)"/>
+        <param name="yaw_tolerance_deg" value="$(arg yaw_tolerance_deg)"/>
+        <param name="default_waypoint_hold" value="$(arg default_waypoint_hold)"/>
+        <param name="waypoint_timeout" value="$(arg waypoint_timeout)"/>
+        <param name="return_hold_time" value="$(arg return_hold_time)"/>
+        <param name="return_timeout" value="$(arg return_timeout)"/>
+        <param name="failsafe_hover_duration" value="$(arg failsafe_hover_duration)"/>
+        <param name="land_mode_retry_interval" value="$(arg land_mode_retry_interval)"/>
+        <param name="extended_state_timeout" value="$(arg extended_state_timeout)"/>
+        <param name="phase_timeout" value="$(arg phase_timeout)"/>
+        <param name="pose_timeout" value="$(arg pose_timeout)"/>
 
-    <!-- 启动 Offboard 控制节点：pkg 是功能包，type 是可执行文件，name 是运行时节点名 -->
-    <node pkg="offboard" type="autoarming_control" name="autoarming_control" output="screen">
-        <param name="target_laps" value="1"/>       <!-- 目标飞行圈数，达到后进入 LANDING -->
-        <param name="hight" value="4.0"/>           <!-- 当前实际生效的绝对目标高度，源码拼写就是 hight -->
-        <param name="takeoff_height" value="1.0"/>  <!-- 预留的起飞高度参数：当前 C++ 未读取，修改暂不生效 -->
-        <param name="side_length" value="4.0"/>     <!-- 方形边长，单位 m；只在 square 模式下使用 -->
-        <param name="radius" value="0"/>          <!-- 圆形半径，单位 m；只在 circle 模式下使用 -->
-        <param name="speed" value="1.5"/>           <!-- 预留的轨迹速度参数：当前 C++ 未读取，修改暂不生效 -->
-
-        <!-- 以下 remap 当前源、目标名字相同，不改变接口；保留它们便于以后统一改名或增加命名空间 -->
-        <remap from="/mavros/state" to="/mavros/state" /> <!-- PX4 连接、模式和解锁状态 -->
-        <remap from="/mavros/local_position/pose" to="/mavros/local_position/pose" /> <!-- 无人机实际局部位姿 -->
-        <remap from="/mavros/setpoint_position/local" to="/mavros/setpoint_position/local" /> <!-- 控制节点发布的目标位姿 -->
-        <remap from="/mavros/set_mode" to="/mavros/set_mode" /> <!-- 请求切换 PX4 飞行模式的服务 -->
-        <remap from="/mavros/cmd/arming" to="/mavros/cmd/arming" /> <!-- 请求解锁或上锁的服务 -->
+        <remap from="/mavros/state" to="/mavros/state"/>
+        <remap from="/mavros/extended_state" to="/mavros/extended_state"/>
+        <remap from="/mavros/local_position/pose"
+               to="/mavros/local_position/pose"/>
+        <remap from="/mavros/setpoint_position/local"
+               to="/mavros/setpoint_position/local"/>
+        <remap from="/mavros/set_mode" to="/mavros/set_mode"/>
+        <remap from="/mavros/cmd/arming" to="/mavros/cmd/arming"/>
     </node>
 
-    <!-- 当 rviz=true 时加载项目已有的无人机轨迹可视化配置 -->
     <group if="$(arg rviz)">
-        <!-- launch-prefix="nice" 让 RViz 以较低调度优先级运行，减少对控制与仿真的影响 -->
-        <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz_a_loam" args="-d $(find offboard)/rviz_config/drone_path.rviz" />
+        <node launch-prefix="nice" pkg="rviz" type="rviz"
+              name="rviz_a_loam"
+              args="-d $(find offboard)/rviz_config/drone_path.rviz"/>
     </group>
 </launch>
