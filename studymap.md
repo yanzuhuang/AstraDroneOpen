@@ -11,20 +11,19 @@
   -> 航点与动作状态机
   -> 可控速度/航向的轨迹跟踪
   -> 参数调试与量化验证
-  -> 建立 Mid360 传感器仿真基线
-  -> 独立掌握 FAST-LIO 定位与建图
-  -> 单独掌握 EGO-Planner
-  -> 连接 FAST-LIO、EGO 与 PX4/Gazebo
-  -> 静态/动态场景中的自主任务
+  -> 分成两条可并行的感知支线
+     |-> Mid360 基线 -> FAST-LIO -> EGO-Planner -> PX4 静态避障
+     `-> 相机基线 -> YOLO 2D 检测 -> 深度/TF 目标定位
+  -> 汇合为静态/动态场景中的感知驱动自主任务
 ```
 
-本文依据当前仓库的 `README.md`、`spec.md`、仿真资源、Offboard 源码、FAST-LIO 配置和 EGO-Planner 源码编写。文中遵循以下约定：
+本文依据当前仓库的 `README.md`、`spec.md`、仿真资源、Offboard 源码、FAST-LIO 配置、EGO-Planner 源码和 YOLO 检测包编写。文中遵循以下约定：
 
 - **仓库事实**：当前源码、launch、world、model 或 config 可以直接确认。
 - **根据代码结构推测**：仓库没有完整说明或尚未形成可运行闭环，仅依据模块边界、话题或命名提出的学习/实现方向。
 - **推荐验收阈值**：为了让学习结果可以检查而给出的建议值，不是仓库原作者声明的性能指标；应根据本机实时因子和仿真结果调整。
 
-为缩短后文路径，`offboard/` 指 `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/`，`plan_manage/` 指 `AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/`，`FAST_LIO/` 指 `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/`，`dynamic_obstacle_controller/` 指 `simulation/sim_workspace/src/dynamic_obstacle_controller/`。
+为缩短后文路径，`offboard/` 指 `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/`，`plan_manage/` 指 `AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/`，`FAST_LIO/` 指 `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/`，`yolo_detect/` 指 `AstraDrone_ros1_ws/src/Detection/yolo_detect/`，`dynamic_obstacle_controller/` 指 `simulation/sim_workspace/src/dynamic_obstacle_controller/`。
 
 ## 2. 先建立正确的项目认识
 
@@ -50,6 +49,19 @@ scripts/run_sh/pc_example.sh
 2. FAST-LIO 虽在 `pc_example.sh` 中启动，但默认 Offboard 控制器不订阅 FAST-LIO 的 `/Odometry`，所以它当前不是默认飞行闭环的一部分。
 3. EGO-Planner 当前使用自己的 SO3 动力学模拟器，且相关包带有 `CATKIN_IGNORE`；它不会直接控制默认 PX4/Gazebo 无人机。
 
+YOLO 同样不是默认飞行闭环的一部分。当前仓库的视觉链应理解为：
+
+```text
+D435i/其他相机 RGB 图像
+  -> yolo_detect.py（2D 检测与标注图）
+  -> yolo_detect_fusion.py（尝试结合深度和 TF 做 3D 定位）
+  -> 待完善的结构化检测接口
+  -> 任务层决定观察、搜索、跟随或返航
+  -> 已验收的航点/规划/Offboard 控制链执行动作
+```
+
+YOLO 负责回答“画面里有什么、在哪里”，不应绕过任务层直接持续发布 MAVROS setpoint。第一轮学习只做离线推理、ROS 图像检测和结果评估；等基础飞控、深度、TF 和消息接口分别通过验收后，再接任务逻辑。
+
 ### 2.2 当前仓库中的重要边界
 
 - 默认 `autoarming_control.launch` 中的 `speed` 和 `takeoff_height` 参数当前没有被源码读取；修改它们不会产生预期效果。
@@ -59,9 +71,19 @@ scripts/run_sh/pc_example.sh
 - `simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch` 的默认 world 路径拼接缺少 `/`。学习初期可用绝对 `world:=...` 参数绕过。
 - PX4 自定义 launch、airframe 和 SDF 会复制到外部 `~/PX4-Autopilot`；修改仓库源文件后，实际运行的外部副本不一定自动更新。
 - 任意时刻只应有一个节点持续发布 MAVROS setpoint。不得同时让 `autoarming_control`、`position_control` 和规划桥接节点控制同一架无人机。
+- `yolo_detect/` 当前带有 `CATKIN_IGNORE`；移除前应先确认依赖和工作空间构建范围，不要把“目录里有源码”当成“默认可运行”。
+- `yolo_detect.py` 当前订阅 `/csi_camera/image_raw`，而 `iris_mid360` 搭载的 D435i 默认发布 `/realsense_d435i/color/image_raw`；必须通过参数/remap 对齐，不能照抄 launch 后只等画面。
+- `yolo_detect.py` 当前只发布标注图 `/yolo/detect_image`，没有发布类别、置信度、框和时间戳组成的结构化检测数组，暂时不能作为可靠任务输入。
+- `yolo_detect_fusion.py` 使用 `/camera/image_raw`、`/fused/depth_image`、`/camera/camera_info` 和 `fmu <- camera` TF，与当前 D435i 默认接口并不一致；它还采用“最新深度图”而非严格的 RGB/深度同步。3D 定位前必须补齐话题参数化、时间同步和 frame 验证。
+- 当前 `yolo_detect.launch` 只启动 2D 节点；`yolo_detect_fusion.py` 没有对应 launch 且当前文件没有可执行位。它是待完善的参考实现，不是已经接通的默认融合链。
+- 当前仓库自带 `yolov8n.pt` 和 `bus.jpg`，适合做环境冒烟测试，不代表模型能识别你的最终无人机任务目标；自定义类别需要单独的数据集、训练、验证和部署闭环。
 - `build/`、`devel/` 是生成目录；学习和修改应以 `src/` 下的源文件为准。
 
 ## 3. 总体阶段表
+
+主控制/定位/规划路线保持阶段 0～10；YOLO 作为 V0～V4 视觉支线并行推进。两条路线只在接口稳定后汇合，避免为了学 YOLO 阻塞基础飞控，也避免检测节点尚未验收就参与飞行决策。
+
+### 3.1 主线：飞控、定位与规划
 
 | 阶段 | 学习主题 | 完成后能实现的效果 |
 |---|---|---|
@@ -77,7 +99,23 @@ scripts/run_sh/pc_example.sh
 | 9 | FAST-LIO/EGO/PX4 静态避障闭环 | 能用仿真 LiDAR/IMU 定位建图，并让 PX4/Gazebo 无人机跟随规划轨迹绕障 |
 | 10 | 自主任务与动态场景 | 能在任务逻辑驱动下处理动态障碍、超时、失败和结束条件 |
 
-建议严格按顺序推进。阶段 0～5 是单机自主控制的基础主线；阶段 6 建立仿真传感器基线；阶段 7 专门学习 FAST-LIO；阶段 8 单独掌握规划器；阶段 9～10 才把定位、建图、规划和任务逻辑接成更高程度的自主闭环。
+建议主线严格按顺序推进。阶段 0～5 是单机自主控制的基础；阶段 6 建立 Mid360 仿真传感器基线；阶段 7 专门学习 FAST-LIO；阶段 8 单独掌握规划器；阶段 9～10 才把定位、建图、规划和任务逻辑接成更高程度的自主闭环。
+
+### 3.2 视觉支线：相机与 YOLO
+
+| 支线阶段 | 前置条件 | 学习主题 | 完成后能实现的效果 |
+|---|---|---|---|
+| V0 | 阶段 0 | YOLO 环境与离线推理 | 能用仓库权重稳定完成图片/视频推理并读懂检测结果 |
+| V1 | V0 | ROS 图像与仿真相机基线 | 能确认 RGB、深度、CameraInfo、时间戳和 optical frame |
+| V2 | V1 | ROS 2D 检测节点工程化 | 能发布可消费的类别、置信度、检测框和标注图，并量化延迟/FPS |
+| V3 | V2；若需自定义目标 | 数据集、训练与模型评估 | 能用独立测试集说明模型适用边界，而不是只展示几张成功图片 |
+| V4 | V2、阶段 3；3D 任务还需可靠深度/TF | 深度融合、3D 定位与任务接口 | 能把稳定目标位置交给任务层，完成“发现—确认—执行—丢失处置” |
+
+推荐的并行节奏是：阶段 0 完成后即可连续做 V0～V2，同时主线推进阶段 1～5；只有任务需要识别自定义类别时才进入 V3；V4 必须等阶段 3 的安全任务状态机和 V2 的结构化检测接口都稳定后再做。YOLO 不是 FAST-LIO 或 EGO 的前置条件，阶段 6～9 可与 V1～V3 并行。
+
+### 3.3 每周推进方式
+
+每次只选一个主里程碑和一个不互相干扰的支线里程碑。例如“主线完成悬停 30 秒验收 + 支线完成离线 YOLO 基线”。每个里程碑都保存：运行命令、Git 差异、参数/模型版本、输入数据、指标和失败样例。只有满足对应验收标准才标记完成；“代码看完了”不等于阶段完成。
 
 ## 4. 阶段 0：建立可复现的仿真基线
 
@@ -893,12 +931,13 @@ void commandCallback(const quadrotor_msgs::PositionCommand::ConstPtr& cmd) {
 
 ### 阶段目标
 
-在“规划器能稳定控制 PX4 绕静态障碍”的基础上，增加更高层的自主任务决策：根据任务状态自动选择目标、等待、重试、绕行、返航或结束，并在动态障碍和复杂 world 中量化成功率。
+在“规划器能稳定控制 PX4 绕静态障碍”的基础上，增加更高层的自主任务决策：根据任务状态自动选择目标、等待、重试、绕行、返航或结束，并在动态障碍和复杂 world 中量化成功率。若 YOLO 支线已完成 V4，再把经过确认的视觉目标作为一种任务输入；视觉未验收时仍使用预设目标，不让它阻塞动态避障主线。
 
 ### 需要掌握的知识点
 
 - 分层自主系统：任务层、规划层、轨迹/控制桥接层、PX4 内环。
 - 任务状态机与规划 FSM 的区别：任务层决定下一目标，规划器负责到达当前目标。
+- 预设目标与感知目标的区别：YOLO 观测需要多帧确认、新鲜度、置信度、空间有效性和丢失处置后才能成为任务目标。
 - 动态障碍预测与仅靠频繁重规划的边界。
 - 目标可达性、规划超时、轨迹超时、碰撞风险、定位失效和模式丢失的处理。
 - geofence、最大高度、最大速度、最小障碍距离和任务总超时。
@@ -918,6 +957,7 @@ void commandCallback(const quadrotor_msgs::PositionCommand::ConstPtr& cmd) {
 - `simulation/sim_workspace/src/craic_sim/scripts/generate_craic_2026_world.py`
 - `AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/src/ego_replan_fsm.cpp`
 - `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/src/autoarming_control.cpp`
+- `AstraDrone_ros1_ws/src/Detection/yolo_detect/`，仅在 V0～V4 均按任务需求通过验收后接入。
 - `AstraDrone_ros1_ws/src/Exploration/` 和 `AstraDrone_ros1_ws/src/Swarm/`，用于确认当前仓库没有可直接使用的完整自主探索/集群实现。
 
 ### 推荐做的仿真实践任务
@@ -929,6 +969,7 @@ void commandCallback(const quadrotor_msgs::PositionCommand::ConstPtr& cmd) {
 5. 用不同障碍轨迹测试：linear、circle、waypoint，并核对 YAML 中模型名与 world 中模型名完全一致。
 6. 最后切换 CRAIC 或 forest world，先只用少量目标，再逐渐增加任务复杂度。
 7. 对每类场景重复多次，统计成功率、失败阶段、最小障碍距离、重规划次数和完成时间。
+8. 可选视觉任务：先完成“发现指定类别后悬停并记录”，再完成“飞到目标附近的安全观察点”，最后才尝试目标跟随；每一级都保留预设目标模式作为对照组。
 
 阶段 10 先只启用一个低速动态障碍。以下 YAML 字段与当前 `obstacle_controller.py` 的读取逻辑一致，且 `name` 必须与 world 中的 Gazebo model 名完全相同：
 
@@ -949,6 +990,7 @@ obstacles:
 - 规划失败或轨迹超时不会导致旧指令无限继续，任务层能进入悬停、重试、返航或降落分支。
 - 动态障碍模型按 YAML 设定运动，规划器能感知到其变化；不能只根据 Gazebo 画面猜测。
 - 每次失败都能归类为感知、定位、规划、桥接、PX4 模式或任务逻辑问题。
+- 若接入 YOLO，单帧误检不会立刻改变飞行目标，视觉观测过期或目标丢失会进入明确的悬停、搜索、返航或降落分支。
 - 推荐验收标准：为一个固定动态场景定义明确的成功条件并重复至少十次；先达到可接受的稳定成功率，再提高障碍速度或场景复杂度。
 
 ### 可能需要修改的关键文件或参数位置
@@ -958,10 +1000,214 @@ obstacles:
 - `dynamic_avoidance.world`：静态/动态模型位置、尺寸和名称。
 - `craic_sim/scripts/generate_craic_2026_world.py`：场地、障碍和坐标换算。
 - EGO 的地图范围、更新范围、膨胀、重规划阈值、速度/加速度参数。
+- YOLO 结构化观测到任务目标的适配器：类别白名单、多帧确认、观测超时、坐标 frame、geofence 和安全观察距离。
 - **根据代码结构推测**：完整任务管理器需要在 MissionControl 中新增或重构；当前 `Exploration/` 只有说明占位，仓库没有可直接运行的自主探索闭环，不应把 README 的模块描述当成现成功能。
 - 多机属于后续独立课题；在单机动态任务稳定前不建议进入 `autoarming_Mult.launch`、端口和 namespace 调试。
 
-## 15. 贯穿所有阶段的实验纪律
+## 15. YOLO 视觉支线：从离线检测到感知驱动任务
+
+### 支线目标与边界
+
+这条支线的最终目标不是“把 YOLO 跑出框”，而是建立一条可验证的视觉接口：相机稳定提供带时间戳和 frame 的图像，检测器输出结构化 2D 结果，必要时结合深度与 TF 得到 3D 目标，任务层经过多帧确认后再调用已经验收的航点或规划能力。
+
+```text
+RGB + CameraInfo [+ aligned depth]
+        -> YOLO 推理
+        -> Detection2DArray（类别、置信度、框、原始 header）
+        -> 深度/TF 定位（可选）
+        -> TargetObservationArray（目标位置、frame、时间、有效性）
+        -> 多帧确认/目标选择/丢失处置
+        -> 阶段 3 或阶段 9 已验收的控制接口
+```
+
+2D 检测、3D 定位、目标跟踪和飞行决策是四个不同问题。每一层都应能单独录包、回放和验收；不要把“检测到了”直接等同于“可以安全跟随”。
+
+当前新增任务的第一个迭代只做四件事：跑通 `testEnv.py` 并记录离线基准；确认 D435i 实际 RGB/深度/CameraInfo 接口；用 remap 跑通 2D ROS 检测；让节点发布带原图 header 的结构化检测数组。这个迭代完成前，暂不训练自定义模型、不做 TensorRT、不做 3D 融合，也不接飞行控制。
+
+### V0：YOLO 环境、离线推理与输出理解
+
+#### 需要掌握的知识点
+
+- 目标检测与图像分类的区别；类别、置信度、边界框、IoU、NMS 的含义。
+- Ultralytics 推理结果中的 `boxes.xyxy`、`boxes.cls`、`boxes.conf` 和类别名映射。
+- `imgsz`、`conf`、`iou`、设备、精度和模型大小对速度/准确率的影响。
+- 首帧加载/预热时间与稳定推理时间的区别；输入 FPS、处理 FPS 和端到端延迟的区别。
+- 当前权重的类别集合与实际无人机任务类别之间的边界；不能只凭权重文件名假定类别。
+
+#### 推荐实践任务
+
+1. 先运行 `yolo_detect/script/testEnv.py`，只验证 Python、Ultralytics、OpenCV、权重和样例图片能否正确加载；本阶段不启动 ROS、Gazebo 或飞控。
+2. 将无限显示循环改成可配置的单次/固定次数测试，输出模型路径、设备、输入尺寸、类别、置信度和每阶段耗时，确保在无图形界面时也能保存结果并正常退出。
+3. 分别用仓库 `bus.jpg`、一段短视频和至少 20 张与你任务场景接近的图片推理，保存成功与失败样例。
+4. 预热后统计至少 100 帧的平均值、P95 推理延迟和有效处理 FPS；CPU 与 GPU/TensorRT 结果分开记录。
+5. 改变 `conf`、`imgsz` 和模型尺寸时一次只改一项，记录漏检、误检和速度变化。
+
+#### 验收标准
+
+- 可以用一条固定命令重复完成离线推理，权重路径不依赖当前工作目录。
+- 能打印并解释每个检测的类别、置信度和原图坐标框，而不只看标注图片。
+- 有预热后的平均/P95 延迟与 FPS 记录，并注明硬件、模型、输入分辨率和软件环境。
+- 能明确回答最终任务目标是否属于当前 `yolov8n.pt` 的类别；若不属于，V3 为必做项。
+
+### V1：ROS 图像接口与仿真相机基线
+
+#### 需要掌握的知识点
+
+- `sensor_msgs/Image` 的 encoding、step、header、时间戳和 frame。
+- `sensor_msgs/CameraInfo` 的 K/D/P，相机分辨率，以及 RGB 与深度是否配准。
+- 相机 link 与 optical frame 的轴向约定；SDF 安装 pose、Gazebo 插件 frame 和 TF 的关系。
+- 图像发布频率、仿真时间、队列积压、压缩/原始图像的取舍。
+
+#### 本项目中应该重点阅读的文件/文件夹路径
+
+- `simulation/px4_sim_files/px4_iris_sdf/iris_mid360/iris_mid360.sdf`
+- `simulation/astra_gazebo_models/D435i/model.sdf`
+- `simulation/sim_workspace/src/sensors/realsense_ros_gazebo/`
+- `AstraDrone_ros1_ws/src/Utils/camera_sdk/`
+- `yolo_detect/script/yolo_detect.py`
+- `yolo_detect/script/yolo_detect_fusion.py`
+
+`iris_mid360` 已包含 D435i 和 FPV 相机。当前 D435i SDF 明确配置的主要话题是：
+
+```text
+/realsense_d435i/color/image_raw
+/realsense_d435i/color/camera_info
+/realsense_d435i/depth/image_raw
+/realsense_plugin/camera/local_pointclouds
+```
+
+这些是仓库配置事实，但仍应以实际运行时的 `rostopic list/info` 为准；外部 PX4/Gazebo 模型副本、插件加载失败或 namespace 都可能改变最终接口。
+
+#### 推荐实践任务
+
+1. 只启动相机仿真，不启动 YOLO，检查 RGB、深度和 CameraInfo：
+
+   ```bash
+   rostopic info /realsense_d435i/color/image_raw
+   rostopic hz /realsense_d435i/color/image_raw
+   rostopic echo -n 1 /realsense_d435i/color/camera_info
+   rostopic echo -n 1 /realsense_d435i/depth/image_raw/encoding
+   ```
+
+2. 用 `rqt_image_view` 或保存单帧确认图像方向、视场和遮挡；在 Gazebo 中放置一个已知尺寸/位置的目标，验证画面变化符合相机安装方向。
+3. 对比 RGB 与深度的分辨率、时间戳、frame 和目标轮廓；不要因为话题同时存在就假设已经像素对齐。
+4. 静止和缓慢移动各录一段只包含 RGB、深度、CameraInfo、TF、`/clock` 和 Gazebo 真值的短 bag，作为后续检测回放输入。
+5. 暂时用 remap 将实际 RGB 话题接到 2D 节点，确认能出标注图；随后再把话题改成参数，而不是长期依赖硬编码。
+
+#### 验收标准
+
+- RGB、深度和 CameraInfo 连续发布，无异常时间倒退，实际频率和 encoding 有记录。
+- 能画出 `base_link -> camera_link -> optical frame` 的 TF/安装关系，并解释图像 x/y 与相机三维坐标轴。
+- 已确认 RGB/深度是否对齐；若未对齐，V4 前必须先完成配准或选择已对齐深度话题。
+- rosbag 回放时无需 Gazebo 也能稳定复现相机输入。
+
+### V2：ROS 2D 检测节点工程化
+
+当前 `yolo_detect.py` 可以订阅图像并发布标注图，但这只是演示节点。它硬编码模型和话题，手工转换图像，没有结构化检测消息，发布图又没有继承原始 header；这些问题应在接任务层前解决。
+
+#### 推荐实践任务
+
+1. 把以下内容改成私有参数并在 launch 中给出默认值：`model_path`、`image_topic`、`annotated_topic`、`conf`、`iou`、`imgsz`、`device`、`classes`、`frame_skip` 和 `publish_annotated`。
+2. 使用 `cv_bridge` 按消息 encoding 转换输入，捕获转换异常；输出标注图继承输入消息的 `header.stamp` 和 `header.frame_id`。
+3. 定义结构化检测数组。若选用现成 `vision_msgs`，先确认 ROS1 版本和依赖可用；否则在包内定义等价消息，至少包含：
+
+   ```text
+   header                 # 必须来自原图
+   image_width/height
+   detections[]:
+     class_id/class_name
+     confidence
+     xmin/ymin/xmax/ymax  # 明确是原图像素坐标
+   ```
+
+4. 回调队列保持为 1，并采用“只处理最新帧”的工作线程或等价机制，避免推理慢于输入时延迟不断累积；不要仅用跳帧掩盖旧帧排队。
+5. 补齐 `package.xml`、`CMakeLists.txt` 和 Python 安装规则。当前包只声明了基础 ROS 依赖，而源码实际还使用 `sensor_msgs`、`geometry_msgs`、`cv_bridge`、`tf2_ros` 等；只按实际节点拆分声明，不盲目增加依赖。
+6. 在 bag 回放上测试空画面、多个目标、快速运动、输入中断和节点重启；测量 `输出时间 - 输入 header.stamp` 的端到端延迟。
+7. 再决定是否导出 ONNX/TensorRT。先固定 PyTorch 基线，并验证导出模型的类别、框和置信度与基线在容许误差内一致；`pt2eng.py` 当前硬编码相对路径，不能直接作为可复现部署流程。
+
+#### 验收标准
+
+- launch 参数可以切换模型、话题、阈值和设备，源码中没有依赖个人绝对路径。
+- 每一帧结构化检测结果与标注图使用原始图像时间戳/frame，框坐标能正确映射回原图。
+- 输入速率高于推理速率时，延迟有界，不会持续增长；无检测时也会发布带 header 的空数组。
+- 在固定 bag 上重复运行得到稳定的检测数量、类别和延迟统计。
+- 尚未启用 V4 时，节点不发布目标 3D pose，更不发布任何 MAVROS 控制话题。
+
+### V3：自定义数据集、训练和模型评估（按任务需要）
+
+如果任务目标不在当前权重的类别集合中，或者仿真/航拍视角与现有训练数据差异明显，就必须做 V3。若只是学习当前权重已有的通用类别，可以先跳过，待任务定义明确后再返回。
+
+#### 推荐实践任务
+
+1. 先写清任务合同：需要识别哪些类别、最远距离、最小目标像素尺寸、允许漏检/误检、昼夜/遮挡/视角范围，以及推理硬件预算。
+2. 数据按“场景/录制序列”划分 train/val/test，不能把相邻视频帧随机分到三个集合造成数据泄漏。
+3. 同时保留正样本、困难样本和无目标负样本；检查漏标、框越界、类别不平衡和重复图片。
+4. 先训练小模型建立基线，再一次只调整数据、增强、分辨率或模型规模中的一项。
+5. 至少报告每类 precision、recall、PR 曲线、mAP50、mAP50-95、混淆情况、固定硬件延迟和典型失败样例。
+6. Gazebo 合成数据可用于补姿态和距离覆盖，但必须单独保留真实/目标域测试集；不能用合成验证集的高分替代真实任务验证。
+7. 保存数据版本、类别 YAML、训练配置、随机种子、最佳权重和评估脚本。模型文件名应包含任务/数据版本，避免所有实验都叫 `best.pt`。
+
+#### 验收标准
+
+- 独立测试集没有与训练集同源的相邻帧泄漏。
+- 指标覆盖每个任务类别，且有按距离、遮挡或目标尺寸分组的失败分析。
+- 已选择满足任务最低召回率和延迟预算的阈值；这个阈值来自验证/测试结果，不是凭感觉设定。
+- 新模型能通过 V2 的同一 bag 回放测试，接口和时间戳行为没有因换权重而改变。
+
+### V4：RGB-D 目标定位、稳定观测与任务集成
+
+当前 `yolo_detect_fusion.py` 已展示“检测框中心取深度—相机内参反投影—TF 转换—发布 PoseStamped”的基本方向，但不能直接作为最终接口：RGB/深度没有严格同步，话题和 frame 硬编码，一帧多个目标被发布为无法区分类别/实例的多个 `PoseStamped`，TF 异常也只在日志中体现。
+
+#### 需要掌握的知识点
+
+- RGB/深度精确或近似时间同步、已对齐深度、深度 encoding/尺度和无效值。
+- 用框中心深度、框内中位数、中心区域鲁棒统计或点云关联的取舍。
+- 针孔反投影、畸变、图像缩放后坐标映射和相机内参一致性。
+- 用图像时间戳查询 TF；点、方向和协方差在 frame 变换中的区别。
+- 多帧确认、去抖、目标 ID/数据关联、超时和目标丢失状态机。
+
+#### 推荐实践任务
+
+1. 使用 `message_filters` 同步 RGB、已对齐深度和 CameraInfo，结构化检测结果通过原始 header 关联；记录同步时间差和丢帧率。
+2. 不只取单个中心像素。先在检测框中心区域过滤 0、NaN、越界和明显离群值，再用中位数等鲁棒统计得到深度，并发布深度有效标志/失败原因。
+3. 发布结构化 `TargetObservationArray`，至少携带类别、置信度、2D 框、3D 点、目标 frame、观测时间和有效性；多目标不能丢失身份信息。
+4. 用观测时间查询 `target_frame <- camera_optical_frame` TF。若只能取得最新 TF，应把结果标为降级数据，不能悄悄当成严格同步结果。
+5. 在 Gazebo 放置已知位置的单目标，按不同距离、方位和无人机姿态比较估计位置与真值，计算每轴误差、3D RMSE、P95 误差和无效深度比例。
+6. 先让无人机悬停、目标静止，再测试无人机移动，最后才测试目标移动。每次只增加一种动态因素。
+7. 任务层使用独立状态机，例如：
+
+   ```text
+   SEARCH
+     -> CANDIDATE（单帧发现）
+     -> CONFIRMED（N/M 帧满足类别、置信度和位置一致性）
+     -> HOLD_AND_OBSERVE
+     -> SEND_GOAL（调用已验收的任务/规划接口）
+     -> REACHED / TARGET_LOST / TIMEOUT
+     -> RETURN_OR_LAND
+   ```
+
+8. 初次闭环只做“检测到目标后悬停并记录位置”，再做“飞到预设观察点”，最后才做跟随。目标相对位置不得直接映射成无边界速度指令。
+
+#### 验收标准
+
+- 静止目标的 3D 位置误差有真值对比，且 TF、深度或同步失败会产生明确的无效结果，而不是发布 `(0,0,0)`。
+- 多目标输出保留类别、置信度和时间戳，任务层有确定的选择规则和多帧确认门限。
+- 视觉输入中断或目标丢失时，旧目标不会无限有效；任务层进入悬停、重新搜索、返航或降落中的预设分支。
+- YOLO/融合节点始终不拥有 MAVROS setpoint 发布权；控制仍由阶段 3 或阶段 9 的唯一控制节点负责。
+- 推荐第一项闭环验收：固定场景重复十次“起飞—悬停—发现指定目标—保持观察—返航—降落”，检测、任务和飞行失败原因均可区分。
+
+### YOLO 支线优先修改位置
+
+- `yolo_detect/script/testEnv.py`：有限次数运行、命令行参数、无 GUI 输出和基准统计。
+- `yolo_detect/script/yolo_detect.py`：参数化、标准图像转换、结构化 2D 检测消息、原始 header、最新帧处理和延迟统计。
+- `yolo_detect/script/yolo_detect_fusion.py`：RGB-D 同步、话题/frame 参数化、鲁棒深度、多目标数组、TF 时间戳和无效观测。
+- `yolo_detect/launch/yolo_detect.launch`：模型、输入/输出话题、阈值、设备和可视化参数；D435i 话题通过参数/remap 对齐。
+- `yolo_detect/CMakeLists.txt`、`yolo_detect/package.xml`：消息生成、真实运行依赖和 Python 安装。
+- `yolo_detect/CATKIN_IGNORE`：只在依赖清单、构建范围和回退方式明确后处理。
+- `simulation/px4_sim_files/px4_iris_sdf/iris_mid360/iris_mid360.sdf` 与 `simulation/astra_gazebo_models/D435i/model.sdf`：相机安装 pose、插件话题和 frame；修改后确认实际运行副本。
+- **根据代码结构推测**：结构化检测/目标观测消息和视觉任务管理器需要新增或重构；当前仓库没有一条已验收的 YOLO 驱动自主飞行闭环。
+
+## 16. 贯穿所有阶段的实验纪律
 
 1. **一次只换一个控制源**：启动前检查 `/mavros/setpoint_position/local`、`/mavros/setpoint_raw/local` 和速度 setpoint 的发布者。
 2. **先空场、低高度、低速度**：控制和轨迹稳定后再加障碍、感知和规划。
@@ -973,8 +1219,11 @@ obstacles:
 8. **把 frame 当成接口的一部分**：odom、点云、目标和轨迹不对齐时，先解决坐标关系，不靠调增益掩盖。
 9. **不要过早调 PX4 内环**：大多数初期问题来自无效参数、错误 setpoint、任务推进、frame 或多个 publisher。
 10. **保留可回退基线**：每完成一个阶段，保存一次能够重复运行的配置和实验结果，再进入下一阶段。
+11. **视觉结果必须保留原始时间信息**：检测、深度和 TF 都以输入图像时间戳为准；不能用“当前时间”掩盖处理延迟。
+12. **空结果和无效结果也是接口的一部分**：无检测、无深度、TF 失败或观测过期时发布明确状态，绝不把零坐标当成有效目标。
+13. **感知节点不直接拥有飞行控制权**：YOLO/融合层只发布观测，任务层负责确认和限界，唯一控制节点负责执行。
 
-## 16. 建议的最终学习顺序总结
+## 17. 建议的最终学习顺序总结
 
 ### 第一步：先学环境和链路
 
@@ -1000,6 +1249,10 @@ obstacles:
 
 用 rosbag、目标/实际曲线、RMSE、最大误差、完成时间和重复实验调参。完成后，你能用数据决定下一步改什么，而不是靠反复试参数碰运气。
 
+### 并行视觉支线：从 YOLO 离线推理到目标观测
+
+阶段 0 后即可完成 V0～V2：离线推理、相机基线和 ROS 2D 检测；任务需要自定义类别时再训练和评估；阶段 3 的安全任务状态机完成后，才结合已对齐深度、CameraInfo 与 TF 做 V4。完成后，你得到的是带类别、置信度、位置、frame 和时间戳的可靠观测接口，而不是一个直接控制无人机的检测脚本。
+
 ### 第七步：先验收 Mid360 仿真输入
 
 理解 Mid360 SDF、LiDAR/IMU 插件、话题类型、频率、时间戳、噪声和安装关系，保存静止及单轴运动基线 bag。完成后，你能先判断原始传感器输入是否可信，避免把仿真输入问题误判成 FAST-LIO 算法问题。
@@ -1016,8 +1269,8 @@ obstacles:
 
 先验证无障碍 `PositionCommand -> MAVROS PositionTarget` 桥接，再用阶段 7 验收的 `/Odometry` 和 `/cloud_registered` 替换 EGO 内部模拟输入，完成 frame 转换并保证唯一控制发布者。完成后，PX4/Gazebo 无人机能够基于 FAST-LIO 定位建图结果跟随 EGO 轨迹绕开静态障碍。
 
-### 第十一步：提升到任务级自主
+### 第十一步：提升到感知驱动的任务级自主
 
-加入动态障碍、复杂 world、任务状态机、超时、重试、返航和量化成功率。完成后，无人机能够按任务目标自主选择和执行动作，并在仿真环境变化时进行重规划和安全处置。
+加入动态障碍、复杂 world、任务状态机、超时、重试、返航和量化成功率。若 YOLO V4 已通过验收，再加入“发现—确认—观察/接近—目标丢失处置”。完成后，无人机能够按预设或视觉感知的任务目标自主选择和执行动作，并在仿真环境变化时进行重规划和安全处置。
 
-这条顺序的核心是：先把“能稳定控制”做扎实，再加入“按轨迹运动”；随后分开验收“原始传感器”“FAST-LIO”“EGO-Planner”三条链，最后才做系统集成和任务决策。对当前仓库而言，阶段 0～5 优先围绕 `autoarming_control`，阶段 6～7 专门完成 Mid360/FAST-LIO 学习，阶段 8 学规划，阶段 9～10 再进入 FAST-LIO/EGO/PX4 的自主闭环。
+这条顺序的核心是：先把“能稳定控制”做扎实，再加入“按轨迹运动”；随后把 Mid360/FAST-LIO/EGO 主线与相机/YOLO 视觉支线分别验收，最后才在任务层汇合。对当前仓库而言，阶段 0～5 优先围绕 `autoarming_control`，阶段 6～7 完成 Mid360/FAST-LIO，阶段 8 学规划，阶段 9～10 进入 FAST-LIO/EGO/PX4 自主闭环；YOLO 按 V0～V4 并行推进，不直接成为飞控前置条件或 setpoint 发布者。
