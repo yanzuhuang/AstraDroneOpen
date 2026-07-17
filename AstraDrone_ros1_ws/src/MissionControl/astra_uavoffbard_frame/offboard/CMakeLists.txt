@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0.2)
 project(offboard)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
-# add_compile_options(-std=c++11)
+add_compile_options(-std=c++11)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -150,6 +150,13 @@ target_link_libraries(autoarming_control
   ${catkin_LIBRARIES}
 )
 
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(trajectory_reference_test test/trajectory_reference_test.cpp)
+  if(TARGET trajectory_reference_test)
+    target_link_libraries(trajectory_reference_test ${catkin_LIBRARIES})
+  endif()
+endif()
+
 # for pub_origin.cpp build0 .exe
 add_executable(pub_origin src/pub_origin.cpp)
 target_link_libraries(pub_origin
@@ -196,10 +203,10 @@ target_link_libraries(pub_origin
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-# catkin_install_python(PROGRAMS
-#   scripts/my_python_script
-#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+catkin_install_python(PROGRAMS
+  scripts/stage4_analyze_bag.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html

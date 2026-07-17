@@ -1,6 +1,6 @@
 /**
  * @file autoarming_control.cpp
- * @brief PX4 Offboard 仿真：起飞、航点任务、返航和 PX4 原生降落
+ * @brief PX4 Offboard 仿真：航点/连续轨迹任务、返航和 PX4 原生降落
  *
  * 航点从私有参数 ~waypoints 读取，位置是相对 home 的 ENU 偏移，yaw 是
  * map/ENU 坐标系中的绝对角度。返航后切换到 AUTO.LAND，由 PX4 完成下降、
@@ -13,11 +13,17 @@
 #include <mavros_msgs/ExtendedState.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
+#include <std_msgs/Bool.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/String.h>
 #include <xmlrpcpp/XmlRpcValue.h>
 
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "offboard/trajectory_reference.h"
 
 namespace {
 
@@ -45,11 +51,28 @@ enum class FlightPhase {
     TAKEOFF,
     INITIAL_HOVER,
     WAYPOINTS,
+    TRAJECTORY_ENTRY,
+    TRACKING,
     FAILSAFE_HOVER,
     RETURN_HOME,
     LANDING,
     COMPLETED
 };
+
+const char* phase_name(FlightPhase phase) {
+    switch (phase) {
+        case FlightPhase::TAKEOFF: return "TAKEOFF";
+        case FlightPhase::INITIAL_HOVER: return "INITIAL_HOVER";
+        case FlightPhase::WAYPOINTS: return "WAYPOINTS";
+        case FlightPhase::TRAJECTORY_ENTRY: return "TRAJECTORY_ENTRY";
+        case FlightPhase::TRACKING: return "TRACKING";
+        case FlightPhase::FAILSAFE_HOVER: return "FAILSAFE_HOVER";
+        case FlightPhase::RETURN_HOME: return "RETURN_HOME";
+        case FlightPhase::LANDING: return "LANDING";
+        case FlightPhase::COMPLETED: return "COMPLETED";
+    }
+    return "UNKNOWN";
+}
 
 // MAVROS 数据回调：缓存连接、模式、解锁状态以及最新的有效本地位姿。
 void state_cb(const mavros_msgs::State::ConstPtr& msg) {
@@ -227,6 +250,29 @@ int main(int argc, char** argv) {
     double extended_state_timeout;
     double phase_timeout;
     double pose_timeout;
+    std::string mission_mode;
+    std::string trajectory_type;
+    std::string yaw_mode;
+    double speed;
+    double max_tracking_error;
+    double radius;
+    double side_length;
+    double ellipse_a;
+    double ellipse_b;
+    double center_x;
+    double center_y;
+    double fixed_yaw_deg;
+    double trajectory_entry_hold;
+    double trajectory_entry_timeout;
+    double trajectory_finish_hold;
+    double trajectory_timeout;
+    double max_track_dt;
+    double corner_slowdown_distance;
+    double corner_speed_ratio;
+    double loop_rate;
+    bool clockwise;
+    int target_laps;
+    int trajectory_samples;
 
     // 关键可调参数（均为私有参数，可在 launch/YAML 中通过 ~参数名覆盖）。
     pnh.param("takeoff_height", takeoff_height, 3.0);  // 相对 home 起飞高度（m）
@@ -245,6 +291,31 @@ int main(int argc, char** argv) {
     pnh.param("phase_timeout", phase_timeout, 60.0);  // 起飞/降落阶段超时提示阈值（s）
     pnh.param("pose_timeout", pose_timeout, 1.0);  // 位姿数据失效阈值（s）
 
+    // 阶段 4 连续轨迹参数。mission_mode=waypoints 时仍执行阶段 3 任务。
+    pnh.param<std::string>("mission_mode", mission_mode, "waypoints");
+    pnh.param<std::string>("trajectory_type", trajectory_type, "circle");
+    pnh.param<std::string>("yaw_mode", yaw_mode, "tangent");
+    pnh.param("speed", speed, 0.25);  // 新手安全默认值；参考点推进速度（m/s）
+    pnh.param("max_tracking_error", max_tracking_error, 0.30);  // 超过后暂停推进（m）
+    pnh.param("radius", radius, 1.0);
+    pnh.param("side_length", side_length, 3.0);
+    pnh.param("ellipse_a", ellipse_a, 2.0);
+    pnh.param("ellipse_b", ellipse_b, 1.0);
+    pnh.param("center_x", center_x, 0.0);  // 相对 home 的 ENU 偏移（m）
+    pnh.param("center_y", center_y, 0.0);
+    pnh.param("fixed_yaw_deg", fixed_yaw_deg, 0.0);
+    pnh.param("clockwise", clockwise, false);
+    pnh.param("target_laps", target_laps, 1);
+    pnh.param("trajectory_samples", trajectory_samples, 2000);
+    pnh.param("trajectory_entry_hold", trajectory_entry_hold, 1.0);
+    pnh.param("trajectory_entry_timeout", trajectory_entry_timeout, 45.0);
+    pnh.param("trajectory_finish_hold", trajectory_finish_hold, 1.0);
+    pnh.param("trajectory_timeout", trajectory_timeout, 300.0);
+    pnh.param("max_track_dt", max_track_dt, 0.1);  // 防止仿真卡顿后参考点跳跃（s）
+    pnh.param("corner_slowdown_distance", corner_slowdown_distance, 0.40);
+    pnh.param("corner_speed_ratio", corner_speed_ratio, 0.35);
+    pnh.param("loop_rate", loop_rate, 20.0);
+
     // 参数合法性检查，避免错误的高度、容差或超时配置进入飞行流程。
     const double yaw_tolerance = yaw_tolerance_deg * kPi / 180.0;
     if (takeoff_height <= 0.0 || initial_hover_duration < 0.0 ||
@@ -255,13 +326,44 @@ int main(int argc, char** argv) {
         return_timeout <= 0.0 || failsafe_hover_duration < 0.0 ||
         land_mode_retry_interval <= 0.0 ||
         extended_state_timeout <= 0.0 ||
-        phase_timeout <= 0.0 || pose_timeout <= 0.0) {
+        phase_timeout <= 0.0 || pose_timeout <= 0.0 ||
+        loop_rate <= 2.0) {
         ROS_FATAL("[PARAM] Invalid mission height, tolerance, duration or timeout");
         return 1;
     }
 
     std::vector<Waypoint> waypoints;
-    if (!load_waypoints(pnh, default_waypoint_hold, &waypoints)) {
+    std::unique_ptr<offboard::TrajectoryReference> trajectory;
+    if (mission_mode == "waypoints") {
+        if (!load_waypoints(pnh, default_waypoint_hold, &waypoints)) {
+            return 1;
+        }
+    } else if (mission_mode == "trajectory") {
+        const bool valid_type = trajectory_type == "circle" ||
+            trajectory_type == "square" || trajectory_type == "figure8" ||
+            trajectory_type == "ellipse";
+        const bool valid_yaw = yaw_mode == "fixed" || yaw_mode == "tangent";
+        if (!valid_type || !valid_yaw || speed <= 0.0 ||
+            max_tracking_error <= 0.0 || radius <= 0.0 ||
+            side_length <= 0.0 || ellipse_a <= 0.0 || ellipse_b <= 0.0 ||
+            target_laps <= 0 || trajectory_samples < 100 ||
+            trajectory_entry_hold < 0.0 || trajectory_entry_timeout <= 0.0 ||
+            trajectory_finish_hold < 0.0 || trajectory_timeout <= 0.0 ||
+            max_track_dt <= 0.0 || corner_slowdown_distance < 0.0 ||
+            corner_speed_ratio <= 0.0 || corner_speed_ratio > 1.0) {
+            ROS_FATAL(
+                "[PARAM] Invalid trajectory type, yaw mode, size, speed or timeout");
+            return 1;
+        }
+        trajectory.reset(new offboard::TrajectoryReference(
+            trajectory_type, center_x, center_y, radius, side_length,
+            ellipse_a, ellipse_b, clockwise, trajectory_samples));
+        if (!std::isfinite(trajectory->length()) || trajectory->length() <= 0.0) {
+            ROS_FATAL("[PARAM] Generated trajectory has invalid length");
+            return 1;
+        }
+    } else {
+        ROS_FATAL("[PARAM] ~mission_mode must be 'waypoints' or 'trajectory'");
         return 1;
     }
 
@@ -277,12 +379,18 @@ int main(int argc, char** argv) {
     ros::Publisher local_pos_pub =
         nh.advertise<geometry_msgs::PoseStamped>(
             "mavros/setpoint_position/local", 10);
+    ros::Publisher phase_pub =
+        pnh.advertise<std_msgs::String>("flight_phase", 10);
+    ros::Publisher tracking_active_pub =
+        pnh.advertise<std_msgs::Bool>("tracking_active", 10);
+    ros::Publisher trajectory_progress_pub =
+        pnh.advertise<std_msgs::Float64>("trajectory_progress", 10);
     ros::ServiceClient arming_client =
         nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
     ros::ServiceClient set_mode_client =
         nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
 
-    ros::Rate rate(20.0);  // 关键参数：OFFBOARD 目标点发布与控制循环频率（Hz）
+    ros::Rate rate(loop_rate);  // 改变频率不应改变基于真实 dt 的轨迹速度。
 
     // 等待飞控连接、位姿和 PX4 落地状态，再将当前位置记录为 home。
     while (ros::ok() &&
@@ -313,8 +421,21 @@ int main(int argc, char** argv) {
 
     ROS_INFO("[HOME] x=%.3f, y=%.3f, z=%.3f, yaw=%.1f deg",
              home_x, home_y, home_z, home_yaw * 180.0 / kPi);
-    ROS_INFO("[MISSION] %zu waypoints loaded; safe_z=%.3f",
-             waypoints.size(), safe_z);
+    if (mission_mode == "waypoints") {
+        ROS_INFO("[MISSION] %zu waypoints loaded; safe_z=%.3f",
+                 waypoints.size(), safe_z);
+    } else {
+        ROS_INFO(
+            "[TRAJECTORY] type=%s, length=%.2f m/lap, laps=%d, speed=%.2f m/s, "
+            "yaw=%s, direction=%s",
+            trajectory_type.c_str(), trajectory->length(), target_laps, speed,
+            yaw_mode.c_str(), clockwise ? "clockwise" : "counter-clockwise");
+        ROS_INFO(
+            "[TRAJECTORY] center relative to home=(%.2f, %.2f), "
+            "ideal minimum duration=%.1f s",
+            center_x, center_y,
+            trajectory->length() * target_laps / speed);
+    }
     ROS_INFO(
         "[SAFETY] Landing uses PX4 AUTO.LAND; no disarm command will be sent");
 
@@ -351,6 +472,11 @@ int main(int argc, char** argv) {
     ros::Time last_land_request(0);
     ros::Time landing_disarmed_start(0);
     geometry_msgs::PoseStamped failsafe_setpoint = setpoint;
+    double trajectory_arc = 0.0;
+    const double trajectory_total_length = trajectory
+        ? trajectory->length() * target_laps : 0.0;
+    double reference_yaw = home_yaw;
+    ros::Time last_track_time;
 
     while (ros::ok() && flight_phase != FlightPhase::COMPLETED) {
         ros::spinOnce();
@@ -483,6 +609,9 @@ int main(int argc, char** argv) {
             recovering_offboard = false;
             phase_start = now;
             target_reached = false;
+            if (flight_phase == FlightPhase::TRACKING) {
+                last_track_time = now;
+            }
         }
 
         const double current_x = current_pose.pose.position.x;
@@ -526,10 +655,15 @@ int main(int argc, char** argv) {
                               elapsed, initial_hover_duration);
 
             if (elapsed >= initial_hover_duration) {
-                flight_phase = FlightPhase::WAYPOINTS;
+                flight_phase = mission_mode == "waypoints"
+                    ? FlightPhase::WAYPOINTS : FlightPhase::TRAJECTORY_ENTRY;
                 phase_start = now;
                 target_reached = false;
-                ROS_INFO("[PHASE] WAYPOINT_1 started");
+                if (flight_phase == FlightPhase::WAYPOINTS) {
+                    ROS_INFO("[PHASE] WAYPOINT_1 started");
+                } else {
+                    ROS_INFO("[PHASE] TRAJECTORY_ENTRY started");
+                }
             }
         } else if (flight_phase == FlightPhase::WAYPOINTS) {
             // 航点任务：依次飞向各航点，进入位置/航向容差后累计停留时间。
@@ -581,6 +715,133 @@ int main(int argc, char** argv) {
                 ROS_ERROR(
                     "[TIMEOUT] WP%zu timed out; hold current position, then return home",
                     waypoint_index + 1);
+            }
+        } else if (flight_phase == FlightPhase::TRAJECTORY_ENTRY) {
+            // 先以普通位置目标到达曲线起点，避免 TRACKING 一开始就跳变。
+            const offboard::TrajectoryPoint entry = trajectory->sample(0.0);
+            const double raw_yaw = yaw_mode == "tangent"
+                ? std::atan2(entry.tangent_y, entry.tangent_x)
+                : fixed_yaw_deg * kPi / 180.0;
+            reference_yaw = offboard::unwrapAngle(raw_yaw, reference_yaw);
+            setpoint = make_setpoint(
+                home_x + entry.x, home_y + entry.y, safe_z, reference_yaw);
+            const double pos_error = position_error(current_pose, setpoint);
+            const double yaw_error = angle_error(current_yaw, reference_yaw);
+            const bool inside = pos_error <= waypoint_tolerance &&
+                yaw_error <= yaw_tolerance;
+
+            if (inside && !target_reached) {
+                target_reached = true;
+                reached_start = now;
+                ROS_INFO("[TRAJECTORY_ENTRY] Start point reached; hold timer started");
+            } else if (!inside && target_reached) {
+                target_reached = false;
+                ROS_WARN("[TRAJECTORY_ENTRY] Left tolerance; hold timer reset");
+            }
+            const double held = target_reached
+                ? (now - reached_start).toSec() : 0.0;
+            ROS_INFO_THROTTLE(
+                1.0,
+                "[TRAJECTORY_ENTRY] pos_err=%.2f m, yaw_err=%.1f deg, hold=%.1f/%.1f s",
+                pos_error, yaw_error * 180.0 / kPi, held,
+                trajectory_entry_hold);
+
+            if (target_reached && held >= trajectory_entry_hold) {
+                flight_phase = FlightPhase::TRACKING;
+                phase_start = now;
+                last_track_time = now;
+                trajectory_arc = 0.0;
+                target_reached = false;
+                ROS_INFO("[PHASE] TRACKING started; speed uses measured dt");
+            } else if (now - phase_start >
+                       ros::Duration(trajectory_entry_timeout)) {
+                failsafe_setpoint = make_setpoint(
+                    current_x, current_y, current_z, current_yaw);
+                flight_phase = FlightPhase::FAILSAFE_HOVER;
+                phase_start = now;
+                target_reached = false;
+                ROS_ERROR(
+                    "[TIMEOUT] TRAJECTORY_ENTRY failed; hold, then return home");
+            }
+        } else if (flight_phase == FlightPhase::TRACKING) {
+            // 先用上一参考点算误差；误差过大时参考点冻结，等待飞机追上。
+            const double previous_error = position_error(current_pose, setpoint);
+            double dt = (now - last_track_time).toSec();
+            last_track_time = now;
+            if (!std::isfinite(dt) || dt < 0.0) {
+                dt = 0.0;
+            }
+            dt = std::min(dt, max_track_dt);
+
+            const bool finished =
+                trajectory_arc >= trajectory_total_length - 1e-9;
+            const bool paused = !finished && previous_error > max_tracking_error;
+            const double speed_scale = trajectory->speedScale(
+                trajectory_arc, corner_slowdown_distance,
+                corner_speed_ratio);
+            if (!paused && !finished) {
+                trajectory_arc = std::min(
+                    trajectory_total_length,
+                    trajectory_arc + speed * speed_scale * dt);
+            }
+
+            const offboard::TrajectoryPoint reference =
+                trajectory->sample(trajectory_arc);
+            const double raw_yaw = yaw_mode == "tangent"
+                ? std::atan2(reference.tangent_y, reference.tangent_x)
+                : fixed_yaw_deg * kPi / 180.0;
+            reference_yaw = offboard::unwrapAngle(raw_yaw, reference_yaw);
+            setpoint = make_setpoint(
+                home_x + reference.x, home_y + reference.y,
+                safe_z, reference_yaw);
+
+            const double tracking_error = position_error(current_pose, setpoint);
+            const double yaw_error = angle_error(current_yaw, reference_yaw);
+            const double progress = trajectory_total_length > 0.0
+                ? 100.0 * trajectory_arc / trajectory_total_length : 0.0;
+            ROS_INFO_THROTTLE(
+                1.0,
+                "[TRACKING] progress=%.1f%%, ref_speed=%.2f m/s, dt=%.3f s, "
+                "pos_err=%.2f m, yaw_err=%.1f deg, %s",
+                progress, speed * speed_scale, dt, tracking_error,
+                yaw_error * 180.0 / kPi, paused ? "PAUSED" : "running");
+            if (paused) {
+                ROS_WARN_THROTTLE(
+                    1.0,
+                    "[TRACKING] Error %.2f > %.2f m; reference progress paused",
+                    previous_error, max_tracking_error);
+            }
+
+            if (trajectory_arc >= trajectory_total_length - 1e-9) {
+                const bool inside = tracking_error <= waypoint_tolerance &&
+                    yaw_error <= yaw_tolerance;
+                if (inside && !target_reached) {
+                    target_reached = true;
+                    reached_start = now;
+                    ROS_INFO("[TRACKING] Final reference reached; hold timer started");
+                } else if (!inside && target_reached) {
+                    target_reached = false;
+                    ROS_WARN("[TRACKING] Left final tolerance; hold timer reset");
+                }
+                const double held = target_reached
+                    ? (now - reached_start).toSec() : 0.0;
+                if (target_reached && held >= trajectory_finish_hold) {
+                    flight_phase = FlightPhase::RETURN_HOME;
+                    phase_start = now;
+                    target_reached = false;
+                    ROS_INFO("[PHASE] TRACKING complete; RETURN_HOME started");
+                }
+            }
+
+            if (flight_phase == FlightPhase::TRACKING &&
+                now - phase_start > ros::Duration(trajectory_timeout)) {
+                failsafe_setpoint = make_setpoint(
+                    current_x, current_y, current_z, current_yaw);
+                flight_phase = FlightPhase::FAILSAFE_HOVER;
+                phase_start = now;
+                target_reached = false;
+                ROS_ERROR(
+                    "[TIMEOUT] TRACKING timed out; hold, then return home");
             }
         } else if (flight_phase == FlightPhase::FAILSAFE_HOVER) {
             // 航点超时保护：冻结当前位置短暂悬停，然后转入返航。
@@ -690,6 +951,18 @@ int main(int argc, char** argv) {
                     "and COM_DISARM_LAND");
             }
         }
+
+        // 发布阶段 4 验收辅助话题；rosbag 分析脚本据此只统计 TRACKING。
+        std_msgs::String phase_message;
+        phase_message.data = phase_name(flight_phase);
+        phase_pub.publish(phase_message);
+        std_msgs::Bool tracking_active_message;
+        tracking_active_message.data = flight_phase == FlightPhase::TRACKING;
+        tracking_active_pub.publish(tracking_active_message);
+        std_msgs::Float64 progress_message;
+        progress_message.data = trajectory_total_length > 0.0
+            ? std::min(1.0, trajectory_arc / trajectory_total_length) : 0.0;
+        trajectory_progress_pub.publish(progress_message);
 
         // 每个控制周期都持续发布当前阶段的目标位姿。
         setpoint.header.stamp = now;
