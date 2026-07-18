@@ -72,11 +72,12 @@ def analyze(path):
             if first_time is None:
                 first_time = time_sec
             last_time = time_sec
-            errors.append(distance(
-                message.pose.position, latest_odom.pose.pose.position))
-            yaw_errors.append(abs(angle_difference(
-                yaw_from_quaternion(message.pose.orientation),
-                yaw_from_quaternion(latest_odom.pose.pose.orientation))))
+            setpoint_position = message.pose.position
+            odom_position = latest_odom.pose.pose.position
+            setpoint_yaw = yaw_from_quaternion(message.pose.orientation)
+            odom_yaw = yaw_from_quaternion(latest_odom.pose.pose.orientation)
+            errors.append(distance(setpoint_position, odom_position))
+            yaw_errors.append(abs(angle_difference(setpoint_yaw, odom_yaw)))
             velocity = latest_odom.twist.twist.linear
             actual_speeds.append(math.sqrt(
                 velocity.x * velocity.x +
@@ -87,11 +88,11 @@ def analyze(path):
                 dt = time_sec - previous_time
                 if 0.0 < dt < 0.5:
                     step = distance(
-                        message.pose.position,
+                        setpoint_position,
                         previous_setpoint.pose.position)
                     reference_speeds.append(step / dt)
                     yaw_steps.append(abs(angle_difference(
-                        yaw_from_quaternion(message.pose.orientation),
+                        setpoint_yaw,
                         yaw_from_quaternion(previous_setpoint.pose.orientation))))
             previous_setpoint = message
             previous_time = time_sec

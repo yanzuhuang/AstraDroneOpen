@@ -29,6 +29,10 @@ namespace {
 
 // 全局状态缓存与任务阶段定义：回调更新飞控状态，主循环据此推进任务。
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kPrestreamSetpointCount = 100;
+constexpr double kModeRequestIntervalSec = 5.0;
+constexpr double kMinimumLoopRateHz = 2.0;
+constexpr double kTrajectoryCompletionEpsilon = 1e-9;
 
 mavros_msgs::State current_state;
 mavros_msgs::ExtendedState current_extended_state;
@@ -327,7 +331,7 @@ int main(int argc, char** argv) {
         land_mode_retry_interval <= 0.0 ||
         extended_state_timeout <= 0.0 ||
         phase_timeout <= 0.0 || pose_timeout <= 0.0 ||
-        loop_rate <= 2.0) {
+        loop_rate <= kMinimumLoopRateHz) {
         ROS_FATAL("[PARAM] Invalid mission height, tolerance, duration or timeout");
         return 1;
     }
@@ -443,8 +447,8 @@ int main(int argc, char** argv) {
         make_setpoint(home_x, home_y, home_z, home_yaw);
 
     // 切入 OFFBOARD 前预发送目标点，满足 PX4 对连续 setpoint 数据流的要求。
-    // 关键参数：100 次 / 20 Hz，约预发送 5 秒。
-    for (int i = 0; ros::ok() && i < 100; ++i) {
+    // 发送次数固定，持续时间由可配置的 loop_rate 决定。
+    for (int i = 0; ros::ok() && i < kPrestreamSetpointCount; ++i) {
         setpoint.header.stamp = ros::Time::now();
         local_pos_pub.publish(setpoint);
         ROS_INFO_THROTTLE(1.0, "[PRESTREAM] Holding home before OFFBOARD");
@@ -487,7 +491,7 @@ int main(int argc, char** argv) {
         if (current_state.connected &&
             flight_phase != FlightPhase::LANDING &&
             current_state.mode != "OFFBOARD" &&
-            now - last_request > ros::Duration(5.0)) {
+            now - last_request > ros::Duration(kModeRequestIntervalSec)) {
             if (set_mode_client.call(offboard_request) &&
                 offboard_request.response.mode_sent) {
                 ROS_INFO("[MODE] OFFBOARD request sent");
@@ -497,7 +501,7 @@ int main(int argc, char** argv) {
             last_request = now;
         } else if (current_state.connected && !flight_started &&
                    !current_state.armed &&
-                   now - last_request > ros::Duration(5.0)) {
+                   now - last_request > ros::Duration(kModeRequestIntervalSec)) {
             if (arming_client.call(arm_request) && arm_request.response.success) {
                 ROS_INFO("[ARM] Arm request accepted");
             } else {
@@ -774,7 +778,8 @@ int main(int argc, char** argv) {
             dt = std::min(dt, max_track_dt);
 
             const bool finished =
-                trajectory_arc >= trajectory_total_length - 1e-9;
+                trajectory_arc >=
+                    trajectory_total_length - kTrajectoryCompletionEpsilon;
             const bool paused = !finished && previous_error > max_tracking_error;
             const double speed_scale = trajectory->speedScale(
                 trajectory_arc, corner_slowdown_distance,
@@ -812,7 +817,8 @@ int main(int argc, char** argv) {
                     previous_error, max_tracking_error);
             }
 
-            if (trajectory_arc >= trajectory_total_length - 1e-9) {
+            if (trajectory_arc >=
+                trajectory_total_length - kTrajectoryCompletionEpsilon) {
                 const bool inside = tracking_error <= waypoint_tolerance &&
                     yaw_error <= yaw_tolerance;
                 if (inside && !target_reached) {

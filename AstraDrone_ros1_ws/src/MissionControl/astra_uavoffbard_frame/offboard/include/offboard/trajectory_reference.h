@@ -68,9 +68,6 @@ public:
         double local_s = 0.0;
         if (length_ > 0.0) {
             local_s = std::fmod(std::max(0.0, travelled_metres), length_);
-            if (local_s < 0.0) {
-                local_s += length_;
-            }
         }
 
         const std::vector<double>::const_iterator upper = std::upper_bound(

@@ -19,6 +19,19 @@ TEST(TrajectoryReference, CircleHasExpectedLengthAndStart) {
     EXPECT_NEAR(start.tangent_y, 1.0, 0.01);
 }
 
+TEST(TrajectoryReference, ClosedPathWrapsAndNegativeDistanceClampsToStart) {
+    offboard::TrajectoryReference path(
+        "circle", 1.0, -2.0, 2.0, 3.0, 2.0, 1.0, false, 2000);
+    const offboard::TrajectoryPoint start = path.sample(0.0);
+    const offboard::TrajectoryPoint wrapped = path.sample(path.length());
+    const offboard::TrajectoryPoint clamped = path.sample(-1.0);
+
+    EXPECT_NEAR(wrapped.x, start.x, 1e-9);
+    EXPECT_NEAR(wrapped.y, start.y, 1e-9);
+    EXPECT_NEAR(clamped.x, start.x, 1e-9);
+    EXPECT_NEAR(clamped.y, start.y, 1e-9);
+}
+
 TEST(TrajectoryReference, ArcLengthSamplingProducesEqualFigure8Steps) {
     offboard::TrajectoryReference path(
         "figure8", 0.0, 0.0, 2.0, 3.0, 2.0, 1.0, false, 4000);

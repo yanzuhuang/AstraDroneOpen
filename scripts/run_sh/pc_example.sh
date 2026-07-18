@@ -14,7 +14,7 @@ if tmux has-session -t pc_example 2>/dev/null; then
 fi
 tmux new-session -d -s pc_example
 
-# split
+# 创建五个任务窗格。
 tmux split-window -h
 tmux select-pane -t 0
 tmux split-window -v
@@ -24,14 +24,14 @@ tmux select-pane -t 0
 tmux split-window -v
 
 tmux select-pane -t 0
-tmux send-keys "roscore &" C-m 
+tmux send-keys "roscore &" C-m
 
 tmux select-pane -t 1
-tmux send-keys "sleep 3s" C-m 
+tmux send-keys "sleep 3s" C-m
 tmux send-keys "roslaunch $HOME/AstraDroneOpen/simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch world:=$HOME/AstraDroneOpen/simulation/astra_gazebo_worlds/forest.world" C-m
 
 tmux select-pane -t 2
-tmux send-keys "sleep 6s" C-m 
+tmux send-keys "sleep 6s" C-m
 tmux send-keys "astra" C-m
 tmux send-keys "roslaunch fast_lio mapping_mid360.launch rviz:=false" C-m
 
@@ -45,6 +45,6 @@ else
 fi
 
 tmux select-pane -t 4
-tmux send-keys "qgc" C-m 
+tmux send-keys "qgc" C-m
 
 tmux -2 attach-session -t pc_example
