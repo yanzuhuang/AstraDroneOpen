@@ -72,6 +72,13 @@ double positionDistance(const geometry_msgs::PoseStamped& lhs,
   return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+double horizontalDistance(const geometry_msgs::PoseStamped& lhs,
+                          const geometry_msgs::PoseStamped& rhs) {
+  const double dx = rhs.pose.position.x - lhs.pose.position.x;
+  const double dy = rhs.pose.position.y - lhs.pose.position.y;
+  return std::hypot(dx, dy);
+}
+
 geometry_msgs::PoseStamped commandToPose(
     const quadrotor_msgs::PositionCommand& command,
     const std::string& fallback_frame) {
@@ -114,9 +121,7 @@ bool isWithinBounds(const geometry_msgs::PoseStamped& target,
     return false;
   }
 
-  const double dx = target.pose.position.x - home.pose.position.x;
-  const double dy = target.pose.position.y - home.pose.position.y;
-  if (std::hypot(dx, dy) > bounds.max_horizontal_radius) {
+  if (horizontalDistance(target, home) > bounds.max_horizontal_radius) {
     if (reason != nullptr) {
       *reason = "horizontal distance from home exceeds the configured radius";
     }

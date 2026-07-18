@@ -8,7 +8,7 @@
   <arg name="Y" default="0"/>
 
   <arg name="vehicle" default="iris_mid360"/>
-  <arg name="world" default="$(find env_map)../../../astra_gazebo_worlds/dynamic_avoidance.world"/>
+  <arg name="world" default="$(find env_map)/../../../astra_gazebo_worlds/dynamic_avoidance.world"/>
   <arg name="sdf" default="$(find mavlink_sitl_gazebo)/models/$(arg vehicle)/$(arg vehicle).sdf"/>
 
   <arg name="gui" default="true"/>

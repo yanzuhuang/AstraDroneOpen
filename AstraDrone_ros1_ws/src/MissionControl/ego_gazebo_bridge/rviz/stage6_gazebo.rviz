@@ -1,0 +1,242 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 0
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /FAST-LIO1
+        - /EGO-Planner1
+      Splitter Ratio: 0.5
+    Tree Height: 620
+  - Class: rviz/Selection
+    Name: Selection
+  - Class: rviz/Tool Properties
+    Expanded:
+      - /2D Nav Goal1
+    Name: Tool Properties
+    Splitter Ratio: 0.5
+  - Class: rviz/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz/Time
+    Name: Time
+    SyncMode: 0
+    SyncSource: Registered Cloud
+Preferences:
+  PromptSaveOnExit: true
+Toolbars:
+  toolButtonStyle: 2
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz/Grid
+      Color: 120; 120; 120
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 40
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/Group
+      Displays:
+        - Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 3
+            Min Value: -1
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 255; 255
+          Color Transformer: AxisColor
+          Decay Time: 1
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 80; 80
+          Min Color: 80; 120; 255
+          Name: Registered Cloud
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 2
+          Size (m): 0.03
+          Style: Points
+          Topic: /cloud_registered
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Angle Tolerance: 0.1
+          Class: rviz/Odometry
+          Enabled: true
+          Keep: 20
+          Name: FAST-LIO Odometry
+          Position Tolerance: 0.1
+          Queue Size: 10
+          Shape:
+            Alpha: 1
+            Axes Length: 0.5
+            Axes Radius: 0.05
+            Color: 255; 170; 0
+            Head Length: 0.1
+            Head Radius: 0.05
+            Shaft Length: 0.3
+            Shaft Radius: 0.03
+            Value: Axes
+          Topic: /Odometry
+          Unreliable: false
+          Value: true
+      Enabled: true
+      Name: FAST-LIO
+    - Class: rviz/Group
+      Displays:
+        - Alpha: 0.45
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 2
+            Min Value: 0
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 80; 80
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: Inflated Occupancy
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.1
+          Style: Boxes
+          Topic: /grid_map/occupancy_inflate
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: false
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /ego_planner_node/goal_point
+          Name: Goal
+          Namespaces:
+            "": true
+          Queue Size: 10
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /ego_planner_node/global_list
+          Name: Global Reference
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /ego_planner_node/optimal_list
+          Name: Optimized Trajectory
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: false
+          Marker Topic: /ego_planner_node/a_star_list
+          Name: A-Star Search
+          Namespaces: {}
+          Queue Size: 100
+          Value: false
+      Enabled: true
+      Name: EGO-Planner
+    - Class: rviz/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 0.5
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Tree: {}
+      Update Interval: 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Default Light: true
+    Fixed Frame: camera_init
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+    - Class: rviz/SetInitialPose
+      Topic: /initialpose
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+    - Class: rviz/PublishPoint
+      Single click: true
+      Topic: /clicked_point
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 18
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 1
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.65
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 0.8
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd00000004000000000000018000000300fc0200000008fb000000100044006900730070006c006100790073010000003d000002e0000000c700fffffffb0000001200530065006c0065006300740069006f006e0000000000ffffffff0000006300fffffffb0000001a0054006f006f006c002000500072006f00700065007200740069006500730200000000000000000000000000000000fb0000000a00560069006500770073010000032200000175000000a000fffffffb0000000800540069006d0065010000049d000001230000000000000000000000010000010f00000300fc0200000001fb0000000a00560069006500770073010000003d00000300000000a000ffffff00000003000004c40000003dfc0100000002fb0000000800540069006d00650000000000ffffffff0000000000000000fb000000080054006f006f006c00730100000000000004c400000000000000000000000000000000000004000000040000000800000008fc00000000
+  Selection:
+    collapsed: false
+  Time:
+    collapsed: false
+  Tool Properties:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 1220
+  X: 40
+  Y: 40

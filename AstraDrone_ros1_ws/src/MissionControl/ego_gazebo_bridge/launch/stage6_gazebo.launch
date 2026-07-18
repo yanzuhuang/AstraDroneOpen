@@ -7,6 +7,8 @@
   <arg name="enable_control" default="false"/>
   <arg name="auto_track_on_command" default="false"/>
   <arg name="rviz" default="false"/>
+  <arg name="rviz_config"
+       default="$(find ego_gazebo_bridge)/rviz/stage6_gazebo.rviz"/>
 
   <arg name="planning_frame" default="camera_init"/>
   <arg name="mavros_frame" default="map"/>
@@ -22,12 +24,17 @@
   <arg name="manual_target_height" default="1.0"/>
   <arg name="obstacles_inflation" default="0.3"/>
 
-  <!-- Publish this only after proving both frames have the same origin/yaw. -->
-  <arg name="publish_identity_planning_tf" default="false"/>
+  <!--
+    The Gazebo MID360/FAST-LIO stack and MAVROS local ENU start aligned in this
+    simulation. The bridge still checks their live position/yaw agreement
+    before it accepts EGO tracking. Override this to false when supplying a
+    measured, non-identity transform.
+  -->
+  <arg name="publish_identity_planning_tf" default="true"/>
   <node if="$(arg publish_identity_planning_tf)"
         pkg="tf2_ros" type="static_transform_publisher"
         name="verified_map_to_planning_frame"
-        args="0 0 0 0 0 0 $(arg mavros_frame) $(arg planning_frame)"/>
+        args="0 0 0 0 0 0 1 $(arg mavros_frame) $(arg planning_frame)"/>
 
   <include file="$(find ego_planner)/launch/advanced_param.xml">
     <arg name="map_size_x_" value="$(arg map_size_x)"/>
@@ -99,5 +106,5 @@
   </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="stage6_rviz"
-        args="-f $(arg planning_frame)"/>
+        args="-d $(arg rviz_config) -f $(arg planning_frame)"/>
 </launch>

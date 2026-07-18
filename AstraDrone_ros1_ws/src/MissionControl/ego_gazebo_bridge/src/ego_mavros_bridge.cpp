@@ -369,10 +369,23 @@ void EgoMavrosBridge::cloudCallback(
 void EgoMavrosBridge::commandCallback(
     const quadrotor_msgs::PositionCommand::ConstPtr& message) {
   if (message->trajectory_flag !=
-          quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY ||
-      !isFinitePositionCommand(*message)) {
-    ROS_ERROR_THROTTLE(1.0,
-                       "[BRIDGE] Rejected invalid/non-ready PositionCommand.");
+      quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY) {
+    ROS_WARN_THROTTLE(
+        1.0,
+        "[BRIDGE] PositionCommand ignored: trajectory_flag=%u, expected READY=%u.",
+        static_cast<unsigned int>(message->trajectory_flag),
+        static_cast<unsigned int>(
+            quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY));
+    return;
+  }
+  if (!isFinitePositionCommand(*message)) {
+    ROS_ERROR_THROTTLE(
+        1.0,
+        "[BRIDGE] PositionCommand rejected: NaN/Inf in p=(%.3f, %.3f, %.3f), v=(%.3f, %.3f, %.3f), a=(%.3f, %.3f, %.3f), yaw=%.3f, yaw_dot=%.3f.",
+        message->position.x, message->position.y, message->position.z,
+        message->velocity.x, message->velocity.y, message->velocity.z,
+        message->acceleration.x, message->acceleration.y,
+        message->acceleration.z, message->yaw, message->yaw_dot);
     return;
   }
 
@@ -388,8 +401,15 @@ void EgoMavrosBridge::commandCallback(
 
   if (have_home_ &&
       !isWithinBounds(mavros_target, home_pose_, config_.bounds, &reason)) {
-    ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Command rejected: %s",
-                       reason.c_str());
+    ROS_ERROR_THROTTLE(
+        1.0,
+        "[BRIDGE] Command rejected: %s; target=(%.2f, %.2f, %.2f), home=(%.2f, %.2f, %.2f), horizontal_distance=%.2f m, radius_limit=%.2f m.",
+        reason.c_str(), mavros_target.pose.position.x,
+        mavros_target.pose.position.y, mavros_target.pose.position.z,
+        home_pose_.pose.position.x, home_pose_.pose.position.y,
+        home_pose_.pose.position.z,
+        horizontalDistance(mavros_target, home_pose_),
+        config_.bounds.max_horizontal_radius);
     return;
   }
 
@@ -435,9 +455,29 @@ void EgoMavrosBridge::goalCallback(
     ROS_ERROR("[BRIDGE] Goal transform failed: %s", reason.c_str());
     return;
   }
+
+  geometry_msgs::PoseStamped mavros_goal;
+  if (!transformToMavros(planning_goal, &mavros_goal, &reason)) {
+    ROS_ERROR("[BRIDGE] Goal validation transform failed: %s", reason.c_str());
+    return;
+  }
+  const double goal_horizontal_distance =
+      have_home_ ? horizontalDistance(mavros_goal, home_pose_) : 0.0;
+  if (have_home_ &&
+      goal_horizontal_distance > config_.bounds.max_horizontal_radius) {
+    ROS_WARN(
+        "[BRIDGE] Goal rejected before planning: goal=(%.2f, %.2f) map, home=(%.2f, %.2f) map, horizontal_distance=%.2f m exceeds radius_limit=%.2f m.",
+        mavros_goal.pose.position.x, mavros_goal.pose.position.y,
+        home_pose_.pose.position.x, home_pose_.pose.position.y,
+        goal_horizontal_distance, config_.bounds.max_horizontal_radius);
+    return;
+  }
   planning_goal.header.stamp = now;
   goal_publisher_.publish(planning_goal);
-  ROS_INFO("[BRIDGE] Validated goal forwarded to EGO-Planner.");
+  ROS_INFO(
+      "[BRIDGE] Validated goal forwarded to EGO-Planner: planning=(%.2f, %.2f), horizontal_distance_from_home=%.2f m.",
+      planning_goal.pose.position.x, planning_goal.pose.position.y,
+      goal_horizontal_distance);
 }
 
 bool EgoMavrosBridge::trackingService(

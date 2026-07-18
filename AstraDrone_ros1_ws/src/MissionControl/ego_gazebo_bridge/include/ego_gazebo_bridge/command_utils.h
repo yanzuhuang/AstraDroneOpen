@@ -23,6 +23,8 @@ double yawFromQuaternion(const geometry_msgs::Quaternion& quaternion);
 double angularDistance(double from, double to);
 double positionDistance(const geometry_msgs::PoseStamped& lhs,
                         const geometry_msgs::PoseStamped& rhs);
+double horizontalDistance(const geometry_msgs::PoseStamped& lhs,
+                          const geometry_msgs::PoseStamped& rhs);
 
 geometry_msgs::PoseStamped commandToPose(
     const quadrotor_msgs::PositionCommand& command,

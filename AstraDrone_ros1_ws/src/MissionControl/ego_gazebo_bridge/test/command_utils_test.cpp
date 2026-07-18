@@ -77,6 +77,12 @@ TEST(CommandBoundsTest, EnforcesHeightAndHorizontalEnvelope) {
                               bounds, &reason));
 }
 
+TEST(CommandBoundsTest, ReportsHorizontalDistance) {
+  const auto home = makePose(-1.0, 2.0, 0.0, 0.0);
+  const auto target = makePose(2.0, 6.0, 10.0, 0.0);
+  EXPECT_NEAR(5.0, horizontalDistance(home, target), 1e-12);
+}
+
 TEST(CommandLimiter, LimitsPositionAndShortestYawStep) {
   const auto current = makePose(0.0, 0.0, 0.0, 170.0 * kPi / 180.0);
   const auto target = makePose(3.0, 4.0, 0.0, -170.0 * kPi / 180.0);
