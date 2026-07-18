@@ -3,6 +3,7 @@
 
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
@@ -56,6 +57,7 @@ namespace ego_planner
     int waypoint_num_;
     double planning_horizen_, planning_horizen_time_;
     double emergency_time_;
+    double manual_target_height_;
 
     /* planning data */
     bool trigger_, have_target_, have_odom_, have_new_target_;

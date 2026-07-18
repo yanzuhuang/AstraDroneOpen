@@ -1,0 +1,103 @@
+<launch>
+  <!--
+    Stage 6 integration layer only. Start PX4/Gazebo, MAVROS and FAST-LIO in
+    their own terminals before this file. EGO's mock map and SO3 simulator are
+    intentionally not included here.
+  -->
+  <arg name="enable_control" default="false"/>
+  <arg name="auto_track_on_command" default="false"/>
+  <arg name="rviz" default="false"/>
+
+  <arg name="planning_frame" default="camera_init"/>
+  <arg name="mavros_frame" default="map"/>
+  <arg name="odom_topic" default="/Odometry"/>
+  <arg name="cloud_topic" default="/cloud_registered"/>
+
+  <arg name="map_size_x" default="40.0"/>
+  <arg name="map_size_y" default="40.0"/>
+  <arg name="map_size_z" default="3.0"/>
+  <arg name="max_vel" default="0.5"/>
+  <arg name="max_acc" default="1.0"/>
+  <arg name="planning_horizon" default="7.5"/>
+  <arg name="manual_target_height" default="1.0"/>
+  <arg name="obstacles_inflation" default="0.3"/>
+
+  <!-- Publish this only after proving both frames have the same origin/yaw. -->
+  <arg name="publish_identity_planning_tf" default="false"/>
+  <node if="$(arg publish_identity_planning_tf)"
+        pkg="tf2_ros" type="static_transform_publisher"
+        name="verified_map_to_planning_frame"
+        args="0 0 0 0 0 0 $(arg mavros_frame) $(arg planning_frame)"/>
+
+  <include file="$(find ego_planner)/launch/advanced_param.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+
+    <!-- Cloud input is used; these depth-camera topics are intentionally idle. -->
+    <arg name="camera_pose_topic" value="/stage6/unused_camera_pose"/>
+    <arg name="depth_topic" value="/stage6/unused_depth"/>
+    <arg name="cx" value="321.04638671875"/>
+    <arg name="cy" value="243.44969177246094"/>
+    <arg name="fx" value="387.229248046875"/>
+    <arg name="fy" value="387.229248046875"/>
+
+    <arg name="max_vel" value="$(arg max_vel)"/>
+    <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+    <arg name="flight_type" value="1"/>
+    <arg name="planning_frame" value="$(arg planning_frame)"/>
+    <arg name="manual_target_height" value="$(arg manual_target_height)"/>
+    <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
+
+    <!-- Unused for flight_type=1; explicit values keep the include contract complete. -->
+    <arg name="point_num" value="0"/>
+    <arg name="point0_x" value="0.0"/>
+    <arg name="point0_y" value="0.0"/>
+    <arg name="point0_z" value="1.0"/>
+    <arg name="point1_x" value="0.0"/>
+    <arg name="point1_y" value="0.0"/>
+    <arg name="point1_z" value="1.0"/>
+    <arg name="point2_x" value="0.0"/>
+    <arg name="point2_y" value="0.0"/>
+    <arg name="point2_z" value="1.0"/>
+    <arg name="point3_x" value="0.0"/>
+    <arg name="point3_y" value="0.0"/>
+    <arg name="point3_z" value="1.0"/>
+    <arg name="point4_x" value="0.0"/>
+    <arg name="point4_y" value="0.0"/>
+    <arg name="point4_z" value="1.0"/>
+  </include>
+
+  <node pkg="ego_planner" type="traj_server" name="traj_server" output="screen">
+    <remap from="/position_cmd" to="/planning/pos_cmd"/>
+    <remap from="/odom_world" to="$(arg odom_topic)"/>
+    <param name="traj_server/time_forward" value="1.0"/>
+    <param name="traj_server/frame_id" value="$(arg planning_frame)"/>
+  </node>
+
+  <node pkg="waypoint_generator" type="waypoint_generator"
+        name="waypoint_generator" output="screen">
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="~goal" to="/planning/goal"/>
+    <remap from="~traj_start_trigger" to="/traj_start_trigger"/>
+    <param name="waypoint_type" value="manual-lonely-waypoint"/>
+    <param name="frame_id" value="$(arg planning_frame)"/>
+  </node>
+
+  <node pkg="ego_gazebo_bridge" type="ego_mavros_bridge"
+        name="ego_mavros_bridge" output="screen" required="true">
+    <rosparam command="load" file="$(find ego_gazebo_bridge)/config/stage6_gazebo.yaml"/>
+    <param name="enable_control" value="$(arg enable_control)"/>
+    <param name="auto_track_on_command" value="$(arg auto_track_on_command)"/>
+    <param name="planning_frame" value="$(arg planning_frame)"/>
+    <param name="mavros_frame" value="$(arg mavros_frame)"/>
+    <param name="planner_odom_topic" value="$(arg odom_topic)"/>
+    <param name="cloud_topic" value="$(arg cloud_topic)"/>
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="stage6_rviz"
+        args="-f $(arg planning_frame)"/>
+</launch>

@@ -8,8 +8,11 @@ namespace ego_planner
   {
     current_wp_ = 0;
     exec_state_ = FSM_EXEC_STATE::INIT;
+    trigger_ = false;
     have_target_ = false;
     have_odom_ = false;
+    have_new_target_ = false;
+    flag_escape_emergency_ = false;
 
     /*  fsm param  */
     nh.param("fsm/flight_type", target_type_, -1);
@@ -18,13 +21,48 @@ namespace ego_planner
     nh.param("fsm/planning_horizon", planning_horizen_, -1.0);
     nh.param("fsm/planning_horizen_time", planning_horizen_time_, -1.0);
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
+    nh.param("fsm/manual_target_height", manual_target_height_, 1.0);
+
+    if (target_type_ != TARGET_TYPE::MANUAL_TARGET &&
+        target_type_ != TARGET_TYPE::PRESET_TARGET)
+    {
+      ROS_FATAL("fsm/flight_type must be 1 (manual) or 2 (preset), got %d.", target_type_);
+      ros::shutdown();
+      return;
+    }
+
+    if (!std::isfinite(manual_target_height_) || manual_target_height_ <= 0.0)
+    {
+      ROS_WARN("Invalid fsm/manual_target_height=%.3f; using 1.0 m.", manual_target_height_);
+      manual_target_height_ = 1.0;
+    }
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
+    if (waypoint_num_ < 0 || waypoint_num_ > 50)
+    {
+      ROS_FATAL("fsm/waypoint_num must be in [0, 50], got %d.", waypoint_num_);
+      ros::shutdown();
+      return;
+    }
+    if (target_type_ == TARGET_TYPE::PRESET_TARGET && waypoint_num_ == 0)
+    {
+      ROS_FATAL("Preset flight requires at least one waypoint.");
+      ros::shutdown();
+      return;
+    }
     for (int i = 0; i < waypoint_num_; i++)
     {
       nh.param("fsm/waypoint" + to_string(i) + "_x", waypoints_[i][0], -1.0);
       nh.param("fsm/waypoint" + to_string(i) + "_y", waypoints_[i][1], -1.0);
       nh.param("fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2], -1.0);
+      if (!std::isfinite(waypoints_[i][0]) ||
+          !std::isfinite(waypoints_[i][1]) ||
+          !std::isfinite(waypoints_[i][2]))
+      {
+        ROS_FATAL("Waypoint %d contains NaN/Inf.", i);
+        ros::shutdown();
+        return;
+      }
     }
 
     /* initialize main modules */
@@ -62,9 +100,8 @@ namespace ego_planner
       wps[i](0) = waypoints_[i][0];
       wps[i](1) = waypoints_[i][1];
       wps[i](2) = waypoints_[i][2];
-
-      end_pt_ = wps.back();
     }
+    end_pt_ = wps.back();
     bool success = planner_manager_->planGlobalTrajWaypoints(odom_pos_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), wps, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     for (size_t i = 0; i < (size_t)waypoint_num_; i++)
@@ -108,15 +145,33 @@ namespace ego_planner
 
   void EGOReplanFSM::waypointCallback(const nav_msgs::PathConstPtr &msg)
   {
+    if (!have_odom_)
+    {
+      ROS_WARN("Ignoring waypoint until valid odometry is available.");
+      return;
+    }
+    if (msg->poses.empty())
+    {
+      ROS_WARN("Ignoring empty waypoint path.");
+      return;
+    }
+
     if (msg->poses[0].pose.position.z < -0.1)
       return;
+
+    const auto &goal = msg->poses[0].pose.position;
+    if (!std::isfinite(goal.x) || !std::isfinite(goal.y))
+    {
+      ROS_ERROR("Ignoring waypoint with NaN/Inf coordinates.");
+      return;
+    }
 
     cout << "Triggered!" << endl;
     trigger_ = true;
     init_pt_ = odom_pos_;
 
     bool success = false;
-    end_pt_ << msg->poses[0].pose.position.x, msg->poses[0].pose.position.y, 1.0;
+    end_pt_ << goal.x, goal.y, manual_target_height_;
     success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
@@ -154,20 +209,33 @@ namespace ego_planner
 
   void EGOReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
   {
-    odom_pos_(0) = msg->pose.pose.position.x;
-    odom_pos_(1) = msg->pose.pose.position.y;
-    odom_pos_(2) = msg->pose.pose.position.z;
+    const auto &position = msg->pose.pose.position;
+    const auto &orientation = msg->pose.pose.orientation;
+    const auto &velocity = msg->twist.twist.linear;
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z) || !std::isfinite(velocity.x) ||
+        !std::isfinite(velocity.y) || !std::isfinite(velocity.z) ||
+        !std::isfinite(orientation.x) || !std::isfinite(orientation.y) ||
+        !std::isfinite(orientation.z) || !std::isfinite(orientation.w))
+    {
+      ROS_ERROR_THROTTLE(1.0, "Ignoring odometry containing NaN/Inf.");
+      return;
+    }
 
-    odom_vel_(0) = msg->twist.twist.linear.x;
-    odom_vel_(1) = msg->twist.twist.linear.y;
-    odom_vel_(2) = msg->twist.twist.linear.z;
+    odom_pos_(0) = position.x;
+    odom_pos_(1) = position.y;
+    odom_pos_(2) = position.z;
+
+    odom_vel_(0) = velocity.x;
+    odom_vel_(1) = velocity.y;
+    odom_vel_(2) = velocity.z;
 
     //odom_acc_ = estimateAcc( msg );
 
-    odom_orient_.w() = msg->pose.pose.orientation.w;
-    odom_orient_.x() = msg->pose.pose.orientation.x;
-    odom_orient_.y() = msg->pose.pose.orientation.y;
-    odom_orient_.z() = msg->pose.pose.orientation.z;
+    odom_orient_.w() = orientation.w;
+    odom_orient_.x() = orientation.x;
+    odom_orient_.y() = orientation.y;
+    odom_orient_.z() = orientation.z;
 
     have_odom_ = true;
   }

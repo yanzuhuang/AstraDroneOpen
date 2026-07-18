@@ -35,6 +35,9 @@
   <arg name="point4_z"/>
 
   <arg name="flight_type"/>
+  <arg name="planning_frame" default="world"/>
+  <arg name="manual_target_height" default="1.0"/>
+  <arg name="obstacles_inflation" default="0.099"/>
 
   <!-- main node -->
   <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen">
@@ -51,6 +54,8 @@
     <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/> <!--always set to 1.5 times grater than sensing horizen-->
     <param name="fsm/planning_horizen_time" value="3" type="double"/>
     <param name="fsm/emergency_time_" value="1.0" type="double"/>
+    <param name="fsm/manual_target_height" value="$(arg manual_target_height)" type="double"/>
+    <param name="planning/frame_id" value="$(arg planning_frame)" type="string"/>
 
     <param name="fsm/waypoint_num" value="$(arg point_num)" type="int"/>
     <param name="fsm/waypoint0_x" value="$(arg point0_x)" type="double"/>
@@ -76,7 +81,7 @@
     <param name="grid_map/local_update_range_x"  value="5.5" /> 
     <param name="grid_map/local_update_range_y"  value="5.5" /> 
     <param name="grid_map/local_update_range_z"  value="4.5" /> 
-    <param name="grid_map/obstacles_inflation"     value="0.099" /> 
+    <param name="grid_map/obstacles_inflation"     value="$(arg obstacles_inflation)" />
     <param name="grid_map/local_map_margin" value="30"/>
     <param name="grid_map/ground_height"        value="-0.01"/>
     <!-- camera parameter -->
@@ -105,7 +110,7 @@
     <param name="grid_map/visualization_truncate_height"   value="2.4"/>
     <param name="grid_map/show_occ_time"  value="false"/>
     <param name="grid_map/pose_type"     value="2"/>  
-    <param name="grid_map/frame_id"      value="world"/>
+    <param name="grid_map/frame_id"      value="$(arg planning_frame)"/>
 
   <!-- planner manager -->
     <param name="manager/max_vel" value="$(arg max_vel)" type="double"/>

@@ -19,6 +19,7 @@ ros::Publisher pub1;
 ros::Publisher pub2;
 ros::Publisher pub3;
 string waypoint_type = string("manual");
+string waypoint_frame = string("world");
 bool is_odom_ready;
 nav_msgs::Odometry odom;
 nav_msgs::Path waypoints;
@@ -84,7 +85,7 @@ void load_waypoints(ros::NodeHandle& nh, const ros::Time& time_base) {
 }
 
 void publish_waypoints() {
-    waypoints.header.frame_id = std::string("world");
+    waypoints.header.frame_id = waypoint_frame;
     waypoints.header.stamp = ros::Time::now();
     pub1.publish(waypoints);
     geometry_msgs::PoseStamped init_pose;
@@ -98,7 +99,7 @@ void publish_waypoints() {
 void publish_waypoints_vis() {
     nav_msgs::Path wp_vis = waypoints;
     geometry_msgs::PoseArray poseArray;
-    poseArray.header.frame_id = std::string("world");
+    poseArray.header.frame_id = waypoint_frame;
     poseArray.header.stamp = ros::Time::now();
 
     {
@@ -153,7 +154,13 @@ void goal_callback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
     //ROS_ASSERT(trigged_time > ros::Time(0));
 
     ros::NodeHandle n("~");
-    n.param("waypoint_type", waypoint_type, string("manual"));
+
+    if (!msg->header.frame_id.empty() && msg->header.frame_id != waypoint_frame) {
+        ROS_ERROR_STREAM("[waypoint_generator] Goal frame '" << msg->header.frame_id
+                         << "' does not match configured frame '" << waypoint_frame
+                         << "'. Transform the goal before publishing it.");
+        return;
+    }
     
     if (waypoint_type == string("circle")) {
         waypoints = circle();
@@ -245,6 +252,11 @@ int main(int argc, char** argv) {
     ros::init(argc, argv, "waypoint_generator");
     ros::NodeHandle n("~");
     n.param("waypoint_type", waypoint_type, string("manual"));
+    n.param("frame_id", waypoint_frame, string("world"));
+    if (waypoint_frame.empty()) {
+        ROS_FATAL("[waypoint_generator] ~frame_id must not be empty.");
+        return 1;
+    }
     ros::Subscriber sub1 = n.subscribe("odom", 10, odom_callback);
     ros::Subscriber sub2 = n.subscribe("goal", 10, goal_callback);
     ros::Subscriber sub3 = n.subscribe("traj_start_trigger", 10, traj_start_trigger_callback);

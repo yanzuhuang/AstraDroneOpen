@@ -47,7 +47,7 @@ namespace ego_planner
     /*** Segment the initial trajectory according to obstacles ***/
     constexpr int ENOUGH_INTERVAL = 2;
     double step_size = grid_map_->getResolution() / ((init_points.col(0) - init_points.rightCols(1)).norm() / (init_points.cols() - 1)) / 2;
-    int in_id, out_id;
+    int in_id = -1, out_id = -1;
     vector<std::pair<int, int>> segment_ids;
     int same_occ_state_times = ENOUGH_INTERVAL + 1;
     bool occ, last_occ = false;
@@ -94,7 +94,14 @@ namespace ego_planner
         {
           flag_got_start = false;
           flag_got_end = false;
-          segment_ids.push_back(std::pair<int, int>(in_id, out_id));
+          if (in_id >= 0 && out_id > in_id)
+          {
+            segment_ids.emplace_back(in_id, out_id);
+          }
+          else
+          {
+            ROS_ERROR("Invalid occupied segment [%d, %d]; ignoring it.", in_id, out_id);
+          }
         }
       }
     }

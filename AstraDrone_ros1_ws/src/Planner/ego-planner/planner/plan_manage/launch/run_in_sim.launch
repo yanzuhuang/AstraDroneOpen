@@ -6,6 +6,7 @@
 
   <!-- topic of your odometry such as VIO or LIO -->
   <arg name="odom_topic" value="/visual_slam/odom" />
+  <arg name="planning_frame" value="world" />
 
   <!-- main algorithm params -->
   <include file="$(find ego_planner)/launch/advanced_param.xml">
@@ -41,6 +42,8 @@
     <!-- 1: use 2D Nav Goal to select goal  -->
     <!-- 2: use global waypoints below  -->
     <arg name="flight_type" value="1" />
+    <arg name="planning_frame" value="$(arg planning_frame)" />
+    <arg name="manual_target_height" value="1.0" />
     
     <!-- global waypoints -->
     <!-- It generates a piecewise min-snap traj passing all waypoints -->
@@ -74,6 +77,7 @@
 
     <remap from="/odom_world" to="$(arg odom_topic)"/>
     <param name="traj_server/time_forward" value="1.0" type="double"/>
+    <param name="traj_server/frame_id" value="$(arg planning_frame)" type="string"/>
   </node>
 
   <node pkg="waypoint_generator" name="waypoint_generator" type="waypoint_generator" output="screen">
@@ -81,6 +85,7 @@
     <remap from="~goal" to="/move_base_simple/goal"/>
     <remap from="~traj_start_trigger" to="/traj_start_trigger" />
     <param name="waypoint_type" value="manual-lonely-waypoint"/>    
+    <param name="frame_id" value="$(arg planning_frame)"/>
   </node>
 
   <!-- use simulator -->
