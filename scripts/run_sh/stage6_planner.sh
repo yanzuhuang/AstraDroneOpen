@@ -48,7 +48,10 @@ setup_environment() {
     # shellcheck disable=SC1090
     source "$sim_setup"
     # shellcheck disable=SC1090
-    source "$astra_setup"
+    # Preserve the simulation workspace as an underlay. Without --extend,
+    # sourcing this independently built workspace drops packages such as
+    # env_map from ROS_PACKAGE_PATH and PX4/Gazebo exits before RViz can start.
+    source "$astra_setup" --extend
     # shellcheck disable=SC1090
     source "$px4_gazebo_setup" "$px4_root" "$px4_build" >/dev/null
     export ROS_PACKAGE_PATH="${ROS_PACKAGE_PATH:-}:$px4_root:$px4_gazebo_pkg"

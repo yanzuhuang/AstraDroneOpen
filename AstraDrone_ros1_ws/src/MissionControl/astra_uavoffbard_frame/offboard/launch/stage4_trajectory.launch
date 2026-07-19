@@ -33,6 +33,22 @@
     <arg name="trajectory_timeout" default="300.0"/>
     <arg name="return_hold_time" default="2.0"/>
     <arg name="return_timeout" default="45.0"/>
+    <!-- 四种轨迹共用的分段减速降落，同时同步 PX4 land detector，允许更柔和的 0.20 m/s 触地速度。 -->
+    <arg name="preland_hover_duration" default="3.0"/>
+    <arg name="landing_cruise_speed" default="0.40"/>
+    <arg name="landing_touchdown_speed" default="0.20"/>
+    <arg name="landing_slowdown_height" default="1.2"/>
+    <arg name="landing_flare_height" default="0.30"/>
+    <arg name="landing_ground_confirm_time" default="0.5"/>
+    <arg name="landing_disarm_retry_interval" default="1.0"/>
+    <arg name="landing_contact_height" default="0.12"/>
+    <arg name="landing_contact_velocity_max" default="0.10"/>
+    <arg name="landing_contact_confirm_time" default="0.2"/>
+    <arg name="landing_contact_descent_speed" default="0.30"/>
+    <arg name="configure_px4_soft_landing" default="true"/>
+    <arg name="px4_auto_land_speed" default="0.30"/>
+    <arg name="px4_land_crawl_speed" default="0.20"/>
+    <arg name="px4_land_detector_z_velocity_max" default="0.15"/>
     <arg name="failsafe_hover_duration" default="5.0"/>
     <arg name="land_mode_retry_interval" default="1.0"/>
     <arg name="extended_state_timeout" default="3.0"/>
@@ -76,6 +92,21 @@
         <param name="trajectory_timeout" value="$(arg trajectory_timeout)"/>
         <param name="return_hold_time" value="$(arg return_hold_time)"/>
         <param name="return_timeout" value="$(arg return_timeout)"/>
+        <param name="preland_hover_duration" value="$(arg preland_hover_duration)"/>
+        <param name="landing_cruise_speed" value="$(arg landing_cruise_speed)"/>
+        <param name="landing_touchdown_speed" value="$(arg landing_touchdown_speed)"/>
+        <param name="landing_slowdown_height" value="$(arg landing_slowdown_height)"/>
+        <param name="landing_flare_height" value="$(arg landing_flare_height)"/>
+        <param name="landing_ground_confirm_time" value="$(arg landing_ground_confirm_time)"/>
+        <param name="landing_disarm_retry_interval" value="$(arg landing_disarm_retry_interval)"/>
+        <param name="landing_contact_height" value="$(arg landing_contact_height)"/>
+        <param name="landing_contact_velocity_max" value="$(arg landing_contact_velocity_max)"/>
+        <param name="landing_contact_confirm_time" value="$(arg landing_contact_confirm_time)"/>
+        <param name="landing_contact_descent_speed" value="$(arg landing_contact_descent_speed)"/>
+        <param name="configure_px4_soft_landing" value="$(arg configure_px4_soft_landing)"/>
+        <param name="px4_auto_land_speed" value="$(arg px4_auto_land_speed)"/>
+        <param name="px4_land_crawl_speed" value="$(arg px4_land_crawl_speed)"/>
+        <param name="px4_land_detector_z_velocity_max" value="$(arg px4_land_detector_z_velocity_max)"/>
         <param name="failsafe_hover_duration" value="$(arg failsafe_hover_duration)"/>
         <param name="land_mode_retry_interval" value="$(arg land_mode_retry_interval)"/>
         <param name="extended_state_timeout" value="$(arg extended_state_timeout)"/>

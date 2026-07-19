@@ -2,6 +2,7 @@
 
 #include <cmath>
 
+#include "offboard/landing_profile.h"
 #include "offboard/trajectory_reference.h"
 
 namespace {
@@ -64,6 +65,28 @@ TEST(TrajectoryReference, UnwrapAvoidsTwoPiJump) {
     const double raw = -179.0 * kPi / 180.0;
     EXPECT_NEAR(offboard::unwrapAngle(raw, previous) - previous,
                 2.0 * kPi / 180.0, 1e-9);
+}
+
+TEST(LandingProfile, UsesCruiseAndTouchdownLimits) {
+    EXPECT_NEAR(offboard::landingDescentSpeed(2.0, 0.40, 0.20, 1.2, 0.30),
+                0.40, 1e-12);
+    EXPECT_NEAR(offboard::landingDescentSpeed(0.10, 0.40, 0.20, 1.2, 0.30),
+                0.20, 1e-12);
+    EXPECT_NEAR(offboard::landingDescentSpeed(-2.0, 0.40, 0.20, 1.2, 0.30),
+                0.20, 1e-12);
+}
+
+TEST(LandingProfile, SmoothlySlowsAsHeightDecreases) {
+    const double high =
+        offboard::landingDescentSpeed(1.00, 0.40, 0.20, 1.2, 0.30);
+    const double middle =
+        offboard::landingDescentSpeed(0.75, 0.40, 0.20, 1.2, 0.30);
+    const double low =
+        offboard::landingDescentSpeed(0.50, 0.40, 0.20, 1.2, 0.30);
+    EXPECT_GT(high, middle);
+    EXPECT_GT(middle, low);
+    EXPECT_GT(low, 0.20);
+    EXPECT_LT(high, 0.40);
 }
 
 }  // namespace

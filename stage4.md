@@ -35,12 +35,13 @@
 ```text
 等待定位 -> OFFBOARD/解锁 -> 起飞/悬停 -> 到达轨迹起点
 -> 按 speed×dt 跟踪轨迹 -> 误差过大暂停 -> 完成指定圈数
--> 返航 -> AUTO.LAND -> PX4 确认落地并自动上锁
+-> 返航 -> 预降落悬停 -> 分段减速下降 -> PX4 确认落地并正常上锁
 ```
 
 我已经完成配套实现，你不需要从零抄代码：
 
-- `offboard/src/autoarming_control.cpp`：保留阶段 3 航点模式，新增轨迹入口、真实 `dt`、误差暂停和完整安全状态机；
+- `offboard/src/autoarming_control.cpp`：保留阶段 3 航点模式，新增轨迹入口、真实 `dt`、误差暂停，以及四种轨迹共用的软着陆状态机；
+- `offboard/include/offboard/landing_profile.h`：根据离地高度生成连续的 S 曲线下降速度；
 - `offboard/include/offboard/trajectory_reference.h`：圆、方形、8 字、椭圆及累计弧长表；
 - `offboard/launch/stage4_trajectory.launch`：阶段 4 独立启动入口；
 - `offboard/scripts/stage4_analyze_bag.py`：从 rosbag 计算速度、RMSE、P95 和 yaw 指标；
@@ -201,8 +202,10 @@ rosbag record -o "$HOME/bag/stage4" \
   /mavros/state \
   /mavros/extended_state \
   /mavros/local_position/pose \
+  /mavros/local_position/velocity_local \
   /mavros/local_position/odom \
   /mavros/setpoint_position/local \
+  /mavros/setpoint_raw/local \
   /autoarming_control/flight_phase \
   /autoarming_control/tracking_active \
   /autoarming_control/trajectory_progress \
@@ -227,8 +230,14 @@ roslaunch offboard stage4_trajectory.launch \
 
 ```text
 TAKEOFF -> INITIAL_HOVER -> TRAJECTORY_ENTRY -> TRACKING
--> RETURN_HOME -> AUTO.LAND -> DONE
+-> RETURN_HOME -> PRELAND_HOVER -> LANDING -> DONE
 ```
+
+正常 `LANDING` 会把下降速度从 `0.40 m/s` 平滑降低到 `0.20 m/s`，
+近地确认后使用 `0.30 m/s` 的下降意图降低推力。节点同时配置 PX4 的
+land detector；参数写入失败时会拒绝起飞。只有新鲜的 `ON_GROUND` 持续
+满足确认时间后才发送普通上锁请求，位姿或 OFFBOARD 异常才回退到
+`AUTO.LAND`。
 
 出现 `DONE` 后停止 rosbag。检查发布频率和最终状态：
 
@@ -322,8 +331,10 @@ rosbag record -o "$HOME/bag/stage4_square" \
   /mavros/state \
   /mavros/extended_state \
   /mavros/local_position/pose \
+  /mavros/local_position/velocity_local \
   /mavros/local_position/odom \
   /mavros/setpoint_position/local \
+  /mavros/setpoint_raw/local \
   /autoarming_control/flight_phase \
   /autoarming_control/tracking_active \
   /autoarming_control/trajectory_progress \

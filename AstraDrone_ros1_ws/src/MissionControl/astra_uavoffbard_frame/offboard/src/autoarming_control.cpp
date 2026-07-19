@@ -1,16 +1,20 @@
 /**
  * @file autoarming_control.cpp
- * @brief PX4 Offboard 仿真：航点/连续轨迹任务、返航和 PX4 原生降落
+ * @brief PX4 Offboard 仿真：航点/连续轨迹任务、返航和分段减速降落
  *
  * 航点从私有参数 ~waypoints 读取，位置是相对 home 的 ENU 偏移，yaw 是
- * map/ENU 坐标系中的绝对角度。返航后切换到 AUTO.LAND，由 PX4 完成下降、
- * 落地检测和自动上锁；程序不会发送任何上锁命令。仅允许在仿真中运行。
+ * map/ENU 坐标系中的绝对角度。返航后先稳定悬停，再使用水平位置锁定和
+ * 垂直速度 S 曲线完成减速下降。PX4 确认 ON_GROUND 后只发送普通上锁
+ * 请求；位姿或 OFFBOARD 异常时回退到 AUTO.LAND。仅允许在仿真中运行。
  */
 
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/TwistStamped.h>
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/ExtendedState.h>
+#include <mavros_msgs/ParamSet.h>
+#include <mavros_msgs/PositionTarget.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 #include <std_msgs/Bool.h>
@@ -18,11 +22,13 @@
 #include <std_msgs/String.h>
 #include <xmlrpcpp/XmlRpcValue.h>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "offboard/landing_profile.h"
 #include "offboard/trajectory_reference.h"
 
 namespace {
@@ -37,9 +43,12 @@ constexpr double kTrajectoryCompletionEpsilon = 1e-9;
 mavros_msgs::State current_state;
 mavros_msgs::ExtendedState current_extended_state;
 geometry_msgs::PoseStamped current_pose;
+geometry_msgs::TwistStamped current_velocity;
 bool have_pose = false;
+bool have_velocity = false;
 bool have_extended_state = false;
 ros::Time last_pose_time;
+ros::Time last_velocity_time;
 ros::Time last_extended_state_time;
 
 struct Waypoint {
@@ -59,6 +68,7 @@ enum class FlightPhase {
     TRACKING,
     FAILSAFE_HOVER,
     RETURN_HOME,
+    PRELAND_HOVER,
     LANDING,
     COMPLETED
 };
@@ -72,6 +82,7 @@ const char* phase_name(FlightPhase phase) {
         case FlightPhase::TRACKING: return "TRACKING";
         case FlightPhase::FAILSAFE_HOVER: return "FAILSAFE_HOVER";
         case FlightPhase::RETURN_HOME: return "RETURN_HOME";
+        case FlightPhase::PRELAND_HOVER: return "PRELAND_HOVER";
         case FlightPhase::LANDING: return "LANDING";
         case FlightPhase::COMPLETED: return "COMPLETED";
     }
@@ -103,6 +114,17 @@ void pose_cb(const geometry_msgs::PoseStamped::ConstPtr& msg) {
     }
 }
 
+void velocity_cb(const geometry_msgs::TwistStamped::ConstPtr& msg) {
+    const double vz = msg->twist.linear.z;
+    if (std::isfinite(vz)) {
+        current_velocity = *msg;
+        have_velocity = true;
+        last_velocity_time = ros::Time::now();
+    } else {
+        ROS_WARN_THROTTLE(1.0, "[VELOCITY] Rejected NaN/Inf local velocity");
+    }
+}
+
 // 位姿与目标辅助函数：完成航向换算、目标位姿构造和到达误差计算。
 double yaw_from_pose(const geometry_msgs::PoseStamped& pose) {
     const geometry_msgs::Quaternion& q = pose.pose.orientation;
@@ -123,6 +145,51 @@ geometry_msgs::PoseStamped make_setpoint(
     setpoint.pose.orientation.z = std::sin(yaw * 0.5);
     setpoint.pose.orientation.w = std::cos(yaw * 0.5);
     return setpoint;
+}
+
+mavros_msgs::PositionTarget make_landing_setpoint(
+    double x, double y, double descent_speed, double yaw) {
+    mavros_msgs::PositionTarget target;
+    target.header.stamp = ros::Time::now();
+    target.header.frame_id = "map";
+    target.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+    target.type_mask =
+        mavros_msgs::PositionTarget::IGNORE_PZ |
+        mavros_msgs::PositionTarget::IGNORE_VX |
+        mavros_msgs::PositionTarget::IGNORE_VY |
+        mavros_msgs::PositionTarget::IGNORE_AFX |
+        mavros_msgs::PositionTarget::IGNORE_AFY |
+        mavros_msgs::PositionTarget::IGNORE_AFZ |
+        mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+    target.position.x = x;
+    target.position.y = y;
+    // MAVROS 接口使用 ENU：z 轴向上，因此下降速度为负。
+    target.velocity.z = -descent_speed;
+    target.yaw = yaw;
+    return target;
+}
+
+bool set_px4_float_param(ros::ServiceClient* client,
+                         const std::string& name,
+                         double value) {
+    mavros_msgs::ParamSet request;
+    request.request.param_id = name;
+    request.request.value.integer = 0;
+    request.request.value.real = value;
+    if (!client->call(request) || !request.response.success) {
+        ROS_ERROR("[PX4_PARAM] Failed to set %s=%.3f", name.c_str(), value);
+        return false;
+    }
+
+    const double applied = request.response.value.real;
+    if (std::abs(applied - value) > 1e-3) {
+        ROS_ERROR(
+            "[PX4_PARAM] %s requested %.3f but PX4 returned %.3f",
+            name.c_str(), value, applied);
+        return false;
+    }
+    ROS_INFO("[PX4_PARAM] %s=%.3f", name.c_str(), applied);
+    return true;
 }
 
 double position_error(const geometry_msgs::PoseStamped& pose,
@@ -249,6 +316,21 @@ int main(int argc, char** argv) {
     double waypoint_timeout;
     double return_hold_time;
     double return_timeout;
+    double preland_hover_duration;
+    double landing_cruise_speed;
+    double landing_touchdown_speed;
+    double landing_slowdown_height;
+    double landing_flare_height;
+    double landing_ground_confirm_time;
+    double landing_disarm_retry_interval;
+    double landing_contact_height;
+    double landing_contact_velocity_max;
+    double landing_contact_confirm_time;
+    double landing_contact_descent_speed;
+    bool configure_px4_soft_landing;
+    double px4_auto_land_speed;
+    double px4_land_crawl_speed;
+    double px4_land_detector_z_velocity_max;
     double failsafe_hover_duration;
     double land_mode_retry_interval;
     double extended_state_timeout;
@@ -289,6 +371,22 @@ int main(int argc, char** argv) {
     pnh.param("waypoint_timeout", waypoint_timeout, 30.0);  // 单个航点超时（s）
     pnh.param("return_hold_time", return_hold_time, 2.0);  // 返航到位停留时间（s）
     pnh.param("return_timeout", return_timeout, 45.0);  // 返航超时，超时后原地降落（s）
+    pnh.param("preland_hover_duration", preland_hover_duration, 3.0);  // 下降前稳定悬停（s）
+    pnh.param("landing_cruise_speed", landing_cruise_speed, 0.40);  // 高空下降速度（m/s）
+    pnh.param("landing_touchdown_speed", landing_touchdown_speed, 0.20);  // 触地段下降速度（m/s）
+    pnh.param("landing_slowdown_height", landing_slowdown_height, 1.2);  // 开始 S 曲线减速的高度（m）
+    pnh.param("landing_flare_height", landing_flare_height, 0.30);  // 进入固定触地速度的高度（m）
+    pnh.param("landing_ground_confirm_time", landing_ground_confirm_time, 0.5);  // PX4 接地确认时间（s）
+    pnh.param("landing_disarm_retry_interval", landing_disarm_retry_interval, 1.0);  // 普通上锁重试间隔（s）
+    pnh.param("landing_contact_height", landing_contact_height, 0.12);  // 近地降推力辅助高度（m）
+    pnh.param("landing_contact_velocity_max", landing_contact_velocity_max, 0.10);  // 允许触发的最大上升速度（m/s）
+    pnh.param("landing_contact_confirm_time", landing_contact_confirm_time, 0.2);  // 近地条件持续时间（s）
+    pnh.param("landing_contact_descent_speed", landing_contact_descent_speed, 0.30);  // 接触后降低推力的下降意图（m/s）
+    pnh.param("configure_px4_soft_landing", configure_px4_soft_landing, true);
+    pnh.param("px4_auto_land_speed", px4_auto_land_speed, 0.30);  // AUTO.LAND 备用下降速度（m/s）
+    pnh.param("px4_land_crawl_speed", px4_land_crawl_speed, 0.20);  // PX4 近地爬行速度（m/s）
+    pnh.param("px4_land_detector_z_velocity_max",
+              px4_land_detector_z_velocity_max, 0.15);  // 落地检测静止阈值（m/s）
     pnh.param("failsafe_hover_duration", failsafe_hover_duration, 5.0);  // 航点失败后悬停时间（s）
     pnh.param("land_mode_retry_interval", land_mode_retry_interval, 1.0);  // AUTO.LAND 重试间隔（s）
     pnh.param("extended_state_timeout", extended_state_timeout, 3.0);  // 落地状态新鲜度/确认窗口（s）
@@ -327,7 +425,25 @@ int main(int argc, char** argv) {
         waypoint_tolerance <= 0.0 || yaw_tolerance_deg <= 0.0 ||
         yaw_tolerance_deg > 180.0 || default_waypoint_hold < 0.0 ||
         waypoint_timeout <= 0.0 || return_hold_time < 0.0 ||
-        return_timeout <= 0.0 || failsafe_hover_duration < 0.0 ||
+        return_timeout <= 0.0 || preland_hover_duration < 0.0 ||
+        landing_cruise_speed < landing_touchdown_speed ||
+        landing_touchdown_speed <= 0.0 ||
+        landing_slowdown_height <= landing_flare_height ||
+        landing_flare_height < 0.0 || landing_ground_confirm_time <= 0.0 ||
+        landing_disarm_retry_interval <= 0.0 ||
+        landing_contact_height < 0.0 ||
+        landing_contact_velocity_max <= 0.0 ||
+        landing_contact_confirm_time <= 0.0 ||
+        landing_contact_descent_speed < landing_touchdown_speed ||
+        landing_contact_descent_speed > landing_cruise_speed ||
+        px4_auto_land_speed < px4_land_crawl_speed ||
+        px4_land_crawl_speed < landing_touchdown_speed ||
+        px4_land_detector_z_velocity_max <= 0.0 ||
+        landing_touchdown_speed <
+            1.1 * px4_land_detector_z_velocity_max ||
+        px4_land_detector_z_velocity_max >
+            std::min(px4_auto_land_speed, px4_land_crawl_speed) / 1.2 ||
+        failsafe_hover_duration < 0.0 ||
         land_mode_retry_interval <= 0.0 ||
         extended_state_timeout <= 0.0 ||
         phase_timeout <= 0.0 || pose_timeout <= 0.0 ||
@@ -380,9 +496,15 @@ int main(int argc, char** argv) {
     ros::Subscriber pose_sub =
         nh.subscribe<geometry_msgs::PoseStamped>(
             "mavros/local_position/pose", 10, pose_cb);
+    ros::Subscriber velocity_sub =
+        nh.subscribe<geometry_msgs::TwistStamped>(
+            "mavros/local_position/velocity_local", 10, velocity_cb);
     ros::Publisher local_pos_pub =
         nh.advertise<geometry_msgs::PoseStamped>(
             "mavros/setpoint_position/local", 10);
+    ros::Publisher local_raw_pub =
+        nh.advertise<mavros_msgs::PositionTarget>(
+            "mavros/setpoint_raw/local", 10);
     ros::Publisher phase_pub =
         pnh.advertise<std_msgs::String>("flight_phase", 10);
     ros::Publisher tracking_active_pub =
@@ -393,6 +515,8 @@ int main(int argc, char** argv) {
         nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
     ros::ServiceClient set_mode_client =
         nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
+    ros::ServiceClient param_set_client =
+        nh.serviceClient<mavros_msgs::ParamSet>("mavros/param/set");
 
     ros::Rate rate(loop_rate);  // 改变频率不应改变基于真实 dt 的轨迹速度。
 
@@ -410,6 +534,24 @@ int main(int argc, char** argv) {
     }
     if (!ros::ok()) {
         return 0;
+    }
+
+    // 低于 PX4 默认 0.25 m/s 静止阈值的软着陆速度，必须同步调整
+    // land detector。任一参数设置失败就拒绝起飞，避免接地后无法判定 landed。
+    if (configure_px4_soft_landing) {
+        if (!param_set_client.waitForExistence(ros::Duration(5.0)) ||
+            !set_px4_float_param(
+                &param_set_client, "MPC_LAND_SPEED", px4_auto_land_speed) ||
+            !set_px4_float_param(
+                &param_set_client, "MPC_LAND_CRWL", px4_land_crawl_speed) ||
+            !set_px4_float_param(
+                &param_set_client, "LNDMC_Z_VEL_MAX",
+                px4_land_detector_z_velocity_max)) {
+            ROS_FATAL(
+                "[PX4_PARAM] Soft-landing configuration incomplete; "
+                "refusing to arm");
+            return 1;
+        }
     }
 
     const double home_x = current_pose.pose.position.x;
@@ -441,7 +583,14 @@ int main(int argc, char** argv) {
             trajectory->length() * target_laps / speed);
     }
     ROS_INFO(
-        "[SAFETY] Landing uses PX4 AUTO.LAND; no disarm command will be sent");
+        "[LANDING_CONFIG] pre-hover=%.1f s, descent=%.2f->%.2f m/s, "
+        "slowdown=%.2f m, flare=%.2f m, detector_vz=%.2f m/s",
+        preland_hover_duration, landing_cruise_speed,
+        landing_touchdown_speed, landing_slowdown_height,
+        landing_flare_height, px4_land_detector_z_velocity_max);
+    ROS_INFO(
+        "[SAFETY] Normal landing stays in OFFBOARD and disarms only after "
+        "fresh ON_GROUND; AUTO.LAND is the pose/mode-loss fallback");
 
     geometry_msgs::PoseStamped setpoint =
         make_setpoint(home_x, home_y, home_z, home_yaw);
@@ -462,25 +611,34 @@ int main(int argc, char** argv) {
     land_request.request.custom_mode = "AUTO.LAND";
     mavros_msgs::CommandBool arm_request;
     arm_request.request.value = true;
+    mavros_msgs::CommandBool disarm_request;
+    disarm_request.request.value = false;
 
     // 初始化任务状态机、超时计时器和故障悬停目标。
     FlightPhase flight_phase = FlightPhase::TAKEOFF;
     bool flight_started = false;
     bool recovering_offboard = false;
     bool target_reached = false;
-    bool auto_land_confirmed = false;
+    bool landing_fallback_auto_land = false;
+    bool fallback_auto_land_confirmed = false;
     std::size_t waypoint_index = 0;
     ros::Time phase_start;
     ros::Time reached_start;
     ros::Time last_request(0);
     ros::Time last_land_request(0);
+    ros::Time last_disarm_request(0);
+    ros::Time landing_ground_confirm_start(0);
+    ros::Time landing_contact_candidate_start(0);
     ros::Time landing_disarmed_start(0);
+    bool landing_contact_assist = false;
     geometry_msgs::PoseStamped failsafe_setpoint = setpoint;
     double trajectory_arc = 0.0;
     const double trajectory_total_length = trajectory
         ? trajectory->length() * target_laps : 0.0;
     double reference_yaw = home_yaw;
     ros::Time last_track_time;
+    mavros_msgs::PositionTarget landing_setpoint = make_landing_setpoint(
+        landing_x, landing_y, landing_touchdown_speed, landing_yaw);
 
     while (ros::ok() && flight_phase != FlightPhase::COMPLETED) {
         ros::spinOnce();
@@ -533,7 +691,13 @@ int main(int argc, char** argv) {
         if (!current_state.connected) {
             ROS_ERROR_THROTTLE(
                 1.0, "[FCU] Connection lost; holding last setpoint");
-            local_pos_pub.publish(setpoint);
+            if (flight_phase == FlightPhase::LANDING &&
+                !landing_fallback_auto_land) {
+                landing_setpoint.header.stamp = now;
+                local_raw_pub.publish(landing_setpoint);
+            } else {
+                local_pos_pub.publish(setpoint);
+            }
             rate.sleep();
             continue;
         }
@@ -589,14 +753,15 @@ int main(int argc, char** argv) {
             continue;
         }
         if (flight_phase == FlightPhase::LANDING &&
-            !auto_land_confirmed &&
+            !landing_fallback_auto_land &&
             now - last_pose_time > ros::Duration(pose_timeout)) {
-            ROS_WARN_THROTTLE(
-                1.0,
-                "[POSE] Local pose is stale while requesting AUTO.LAND");
+            landing_fallback_auto_land = true;
+            last_land_request = ros::Time(0);
+            ROS_ERROR(
+                "[LANDING_FALLBACK] Local pose is stale; requesting AUTO.LAND");
         }
 
-        // 非降落阶段丢失 OFFBOARD 时冻结任务；AUTO.LAND 不应被抢回 OFFBOARD。
+        // 非降落阶段丢失 OFFBOARD 时冻结任务；降落中丢失模式则转 AUTO.LAND。
         if (flight_phase != FlightPhase::LANDING &&
             current_state.mode != "OFFBOARD") {
             if (!recovering_offboard) {
@@ -646,10 +811,10 @@ int main(int argc, char** argv) {
                 landing_y = current_y;
                 landing_hold_z = current_z;
                 landing_yaw = current_yaw;
-                auto_land_confirmed = false;
+                landing_fallback_auto_land = true;
                 last_land_request = ros::Time(0);
                 ROS_ERROR(
-                    "[TIMEOUT] TAKEOFF timed out; requesting AUTO.LAND in place");
+                    "[TIMEOUT] TAKEOFF timed out; fallback AUTO.LAND in place");
             }
         } else if (flight_phase == FlightPhase::INITIAL_HOVER) {
             // 初始悬停：在任务高度稳定指定时间后开始执行航点。
@@ -778,8 +943,7 @@ int main(int argc, char** argv) {
             dt = std::min(dt, max_track_dt);
 
             const bool finished =
-                trajectory_arc >=
-                    trajectory_total_length - kTrajectoryCompletionEpsilon;
+                trajectory_arc >= trajectory_total_length - kTrajectoryCompletionEpsilon;
             const bool paused = !finished && previous_error > max_tracking_error;
             const double speed_scale = trajectory->speedScale(
                 trajectory_arc, corner_slowdown_distance,
@@ -817,8 +981,7 @@ int main(int argc, char** argv) {
                     previous_error, max_tracking_error);
             }
 
-            if (trajectory_arc >=
-                trajectory_total_length - kTrajectoryCompletionEpsilon) {
+            if (trajectory_arc >= trajectory_total_length - kTrajectoryCompletionEpsilon) {
                 const bool inside = tracking_error <= waypoint_tolerance &&
                     yaw_error <= yaw_tolerance;
                 if (inside && !target_reached) {
@@ -886,75 +1049,225 @@ int main(int argc, char** argv) {
                 pos_error, held, return_hold_time);
 
             if (target_reached && held >= return_hold_time) {
-                flight_phase = FlightPhase::LANDING;
+                flight_phase = FlightPhase::PRELAND_HOVER;
                 phase_start = now;
                 landing_x = home_x;
                 landing_y = home_y;
-                landing_hold_z = current_z;
+                landing_hold_z = safe_z;
                 landing_yaw = home_yaw;
-                auto_land_confirmed = false;
-                last_land_request = ros::Time(0);
-                ROS_INFO("[PHASE] AUTO.LAND at home requested");
+                target_reached = false;
+                ROS_INFO(
+                    "[PHASE] PRELAND_HOVER started for %.1f s",
+                    preland_hover_duration);
             } else if (now - phase_start > ros::Duration(return_timeout)) {
-                flight_phase = FlightPhase::LANDING;
+                flight_phase = FlightPhase::PRELAND_HOVER;
                 phase_start = now;
                 landing_x = current_x;
                 landing_y = current_y;
                 landing_hold_z = current_z;
                 landing_yaw = current_yaw;
-                auto_land_confirmed = false;
+                target_reached = false;
+                ROS_ERROR(
+                    "[TIMEOUT] RETURN_HOME timed out; stabilizing before "
+                    "controlled landing in place");
+            }
+        } else if (flight_phase == FlightPhase::PRELAND_HOVER) {
+            // 所有航点和轨迹共用同一段降落前稳定窗口。
+            setpoint = make_setpoint(
+                landing_x, landing_y, landing_hold_z, landing_yaw);
+            const double pos_error = position_error(current_pose, setpoint);
+            const double yaw_error = angle_error(current_yaw, landing_yaw);
+            const bool inside = pos_error <= waypoint_tolerance &&
+                yaw_error <= yaw_tolerance;
+
+            if (inside && !target_reached) {
+                target_reached = true;
+                reached_start = now;
+                ROS_INFO("[PRELAND_HOVER] Stable window started");
+            } else if (!inside && target_reached) {
+                target_reached = false;
+                ROS_WARN("[PRELAND_HOVER] Stability lost; timer reset");
+            }
+
+            const double held = target_reached
+                ? (now - reached_start).toSec() : 0.0;
+            ROS_INFO_THROTTLE(
+                1.0,
+                "[PRELAND_HOVER] pos_err=%.2f m, yaw_err=%.1f deg, "
+                "stable=%.1f/%.1f s",
+                pos_error, yaw_error * 180.0 / kPi,
+                held, preland_hover_duration);
+
+            if (target_reached && held >= preland_hover_duration) {
+                flight_phase = FlightPhase::LANDING;
+                phase_start = now;
+                target_reached = false;
+                landing_fallback_auto_land = false;
+                fallback_auto_land_confirmed = false;
+                landing_ground_confirm_start = ros::Time(0);
+                landing_contact_candidate_start = ros::Time(0);
+                landing_contact_assist = false;
+                last_disarm_request = ros::Time(0);
+                last_land_request = ros::Time(0);
+                landing_setpoint = make_landing_setpoint(
+                    landing_x, landing_y, landing_cruise_speed, landing_yaw);
+                ROS_INFO(
+                    "[PHASE] CONTROLLED_LANDING started; OFFBOARD vertical "
+                    "speed profile %.2f->%.2f m/s",
+                    landing_cruise_speed, landing_touchdown_speed);
+            } else if (now - phase_start > ros::Duration(phase_timeout)) {
+                flight_phase = FlightPhase::LANDING;
+                phase_start = now;
+                target_reached = false;
+                landing_fallback_auto_land = true;
+                fallback_auto_land_confirmed = false;
                 last_land_request = ros::Time(0);
                 ROS_ERROR(
-                    "[TIMEOUT] RETURN_HOME timed out; requesting AUTO.LAND in place");
+                    "[PRELAND_HOVER] Could not stabilize; fallback AUTO.LAND");
             }
         } else if (flight_phase == FlightPhase::LANDING) {
-            // AUTO.LAND 接管前保持当前高度；接管后只监视模式和落地状态。
+            // 正常路径：水平位置锁定 + 垂直速度 S 曲线，直到 PX4 确认接地。
             const double height_above_ground = current_z - home_z;
             const double xy_error = horizontal_error(
                 current_x, current_y, landing_x, landing_y);
+            const bool extended_state_is_fresh =
+                have_extended_state &&
+                now - last_extended_state_time <=
+                    ros::Duration(extended_state_timeout);
+            const bool px4_confirms_landing =
+                extended_state_is_fresh &&
+                current_extended_state.landed_state ==
+                    mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND;
 
-            if (current_state.mode == "AUTO.LAND") {
-                // 跟踪当前高度，使模式意外退出时的备用 OFFBOARD 目标不会爬升。
+            if (!landing_fallback_auto_land &&
+                current_state.mode != "OFFBOARD") {
+                landing_fallback_auto_land = true;
+                fallback_auto_land_confirmed = false;
+                last_land_request = ros::Time(0);
                 landing_hold_z = current_z;
-                if (!auto_land_confirmed) {
-                    auto_land_confirmed = true;
-                    phase_start = now;
-                    ROS_INFO("[MODE] AUTO.LAND confirmed; PX4 owns descent");
-                }
-            } else {
-                if (auto_land_confirmed) {
-                    ROS_ERROR("[MODE] AUTO.LAND lost; requesting it again");
-                    auto_land_confirmed = false;
+                ROS_ERROR(
+                    "[LANDING_FALLBACK] OFFBOARD lost (mode=%s); "
+                    "requesting AUTO.LAND",
+                    current_state.mode.c_str());
+            }
+
+            if (landing_fallback_auto_land) {
+                // 位姿过期或模式异常时不再依赖自定义速度闭环。
+                setpoint = make_setpoint(
+                    landing_x, landing_y, landing_hold_z, landing_yaw);
+                if (current_state.mode == "AUTO.LAND") {
+                    landing_hold_z = current_z;
+                    if (!fallback_auto_land_confirmed) {
+                        fallback_auto_land_confirmed = true;
+                        phase_start = now;
+                        ROS_WARN(
+                            "[LANDING_FALLBACK] AUTO.LAND confirmed; "
+                            "PX4 owns descent");
+                    }
+                } else {
+                    fallback_auto_land_confirmed = false;
                 }
                 if (now - last_land_request >
-                    ros::Duration(land_mode_retry_interval)) {
+                        ros::Duration(land_mode_retry_interval) &&
+                    current_state.mode != "AUTO.LAND") {
                     if (set_mode_client.call(land_request) &&
                         land_request.response.mode_sent) {
-                        ROS_INFO("[MODE] AUTO.LAND request sent");
+                        ROS_WARN("[LANDING_FALLBACK] AUTO.LAND request sent");
                     } else {
                         ROS_ERROR(
-                            "[MODE] AUTO.LAND request failed; holding altitude");
+                            "[LANDING_FALLBACK] AUTO.LAND request failed");
                     }
                     last_land_request = now;
                 }
-            }
-            setpoint = make_setpoint(
-                landing_x, landing_y, landing_hold_z, landing_yaw);
+                ROS_WARN_THROTTLE(
+                    1.0,
+                    "[LANDING_FALLBACK] mode=%s, height=%.2f, "
+                    "landed_state=%u",
+                    current_state.mode.c_str(), height_above_ground,
+                    have_extended_state
+                        ? current_extended_state.landed_state
+                        : mavros_msgs::ExtendedState::LANDED_STATE_UNDEFINED);
+            } else {
+                const bool velocity_is_fresh = have_velocity &&
+                    now - last_velocity_time <= ros::Duration(pose_timeout);
+                const bool contact_candidate = velocity_is_fresh &&
+                    height_above_ground <= landing_contact_height &&
+                    current_velocity.twist.linear.z <=
+                        landing_contact_velocity_max;
+                if (!landing_contact_assist && contact_candidate) {
+                    if (landing_contact_candidate_start.isZero()) {
+                        landing_contact_candidate_start = now;
+                    } else if (now - landing_contact_candidate_start >=
+                               ros::Duration(landing_contact_confirm_time)) {
+                        landing_contact_assist = true;
+                        ROS_INFO(
+                            "[LANDING] Contact assist enabled: height=%.2f m, "
+                            "vz=%.3f m/s, descent intent=%.2f m/s",
+                            height_above_ground,
+                            current_velocity.twist.linear.z,
+                            landing_contact_descent_speed);
+                    }
+                } else if (!landing_contact_assist) {
+                    landing_contact_candidate_start = ros::Time(0);
+                }
 
-            const unsigned int landed_state = have_extended_state
-                ? current_extended_state.landed_state
-                : mavros_msgs::ExtendedState::LANDED_STATE_UNDEFINED;
-            ROS_INFO_THROTTLE(
-                1.0,
-                "[LANDING] mode=%s, height=%.2f, xy_err=%.2f, landed_state=%u",
-                current_state.mode.c_str(), height_above_ground, xy_error,
-                landed_state);
+                const double profile_speed = offboard::landingDescentSpeed(
+                    height_above_ground, landing_cruise_speed,
+                    landing_touchdown_speed, landing_slowdown_height,
+                    landing_flare_height);
+                const double descent_speed = landing_contact_assist
+                    ? std::max(profile_speed, landing_contact_descent_speed)
+                    : profile_speed;
+                landing_setpoint = make_landing_setpoint(
+                    landing_x, landing_y, descent_speed, landing_yaw);
 
-            if (now - phase_start > ros::Duration(phase_timeout)) {
-                ROS_ERROR_THROTTLE(
-                    2.0,
-                    "[TIMEOUT] AUTO.LAND not complete; check PX4 land detector "
-                    "and COM_DISARM_LAND");
+                if (px4_confirms_landing) {
+                    if (landing_ground_confirm_start.isZero()) {
+                        landing_ground_confirm_start = now;
+                        ROS_INFO(
+                            "[LANDING] ON_GROUND received; confirmation "
+                            "timer started");
+                    }
+                    const double confirmed_for =
+                        (now - landing_ground_confirm_start).toSec();
+                    if (confirmed_for >= landing_ground_confirm_time &&
+                        now - last_disarm_request >
+                            ros::Duration(landing_disarm_retry_interval)) {
+                        if (arming_client.call(disarm_request) &&
+                            disarm_request.response.success) {
+                            ROS_INFO(
+                                "[LANDING] Normal disarm accepted after "
+                                "ON_GROUND confirmation");
+                        } else {
+                            ROS_WARN(
+                                "[LANDING] Normal disarm not accepted yet; "
+                                "continuing touchdown command");
+                        }
+                        last_disarm_request = now;
+                    }
+                } else {
+                    landing_ground_confirm_start = ros::Time(0);
+                }
+
+                const unsigned int landed_state = have_extended_state
+                    ? current_extended_state.landed_state
+                    : mavros_msgs::ExtendedState::LANDED_STATE_UNDEFINED;
+                const double confirmed_for = landing_ground_confirm_start.isZero()
+                    ? 0.0 : (now - landing_ground_confirm_start).toSec();
+                ROS_INFO_THROTTLE(
+                    1.0,
+                    "[LANDING] controlled, height=%.2f, vz_cmd=-%.2f m/s, "
+                    "xy_err=%.2f, landed_state=%u, ground_confirm=%.1f/%.1f s",
+                    height_above_ground, descent_speed, xy_error,
+                    landed_state, confirmed_for, landing_ground_confirm_time);
+
+                if (now - phase_start > ros::Duration(phase_timeout)) {
+                    ROS_ERROR_THROTTLE(
+                        2.0,
+                        "[TIMEOUT] Controlled landing not complete; "
+                        "continuing safe touchdown speed and waiting for "
+                        "PX4 land detector");
+                }
             }
         }
 
@@ -970,9 +1283,15 @@ int main(int argc, char** argv) {
             ? std::min(1.0, trajectory_arc / trajectory_total_length) : 0.0;
         trajectory_progress_pub.publish(progress_message);
 
-        // 每个控制周期都持续发布当前阶段的目标位姿。
-        setpoint.header.stamp = now;
-        local_pos_pub.publish(setpoint);
+        // 降落正常路径发布水平位置 + 垂直速度目标；其余阶段发布位姿目标。
+        if (flight_phase == FlightPhase::LANDING &&
+            !landing_fallback_auto_land) {
+            landing_setpoint.header.stamp = now;
+            local_raw_pub.publish(landing_setpoint);
+        } else {
+            setpoint.header.stamp = now;
+            local_pos_pub.publish(setpoint);
+        }
         rate.sleep();
     }
 
