@@ -2,6 +2,7 @@
 
 #include <ros/master.h>
 #include <ros/this_node.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
 #include <tf2/exceptions.h>
 #include <xmlrpcpp/XmlRpcValue.h>
 
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -22,6 +24,38 @@ bool isFresh(const ros::Time& now, const ros::Time& received,
              double timeout) {
   return !received.isZero() && now >= received &&
          (now - received) <= ros::Duration(timeout);
+}
+
+bool isStampedFresh(const ros::Time& now, const ros::Time& received,
+                    const ros::Time& source_stamp, double timeout) {
+  return isFresh(now, received, timeout) && !source_stamp.isZero() &&
+         now >= source_stamp &&
+         (now - source_stamp) <= ros::Duration(timeout);
+}
+
+bool pointCloudHasFiniteXyz(const sensor_msgs::PointCloud2& cloud,
+                            std::string* reason) {
+  if (cloud.width == 0 || cloud.height == 0 || cloud.data.empty()) {
+    *reason = "point cloud is empty";
+    return false;
+  }
+  try {
+    sensor_msgs::PointCloud2ConstIterator<float> x(cloud, "x");
+    sensor_msgs::PointCloud2ConstIterator<float> y(cloud, "y");
+    sensor_msgs::PointCloud2ConstIterator<float> z(cloud, "z");
+    for (; x != x.end(); ++x, ++y, ++z) {
+      if (!std::isfinite(*x) || !std::isfinite(*y) || !std::isfinite(*z)) {
+        *reason = "point cloud contains NaN/Inf coordinates";
+        return false;
+      }
+    }
+  } catch (const std::runtime_error& exception) {
+    *reason = std::string("point cloud xyz fields are unusable: ") +
+              exception.what();
+    return false;
+  }
+  reason->clear();
+  return true;
 }
 
 geometry_msgs::PoseStamped odometryPose(const nav_msgs::Odometry& odometry) {
@@ -126,6 +160,8 @@ void EgoMavrosBridge::loadConfig() {
                              config_.hover_duration);
   private_node_handle_.param("command_timeout", config_.command_timeout,
                              config_.command_timeout);
+  private_node_handle_.param("goal_timeout", config_.goal_timeout,
+                             config_.goal_timeout);
   private_node_handle_.param("fcu_state_timeout", config_.fcu_state_timeout,
                              config_.fcu_state_timeout);
   private_node_handle_.param("extended_state_timeout",
@@ -197,6 +233,16 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("planner_goal_topic",
                              config_.planner_goal_topic,
                              config_.planner_goal_topic);
+  private_node_handle_.getParam("control_topics/position",
+                                config_.position_control_topics);
+  private_node_handle_.getParam("control_topics/raw_local",
+                                config_.raw_local_control_topics);
+  private_node_handle_.getParam("control_topics/velocity",
+                                config_.velocity_control_topics);
+  private_node_handle_.getParam("control_topics/attitude",
+                                config_.attitude_control_topics);
+  private_node_handle_.getParam("control_topics/thrust",
+                                config_.thrust_control_topics);
 }
 
 bool EgoMavrosBridge::validateConfig() const {
@@ -204,7 +250,8 @@ bool EgoMavrosBridge::validateConfig() const {
       config_.publish_rate >= 20.0 && config_.prestream_duration > 0.0 &&
       config_.request_interval > 0.0 && config_.takeoff_height > 0.0 &&
       config_.takeoff_tolerance > 0.0 && config_.hover_duration >= 0.0 &&
-      config_.command_timeout > 0.0 && config_.fcu_state_timeout > 0.0 &&
+      config_.command_timeout > 0.0 && config_.goal_timeout > 0.0 &&
+      config_.fcu_state_timeout > 0.0 &&
       config_.extended_state_timeout > 0.0 &&
       config_.mavros_pose_timeout > 0.0 &&
       config_.planner_odom_timeout > 0.0 && config_.cloud_timeout > 0.0 &&
@@ -230,6 +277,17 @@ bool EgoMavrosBridge::validateConfig() const {
       !config_.input_goal_topic.empty() &&
       !config_.planner_goal_topic.empty() &&
       config_.input_goal_topic != config_.planner_goal_topic;
+  const auto valid_topic_group = [](const std::vector<std::string>& topics) {
+    return !topics.empty() &&
+           std::all_of(topics.begin(), topics.end(),
+                       [](const std::string& topic) { return !topic.empty(); });
+  };
+  const bool valid_control_topics =
+      valid_topic_group(config_.position_control_topics) &&
+      valid_topic_group(config_.raw_local_control_topics) &&
+      valid_topic_group(config_.velocity_control_topics) &&
+      valid_topic_group(config_.attitude_control_topics) &&
+      valid_topic_group(config_.thrust_control_topics);
 
   if (!valid_positive_values) {
     ROS_FATAL("[BRIDGE] Invalid numeric safety parameter.");
@@ -237,7 +295,10 @@ bool EgoMavrosBridge::validateConfig() const {
   if (!valid_names) {
     ROS_FATAL("[BRIDGE] Topic, service and frame names must not be empty.");
   }
-  return valid_positive_values && valid_names;
+  if (!valid_control_topics) {
+    ROS_FATAL("[BRIDGE] Every MAVROS control category must contain a topic.");
+  }
+  return valid_positive_values && valid_names && valid_control_topics;
 }
 
 void EgoMavrosBridge::setupRosInterfaces() {
@@ -304,8 +365,16 @@ void EgoMavrosBridge::extendedStateCallback(
 
 void EgoMavrosBridge::mavrosPoseCallback(
     const geometry_msgs::PoseStamped::ConstPtr& message) {
+  have_mavros_pose_ = false;
   if (!isFinitePose(*message)) {
     ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Rejected invalid MAVROS pose.");
+    return;
+  }
+  if (message->header.frame_id != config_.mavros_frame) {
+    ROS_ERROR_THROTTLE(
+        1.0,
+        "[BRIDGE] MAVROS pose frame '%s' must equal mavros_frame '%s'.",
+        message->header.frame_id.c_str(), config_.mavros_frame.c_str());
     return;
   }
   std::string reason;
@@ -316,10 +385,12 @@ void EgoMavrosBridge::mavrosPoseCallback(
   }
   have_mavros_pose_ = true;
   last_mavros_pose_time_ = ros::Time::now();
+  last_mavros_pose_stamp_ = message->header.stamp;
 }
 
 void EgoMavrosBridge::plannerOdomCallback(
     const nav_msgs::Odometry::ConstPtr& message) {
+  have_planner_odom_ = false;
   const geometry_msgs::PoseStamped pose = odometryPose(*message);
   if (!isFinitePose(pose)) {
     ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Rejected invalid planner odometry.");
@@ -335,10 +406,12 @@ void EgoMavrosBridge::plannerOdomCallback(
   planner_odom_ = *message;
   have_planner_odom_ = true;
   last_planner_odom_time_ = ros::Time::now();
+  last_planner_odom_stamp_ = message->header.stamp;
 }
 
 void EgoMavrosBridge::cloudCallback(
     const sensor_msgs::PointCloud2::ConstPtr& message) {
+  have_cloud_ = false;
   if (message->header.frame_id.empty()) {
     ROS_WARN_THROTTLE(1.0, "[BRIDGE] Point cloud has no frame_id.");
     return;
@@ -362,12 +435,20 @@ void EgoMavrosBridge::cloudCallback(
         message->header.frame_id.c_str(), config_.planning_frame.c_str());
     return;
   }
+  std::string reason;
+  if (!pointCloudHasFiniteXyz(*message, &reason)) {
+    ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Point cloud rejected: %s",
+                       reason.c_str());
+    return;
+  }
   have_cloud_ = true;
   last_cloud_time_ = ros::Time::now();
+  last_cloud_stamp_ = message->header.stamp;
 }
 
 void EgoMavrosBridge::commandCallback(
     const quadrotor_msgs::PositionCommand::ConstPtr& message) {
+  have_planner_target_ = false;
   if (message->trajectory_flag !=
       quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY) {
     ROS_WARN_THROTTLE(
@@ -386,6 +467,22 @@ void EgoMavrosBridge::commandCallback(
         message->velocity.x, message->velocity.y, message->velocity.z,
         message->acceleration.x, message->acceleration.y,
         message->acceleration.z, message->yaw, message->yaw_dot);
+    return;
+  }
+  if (message->header.frame_id != config_.planning_frame) {
+    ROS_ERROR_THROTTLE(
+        1.0,
+        "[BRIDGE] PositionCommand frame '%s' must equal planning_frame '%s'.",
+        message->header.frame_id.c_str(), config_.planning_frame.c_str());
+    return;
+  }
+  const ros::Time now = ros::Time::now();
+  if (message->header.stamp.isZero() || now < message->header.stamp ||
+      now - message->header.stamp >
+          ros::Duration(config_.command_timeout)) {
+    ROS_ERROR_THROTTLE(
+        1.0,
+        "[BRIDGE] PositionCommand rejected because its timestamp is zero, future or stale.");
     return;
   }
 
@@ -415,7 +512,8 @@ void EgoMavrosBridge::commandCallback(
 
   planner_target_mavros_ = mavros_target;
   have_planner_target_ = true;
-  last_command_time_ = ros::Time::now();
+  last_command_time_ = now;
+  last_command_stamp_ = message->header.stamp;
   debug_setpoint_publisher_.publish(planner_target_mavros_);
 
   if (config_.auto_track_on_command &&
@@ -426,8 +524,10 @@ void EgoMavrosBridge::commandCallback(
 
 void EgoMavrosBridge::goalCallback(
     const geometry_msgs::PoseStamped::ConstPtr& message) {
+  have_valid_goal_ = false;
   const bool state_accepts_goals =
       state_ == BridgeState::kDryRun ||
+      state_ == BridgeState::kWaitInputs ||
       state_ == BridgeState::kHoverReady ||
       state_ == BridgeState::kTrackEgo || state_ == BridgeState::kHold;
   if (!state_accepts_goals) {
@@ -441,16 +541,24 @@ void EgoMavrosBridge::goalCallback(
   }
 
   const ros::Time now = ros::Time::now();
-  if (!have_planner_odom_ ||
-      !isFresh(now, last_planner_odom_time_, config_.planner_odom_timeout) ||
-      !have_cloud_ ||
-      !isFresh(now, last_cloud_time_, config_.cloud_timeout)) {
-    ROS_WARN("[BRIDGE] Goal rejected because planner odometry or cloud is stale.");
+  std::string reason;
+  if (!baseInputsFresh(now, &reason)) {
+    ROS_WARN("[BRIDGE] Goal rejected because EGO inputs are invalid: %s.",
+             reason.c_str());
+    return;
+  }
+  if (message->header.stamp.isZero() || now < message->header.stamp ||
+      now - message->header.stamp > ros::Duration(config_.goal_timeout)) {
+    ROS_ERROR("[BRIDGE] Goal rejected because its timestamp is zero, future or stale.");
+    return;
+  }
+  if (!have_home_) {
+    ROS_WARN(
+        "[BRIDGE] Goal rejected until dry-run/preflight captures a disarmed ON_GROUND home pose.");
     return;
   }
 
   geometry_msgs::PoseStamped planning_goal;
-  std::string reason;
   if (!transformToPlanning(*message, &planning_goal, &reason)) {
     ROS_ERROR("[BRIDGE] Goal transform failed: %s", reason.c_str());
     return;
@@ -462,21 +570,26 @@ void EgoMavrosBridge::goalCallback(
     return;
   }
   const double goal_horizontal_distance =
-      have_home_ ? horizontalDistance(mavros_goal, home_pose_) : 0.0;
-  if (have_home_ &&
-      goal_horizontal_distance > config_.bounds.max_horizontal_radius) {
+      horizontalDistance(mavros_goal, home_pose_);
+  if (!isWithinBounds(mavros_goal, home_pose_, config_.bounds, &reason)) {
     ROS_WARN(
-        "[BRIDGE] Goal rejected before planning: goal=(%.2f, %.2f) map, home=(%.2f, %.2f) map, horizontal_distance=%.2f m exceeds radius_limit=%.2f m.",
+        "[BRIDGE] Goal rejected before planning: %s; goal=(%.2f, %.2f, %.2f) map, home=(%.2f, %.2f, %.2f) map, horizontal_distance=%.2f m.",
+        reason.c_str(),
         mavros_goal.pose.position.x, mavros_goal.pose.position.y,
+        mavros_goal.pose.position.z,
         home_pose_.pose.position.x, home_pose_.pose.position.y,
-        goal_horizontal_distance, config_.bounds.max_horizontal_radius);
+        home_pose_.pose.position.z,
+        goal_horizontal_distance);
     return;
   }
+  validated_goal_mavros_ = mavros_goal;
+  have_valid_goal_ = true;
   planning_goal.header.stamp = now;
   goal_publisher_.publish(planning_goal);
   ROS_INFO(
-      "[BRIDGE] Validated goal forwarded to EGO-Planner: planning=(%.2f, %.2f), horizontal_distance_from_home=%.2f m.",
+      "[BRIDGE] Validated goal forwarded to EGO-Planner: planning=(%.2f, %.2f, %.2f), horizontal_distance_from_home=%.2f m.",
       planning_goal.pose.position.x, planning_goal.pose.position.y,
+      planning_goal.pose.position.z,
       goal_horizontal_distance);
 }
 
@@ -584,9 +697,16 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
     if (!baseInputsFresh(now, &reason)) {
       ROS_INFO_THROTTLE(2.0, "[DRY_RUN] Waiting for inputs: %s",
                         reason.c_str());
+    } else if (!have_home_ && !captureHomeIfSafe(&reason)) {
+      ROS_INFO_THROTTLE(2.0, "[DRY_RUN] Preflight blocked: %s",
+                        reason.c_str());
+    } else if (!fullPreflightValid(now, &reason)) {
+      ROS_INFO_THROTTLE(2.0, "[DRY_RUN] Preflight blocked: %s",
+                        reason.c_str());
     } else {
-      ROS_INFO_THROTTLE(2.0,
-                        "[DRY_RUN] Inputs healthy; no MAVROS setpoint is sent.");
+      ROS_INFO_THROTTLE(
+          2.0,
+          "[DRY_RUN] Full preflight healthy; no MAVROS control topic is advertised or published.");
     }
     return;
   }
@@ -594,20 +714,15 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
     return;
   }
 
-  if (last_authority_check_time_.isZero() ||
-      now - last_authority_check_time_ >=
-          ros::Duration(kAuthorityCheckInterval)) {
-    std::string conflict;
-    if (hasControlConflict(&conflict)) {
-      if (have_fcu_state_ && fcu_state_.armed) {
-        ROS_FATAL("[BRIDGE] %s; requesting AUTO.LAND.", conflict.c_str());
-        land_requested_ = true;
-      } else {
-        transitionTo(BridgeState::kError, conflict);
-        return;
-      }
+  std::string conflict;
+  if (!controlAuthorityValid(now, &conflict)) {
+    if (have_fcu_state_ && fcu_state_.armed) {
+      ROS_FATAL("[BRIDGE] %s; requesting AUTO.LAND.", conflict.c_str());
+      land_requested_ = true;
+    } else {
+      transitionTo(BridgeState::kError, conflict);
+      return;
     }
-    last_authority_check_time_ = now;
   }
 
   if (land_requested_ && state_ != BridgeState::kLanding) {
@@ -645,31 +760,14 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
     case BridgeState::kWaitInputs: {
       std::string reason;
       if (baseInputsFresh(now, &reason) && !have_home_) {
-        const bool confirmed_on_ground =
-            !fcu_state_.armed &&
-            extended_state_.landed_state ==
-                mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND;
-        if (!confirmed_on_ground) {
-          ROS_WARN_THROTTLE(
-              1.0,
-              "[WAIT_INPUTS] Refusing to capture home unless PX4 is disarmed and ON_GROUND.");
-          break;
-        }
-        home_pose_ = mavros_pose_;
-        home_pose_.header.frame_id = config_.mavros_frame;
-        hold_pose_ = home_pose_;
-        output_setpoint_ = home_pose_;
-        have_home_ = true;
-        have_output_setpoint_ = true;
-        ROS_INFO("[BRIDGE] Home captured at (%.3f, %.3f, %.3f).",
-                 home_pose_.pose.position.x, home_pose_.pose.position.y,
-                 home_pose_.pose.position.z);
+        captureHomeIfSafe(&reason);
       }
-      if (baseInputsFresh(now, &reason) && have_home_) {
+      if (fullPreflightValid(now, &reason)) {
         output_setpoint_ = home_pose_;
         hold_pose_ = home_pose_;
         have_output_setpoint_ = true;
-        transitionTo(BridgeState::kPrestream, "all required inputs are fresh");
+        transitionTo(BridgeState::kPrestream,
+                     "full EGO preflight passed");
       } else {
         ROS_INFO_THROTTLE(2.0, "[WAIT_INPUTS] %s", reason.c_str());
       }
@@ -678,9 +776,9 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
 
     case BridgeState::kPrestream: {
       std::string reason;
-      if (!baseInputsFresh(now, &reason)) {
+      if (!fullPreflightValid(now, &reason)) {
         transitionTo(BridgeState::kWaitInputs,
-                     "input became stale during prestream: " + reason);
+                     "preflight failed during prestream: " + reason);
         break;
       }
       publishSetpoint(home_pose_, now);
@@ -693,12 +791,12 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
 
     case BridgeState::kArmOffboard: {
       std::string reason;
-      if (!baseInputsFresh(now, &reason)) {
+      if (!fullPreflightValid(now, &reason)) {
         if (fcu_state_.armed) {
-          startHold("arming input failure: " + reason);
+          startHold("arming preflight failure: " + reason);
         } else {
           transitionTo(BridgeState::kWaitInputs,
-                       "arming input failure: " + reason);
+                       "arming preflight failure: " + reason);
         }
         break;
       }
@@ -913,20 +1011,26 @@ bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
     return false;
   }
   if (!have_mavros_pose_ ||
-      !isFresh(now, last_mavros_pose_time_,
-               config_.mavros_pose_timeout)) {
-    *reason = "MAVROS local pose is unavailable or stale";
+      !isStampedFresh(now, last_mavros_pose_time_,
+                      last_mavros_pose_stamp_,
+                      config_.mavros_pose_timeout)) {
+    *reason =
+        "MAVROS local pose is unavailable, stale or has an unusable timestamp";
     return false;
   }
   if (!have_planner_odom_ ||
-      !isFresh(now, last_planner_odom_time_,
-               config_.planner_odom_timeout)) {
-    *reason = "planner odometry is unavailable or stale";
+      !isStampedFresh(now, last_planner_odom_time_,
+                      last_planner_odom_stamp_,
+                      config_.planner_odom_timeout)) {
+    *reason =
+        "planner odometry is unavailable, stale or has an unusable timestamp";
     return false;
   }
   if (!have_cloud_ ||
-      !isFresh(now, last_cloud_time_, config_.cloud_timeout)) {
-    *reason = "obstacle point cloud is unavailable or stale";
+      !isStampedFresh(now, last_cloud_time_, last_cloud_stamp_,
+                      config_.cloud_timeout)) {
+    *reason =
+        "obstacle point cloud is unavailable, stale or has an unusable timestamp";
     return false;
   }
   reason->clear();
@@ -935,7 +1039,8 @@ bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
 
 bool EgoMavrosBridge::commandFresh(const ros::Time& now) const {
   return have_planner_target_ &&
-         isFresh(now, last_command_time_, config_.command_timeout);
+         isStampedFresh(now, last_command_time_, last_command_stamp_,
+                        config_.command_timeout);
 }
 
 bool EgoMavrosBridge::plannerAlignmentValid(std::string* reason) const {
@@ -961,6 +1066,78 @@ bool EgoMavrosBridge::plannerAlignmentValid(std::string* reason) const {
     stream << "alignment error position=" << position_error
            << " m, yaw=" << yaw_error << " rad";
     *reason = stream.str();
+    return false;
+  }
+  reason->clear();
+  return true;
+}
+
+bool EgoMavrosBridge::captureHomeIfSafe(std::string* reason) {
+  if (have_home_) {
+    reason->clear();
+    return true;
+  }
+  const bool confirmed_on_ground =
+      have_fcu_state_ && have_extended_state_ && !fcu_state_.armed &&
+      extended_state_.landed_state ==
+          mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND;
+  if (!confirmed_on_ground) {
+    *reason = "home capture requires PX4 disarmed and ON_GROUND";
+    return false;
+  }
+  if (!have_mavros_pose_ || !isFinitePose(mavros_pose_)) {
+    *reason = "home capture requires a finite MAVROS pose";
+    return false;
+  }
+
+  home_pose_ = mavros_pose_;
+  home_pose_.header.frame_id = config_.mavros_frame;
+  hold_pose_ = home_pose_;
+  output_setpoint_ = home_pose_;
+  have_home_ = true;
+  have_output_setpoint_ = true;
+  ROS_INFO("[BRIDGE] Home captured at (%.3f, %.3f, %.3f).",
+           home_pose_.pose.position.x, home_pose_.pose.position.y,
+           home_pose_.pose.position.z);
+  reason->clear();
+  return true;
+}
+
+bool EgoMavrosBridge::fullPreflightValid(const ros::Time& now,
+                                         std::string* reason) {
+  if (!baseInputsFresh(now, reason)) {
+    return false;
+  }
+  if (!have_home_) {
+    *reason = "home pose has not been captured";
+    return false;
+  }
+  if (!plannerAlignmentValid(reason)) {
+    *reason = "planner/MAVROS alignment or TF invalid: " + *reason;
+    return false;
+  }
+  if (!have_valid_goal_) {
+    *reason = "no validated goal has been received";
+    return false;
+  }
+  if (!isWithinBounds(validated_goal_mavros_, home_pose_, config_.bounds,
+                      reason)) {
+    *reason = "validated goal is outside the configured envelope: " +
+              *reason;
+    return false;
+  }
+  if (!commandFresh(now)) {
+    *reason =
+        "planner command is unavailable, stale or has an unusable timestamp";
+    return false;
+  }
+  if (!isWithinBounds(planner_target_mavros_, home_pose_, config_.bounds,
+                      reason)) {
+    *reason = "planner command is outside the configured envelope: " +
+              *reason;
+    return false;
+  }
+  if (!controlAuthorityValid(now, reason)) {
     return false;
   }
   reason->clear();
@@ -1030,26 +1207,88 @@ bool EgoMavrosBridge::hasControlConflict(std::string* detail) const {
     return true;
   }
 
-  const std::string resolved_topic =
-      node_handle_.resolveName(config_.setpoint_topic);
-  const std::string own_node = ros::this_node::getName();
   const XmlRpc::XmlRpcValue& publishers = payload[0];
+  std::vector<TopicPublishers> publisher_state;
   for (int index = 0; index < publishers.size(); ++index) {
-    const std::string topic = publishers[index][0];
-    if (topic != resolved_topic) {
+    if (publishers[index].getType() != XmlRpc::XmlRpcValue::TypeArray ||
+        publishers[index].size() < 2 ||
+        publishers[index][0].getType() !=
+            XmlRpc::XmlRpcValue::TypeString ||
+        publishers[index][1].getType() !=
+            XmlRpc::XmlRpcValue::TypeArray) {
       continue;
     }
+    TopicPublishers entry;
+    entry.topic = static_cast<std::string>(publishers[index][0]);
     const XmlRpc::XmlRpcValue& nodes = publishers[index][1];
     for (int node_index = 0; node_index < nodes.size(); ++node_index) {
-      const std::string node_name = nodes[node_index];
-      if (node_name != own_node) {
-        *detail = "setpoint topic already has publisher " + node_name;
-        return true;
+      if (nodes[node_index].getType() ==
+          XmlRpc::XmlRpcValue::TypeString) {
+        entry.nodes.push_back(
+            static_cast<std::string>(nodes[node_index]));
       }
     }
+    publisher_state.push_back(entry);
+  }
+
+  ControlConflict conflict;
+  if (findControlConflict(monitoredControlTopics(), publisher_state,
+                          ros::this_node::getName(), &conflict)) {
+    *detail = "MAVROS control authority conflict: category=" +
+              conflict.category + ", topic=" + conflict.topic +
+              ", publisher=" + conflict.node;
+    return true;
   }
   detail->clear();
   return false;
+}
+
+bool EgoMavrosBridge::controlAuthorityValid(const ros::Time& now,
+                                            std::string* detail) {
+  if (last_authority_check_time_.isZero() || now < last_authority_check_time_ ||
+      now - last_authority_check_time_ >=
+          ros::Duration(kAuthorityCheckInterval)) {
+    cached_control_conflict_ =
+        hasControlConflict(&cached_control_conflict_detail_);
+    last_authority_check_time_ = now;
+  }
+  if (cached_control_conflict_) {
+    *detail = cached_control_conflict_detail_;
+    return false;
+  }
+  detail->clear();
+  return true;
+}
+
+std::vector<MonitoredControlTopic>
+EgoMavrosBridge::monitoredControlTopics() const {
+  std::vector<MonitoredControlTopic> result;
+  const auto add_topics =
+      [this, &result](const std::string& category,
+                      const std::vector<std::string>& topics) {
+        for (const auto& topic : topics) {
+          const MonitoredControlTopic candidate{
+              category, node_handle_.resolveName(topic)};
+          const bool duplicate = std::any_of(
+              result.begin(), result.end(),
+              [&candidate](const MonitoredControlTopic& existing) {
+                return existing.topic == candidate.topic;
+              });
+          if (!duplicate) {
+            result.push_back(candidate);
+          }
+        }
+      };
+
+  std::vector<std::string> position_topics =
+      config_.position_control_topics;
+  position_topics.push_back(config_.setpoint_topic);
+  add_topics("position", position_topics);
+  add_topics("raw local", config_.raw_local_control_topics);
+  add_topics("velocity", config_.velocity_control_topics);
+  add_topics("attitude", config_.attitude_control_topics);
+  add_topics("thrust", config_.thrust_control_topics);
+  return result;
 }
 
 bool EgoMavrosBridge::requestMode(const std::string& mode,

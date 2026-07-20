@@ -19,6 +19,7 @@ max_horizontal_radius: 10.0
 
 # Input watchdogs. A short command loss first enters HOLD, then AUTO.LAND.
 command_timeout: 0.2
+goal_timeout: 2.0
 fcu_state_timeout: 1.0
 extended_state_timeout: 1.0
 mavros_pose_timeout: 0.2
@@ -49,6 +50,24 @@ mavros_state_topic: /mavros/state
 mavros_extended_state_topic: /mavros/extended_state
 mavros_pose_topic: /mavros/local_position/pose
 setpoint_topic: /mavros/setpoint_position/local
+# All standard MAVROS command paths are authority gates. The bridge only
+# publishes setpoint_topic; the remaining topics are monitored, never emitted.
+control_topics:
+  position:
+    - /mavros/setpoint_position/local
+    - /mavros/setpoint_position/global
+    - /mavros/setpoint_position/global_to_local
+  raw_local:
+    - /mavros/setpoint_raw/local
+  velocity:
+    - /mavros/setpoint_velocity/cmd_vel
+    - /mavros/setpoint_velocity/cmd_vel_unstamped
+  attitude:
+    - /mavros/setpoint_attitude/attitude
+    - /mavros/setpoint_attitude/cmd_vel
+    - /mavros/setpoint_raw/attitude
+  thrust:
+    - /mavros/setpoint_attitude/thrust
 arming_service: /mavros/cmd/arming
 set_mode_service: /mavros/set_mode
 input_goal_topic: /move_base_simple/goal

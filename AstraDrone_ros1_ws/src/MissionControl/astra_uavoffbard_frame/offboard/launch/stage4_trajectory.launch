@@ -46,7 +46,8 @@
     <arg name="landing_contact_confirm_time" default="0.2"/>
     <arg name="landing_contact_descent_speed" default="0.30"/>
     <arg name="configure_px4_soft_landing" default="true"/>
-    <arg name="px4_auto_land_speed" default="0.30"/>
+    <!-- PX4 v1.15.4 声明 MPC_LAND_SPEED >= 0.60 m/s。 -->
+    <arg name="px4_auto_land_speed" default="0.60"/>
     <arg name="px4_land_crawl_speed" default="0.20"/>
     <arg name="px4_land_detector_z_velocity_max" default="0.15"/>
     <arg name="failsafe_hover_duration" default="5.0"/>

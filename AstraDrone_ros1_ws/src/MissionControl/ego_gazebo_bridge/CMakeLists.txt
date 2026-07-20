@@ -19,7 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES ego_bridge_command_utils
+  LIBRARIES ego_bridge_command_utils ego_bridge_control_authority
   CATKIN_DEPENDS
     geometry_msgs
     mavros_msgs
@@ -45,17 +45,24 @@ add_library(ego_bridge_command_utils
 target_link_libraries(ego_bridge_command_utils ${catkin_LIBRARIES})
 add_dependencies(ego_bridge_command_utils ${catkin_EXPORTED_TARGETS})
 
+add_library(ego_bridge_control_authority
+  src/control_authority.cpp
+)
+target_link_libraries(ego_bridge_control_authority ${catkin_LIBRARIES})
+add_dependencies(ego_bridge_control_authority ${catkin_EXPORTED_TARGETS})
+
 add_executable(ego_mavros_bridge
   src/ego_mavros_bridge.cpp
   src/ego_mavros_bridge_node.cpp
 )
 target_link_libraries(ego_mavros_bridge
   ego_bridge_command_utils
+  ego_bridge_control_authority
   ${catkin_LIBRARIES}
 )
 add_dependencies(ego_mavros_bridge ${catkin_EXPORTED_TARGETS})
 
-install(TARGETS ego_bridge_command_utils ego_mavros_bridge
+install(TARGETS ego_bridge_command_utils ego_bridge_control_authority ego_mavros_bridge
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -72,6 +79,14 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET command_utils_test)
     target_link_libraries(command_utils_test
       ego_bridge_command_utils
+      ${catkin_LIBRARIES}
+    )
+  endif()
+
+  catkin_add_gtest(control_authority_test test/control_authority_test.cpp)
+  if(TARGET control_authority_test)
+    target_link_libraries(control_authority_test
+      ego_bridge_control_authority
       ${catkin_LIBRARIES}
     )
   endif()

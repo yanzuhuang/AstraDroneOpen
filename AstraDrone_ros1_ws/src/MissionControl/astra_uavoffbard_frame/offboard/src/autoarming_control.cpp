@@ -383,7 +383,7 @@ int main(int argc, char** argv) {
     pnh.param("landing_contact_confirm_time", landing_contact_confirm_time, 0.2);  // 近地条件持续时间（s）
     pnh.param("landing_contact_descent_speed", landing_contact_descent_speed, 0.30);  // 接触后降低推力的下降意图（m/s）
     pnh.param("configure_px4_soft_landing", configure_px4_soft_landing, true);
-    pnh.param("px4_auto_land_speed", px4_auto_land_speed, 0.30);  // AUTO.LAND 备用下降速度（m/s）
+    pnh.param("px4_auto_land_speed", px4_auto_land_speed, 0.60);  // PX4 MPC_LAND_SPEED（m/s）
     pnh.param("px4_land_crawl_speed", px4_land_crawl_speed, 0.20);  // PX4 近地爬行速度（m/s）
     pnh.param("px4_land_detector_z_velocity_max",
               px4_land_detector_z_velocity_max, 0.15);  // 落地检测静止阈值（m/s）
@@ -436,6 +436,7 @@ int main(int argc, char** argv) {
         landing_contact_confirm_time <= 0.0 ||
         landing_contact_descent_speed < landing_touchdown_speed ||
         landing_contact_descent_speed > landing_cruise_speed ||
+        px4_auto_land_speed < 0.60 ||
         px4_auto_land_speed < px4_land_crawl_speed ||
         px4_land_crawl_speed < landing_touchdown_speed ||
         px4_land_detector_z_velocity_max <= 0.0 ||

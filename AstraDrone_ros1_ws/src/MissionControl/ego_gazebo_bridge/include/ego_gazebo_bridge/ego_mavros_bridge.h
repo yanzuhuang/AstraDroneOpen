@@ -2,6 +2,7 @@
 #define EGO_GAZEBO_BRIDGE_EGO_MAVROS_BRIDGE_H_
 
 #include "ego_gazebo_bridge/command_utils.h"
+#include "ego_gazebo_bridge/control_authority.h"
 
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/CommandBool.h>
@@ -19,6 +20,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include <string>
+#include <vector>
 
 namespace ego_gazebo_bridge {
 
@@ -50,6 +52,7 @@ struct BridgeConfig {
   double takeoff_tolerance{0.15};
   double hover_duration{1.0};
   double command_timeout{0.2};
+  double goal_timeout{2.0};
   double fcu_state_timeout{1.0};
   double extended_state_timeout{1.0};
   double mavros_pose_timeout{0.2};
@@ -77,6 +80,21 @@ struct BridgeConfig {
   std::string set_mode_service{"/mavros/set_mode"};
   std::string input_goal_topic{"/move_base_simple/goal"};
   std::string planner_goal_topic{"/planning/goal"};
+  std::vector<std::string> position_control_topics{
+      "/mavros/setpoint_position/local",
+      "/mavros/setpoint_position/global",
+      "/mavros/setpoint_position/global_to_local"};
+  std::vector<std::string> raw_local_control_topics{
+      "/mavros/setpoint_raw/local"};
+  std::vector<std::string> velocity_control_topics{
+      "/mavros/setpoint_velocity/cmd_vel",
+      "/mavros/setpoint_velocity/cmd_vel_unstamped"};
+  std::vector<std::string> attitude_control_topics{
+      "/mavros/setpoint_attitude/attitude",
+      "/mavros/setpoint_attitude/cmd_vel",
+      "/mavros/setpoint_raw/attitude"};
+  std::vector<std::string> thrust_control_topics{
+      "/mavros/setpoint_attitude/thrust"};
 };
 
 class EgoMavrosBridge {
@@ -117,6 +135,8 @@ class EgoMavrosBridge {
   bool baseInputsFresh(const ros::Time& now, std::string* reason) const;
   bool commandFresh(const ros::Time& now) const;
   bool plannerAlignmentValid(std::string* reason) const;
+  bool fullPreflightValid(const ros::Time& now, std::string* reason);
+  bool captureHomeIfSafe(std::string* reason);
   bool transformToMavros(const geometry_msgs::PoseStamped& input,
                          geometry_msgs::PoseStamped* output,
                          std::string* reason) const;
@@ -124,6 +144,8 @@ class EgoMavrosBridge {
                            geometry_msgs::PoseStamped* output,
                            std::string* reason) const;
   bool hasControlConflict(std::string* detail) const;
+  bool controlAuthorityValid(const ros::Time& now, std::string* detail);
+  std::vector<MonitoredControlTopic> monitoredControlTopics() const;
   bool requestMode(const std::string& mode, const ros::Time& now);
   bool requestArm(const ros::Time& now);
   void startHold(const std::string& reason);
@@ -164,6 +186,7 @@ class EgoMavrosBridge {
   geometry_msgs::PoseStamped hold_pose_;
   geometry_msgs::PoseStamped output_setpoint_;
   geometry_msgs::PoseStamped planner_target_mavros_;
+  geometry_msgs::PoseStamped validated_goal_mavros_;
 
   bool have_fcu_state_{false};
   bool have_extended_state_{false};
@@ -173,6 +196,7 @@ class EgoMavrosBridge {
   bool have_home_{false};
   bool have_output_setpoint_{false};
   bool have_planner_target_{false};
+  bool have_valid_goal_{false};
   bool tracking_requested_{false};
   bool land_requested_{false};
   bool return_in_progress_{false};
@@ -182,15 +206,21 @@ class EgoMavrosBridge {
   ros::Time last_fcu_state_time_;
   ros::Time last_extended_state_time_;
   ros::Time last_mavros_pose_time_;
+  ros::Time last_mavros_pose_stamp_;
   ros::Time last_planner_odom_time_;
+  ros::Time last_planner_odom_stamp_;
   ros::Time last_cloud_time_;
+  ros::Time last_cloud_stamp_;
   ros::Time last_command_time_;
+  ros::Time last_command_stamp_;
   ros::Time state_entered_time_;
   ros::Time last_mode_request_time_;
   ros::Time last_arm_request_time_;
   ros::Time last_authority_check_time_;
   ros::Time return_inside_since_;
   ros::Time takeoff_inside_since_;
+  bool cached_control_conflict_{false};
+  std::string cached_control_conflict_detail_;
   std::string hold_reason_;
 };
 

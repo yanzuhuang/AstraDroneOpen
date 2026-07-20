@@ -12,7 +12,7 @@
     <!-- vehicle model and world -->
     <arg name="est" default="ekf2"/>
     <arg name="vehicle" default="iris_mid360"/>
-    <arg name="world" default="$(find env_map)/../../../astra_gazebo_worlds/dynamic_avoidance.world"/>
+    <arg name="world" default="$(find env_map)/../../../astra_gazebo_worlds/forest.world"/>
     <arg name="sdf" default="$(find mavlink_sitl_gazebo)/models/$(arg vehicle)/$(arg vehicle).sdf"/>
 
     <!-- gazebo configs -->
