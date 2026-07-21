@@ -63,7 +63,7 @@
 
 ### 3.1 PX4 软降落参数超出声明范围
 
-autoarming_control.launch 和 stage4_trajectory.launch 默认开启 configure_px4_soft_landing=true，并请求：
+`autoarming_control.launch` 和 `continuous_trajectory.launch`（历史名 `stage4_trajectory.launch`）默认开启 configure_px4_soft_landing=true，并请求：
 
     MPC_LAND_SPEED = 0.30
 
@@ -75,7 +75,7 @@ autoarming_control.launch 和 stage4_trajectory.launch 默认开启 configure_px
 
 - AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/src/autoarming_control.cpp:386
 - AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/autoarming_control.launch:26
-- AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/stage4_trajectory.launch:48
+- AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/continuous_trajectory.launch:48（历史路径名为 `stage4_trajectory.launch`）
 
 ### 3.2 坐标对齐检查发生在起飞之后
 
@@ -83,7 +83,7 @@ bridge 在 WAIT_INPUTS、PRESTREAM、ARM_OFFBOARD 和 TAKEOFF 阶段只检查输
 
 因此错误的 map 与 camera_init 关系不会阻止解锁和起飞，只会阻止起飞后的规划跟踪。
 
-stage6_gazebo.launch 默认发布单位变换：
+`stage6_gazebo.launch`（历史名，现按功能重命名为 `ego_gazebo_bridge.launch`）默认发布单位变换：
 
     map -> camera_init = identity
 
@@ -262,7 +262,7 @@ Stage 6 脚本默认依赖：
 - stage2.md 仍大量指导使用 MAVLink 400/21196 强制上锁，与当前源码和安全策略不一致。
 - studymap.md 称 Stage 6 只使用 EGO 原生 mock/SO3，不连接 FAST-LIO/PX4，与当前实现相反。
 - studymap.md 仍称 world 路径缺少斜杠，但该 launch 已修复。
-- stage3_waypoints.yaml 把同时改变高度的动作描述为原地转向。
+- `relative_waypoint_mission.yaml`（历史名 `stage3_waypoints.yaml`）把同时改变高度的动作描述为原地转向。
 - 降落接触辅助减少推力的注释，与实际增加向下速度指令不完全一致。
 
 ## 6. EGO-Planner 原始核心修改评估
@@ -305,13 +305,13 @@ Stage 6 脚本默认依赖：
 | 文件 | 作用 | 分类 |
 |---|---|---|
 | OB/CMakeLists.txt | 构建控制器、测试和分析脚本 | 需要重构：缺少完整 install-space 规则 |
-| OB/config/stage3_waypoints.yaml | Stage 3 航点任务 | 需要重构：注释与动作不一致 |
+| OB/config/relative_waypoint_mission.yaml（历史名 `stage3_waypoints.yaml`） | 旧 Stage 3 航点任务 | 需要重构：注释与动作不一致 |
 | OB/include/offboard/landing_profile.h | S 曲线软降落速度模型 | 可以保留 |
 | OB/include/offboard/trajectory_reference.h | 圆、方形、8 字轨迹参考生成 | 可以保留；正式使用前评估方形拐角 |
 | OB/launch/autoarming_control.launch | 航点任务启动和安全参数 | 需要重构：与 Stage 4 大量重复 |
-| OB/launch/stage4_trajectory.launch | Stage 4 轨迹任务启动 | 需要重构 |
+| OB/launch/continuous_trajectory.launch（历史名 `stage4_trajectory.launch`） | 旧 Stage 4 轨迹任务启动 | 需要重构 |
 | OB/package.xml | ROS 包依赖元数据 | 需要重构：maintainer 和 license 为占位内容 |
-| OB/scripts/stage4_analyze_bag.py | rosbag 轨迹误差分析 | 需要重构：Topic 固定且未做时间同步 |
+| OB/scripts/analyze_trajectory_bag.py（历史名 `stage4_analyze_bag.py`） | rosbag 轨迹误差分析 | 需要重构：Topic 固定且未做时间同步 |
 | OB/src/autoarming_control.cpp | 起飞、任务、返航和降落状态机 | 需要重构：1,299 行、职责过多 |
 | OB/test/trajectory_reference_test.cpp | 轨迹和降落数学测试 | 可以保留 |
 
@@ -320,12 +320,12 @@ Stage 6 脚本默认依赖：
 | 文件 | 作用 | 分类 |
 |---|---|---|
 | BR/CMakeLists.txt | bridge 构建、安装和测试 | 可以保留 |
-| BR/config/stage6_gazebo.yaml | Stage 6 超时、速度、frame 和 Topic 参数 | 需要重构：补齐坐标和感知契约 |
+| BR/config/stage6_gazebo.yaml（历史名；现为 `ego_gazebo_bridge.yaml`） | Stage 6 超时、速度、frame 和 Topic 参数 | 需要重构：补齐坐标和感知契约 |
 | BR/include/ego_gazebo_bridge/command_utils.h | 命令校验、角度和步进工具接口 | 可以保留 |
 | BR/include/ego_gazebo_bridge/ego_mavros_bridge.h | bridge 状态和 ROS 成员定义 | 需要重构：类职责过大 |
-| BR/launch/stage6_gazebo.launch | EGO、traj_server、waypoint、bridge、RViz 总启动 | 需要重构：默认 identity TF 风险 |
+| BR/launch/stage6_gazebo.launch（历史名；现为 `ego_gazebo_bridge.launch`） | EGO、traj_server、waypoint、bridge、RViz 总启动 | 需要重构：默认 identity TF 风险 |
 | BR/package.xml | bridge ROS 包依赖 | 需要重构：maintainer 为占位内容 |
-| BR/rviz/stage6_gazebo.rviz | Stage 6 可视化配置 | 可以保留 |
+| BR/rviz/stage6_gazebo.rviz（历史名；现为 `ego_gazebo_bridge.rviz`） | Stage 6 可视化配置 | 可以保留 |
 | BR/src/command_utils.cpp | 命令有限值、距离和限速工具 | 可以保留；后续补四元数规范化 |
 | BR/src/ego_mavros_bridge.cpp | 坐标变换、goal 适配和飞行状态机 | 需要重构：1,158 行及控制语义问题 |
 | BR/src/ego_mavros_bridge_node.cpp | bridge 节点入口 | 可以保留 |
@@ -392,14 +392,14 @@ Stage 6 脚本默认依赖：
 | order.md | 常用启动和 rosbag 命令 | 需要重构：硬编码路径且内容过长 |
 | ros.md | ROS 入门教程 | 需要重构并迁移至教程目录 |
 | scripts/run_sh/pc_example.sh | 原有 PX4、FAST-LIO、offboard tmux 启动 | 需要重构：默认控制冲突和硬编码 |
-| scripts/run_sh/stage6_planner.sh | Stage 6 环境检查和 tmux 编排 | 需要重构：平台绑定、无超时、进程识别不全 |
+| scripts/run_sh/ego_planner_stack.sh（历史名 `stage6_planner.sh`） | 旧 Stage 6 环境检查和 tmux 编排 | 需要重构：平台绑定、无超时、进程识别不全 |
 | simulation/sim_workspace/src/dynamic_obstacle_controller/launch/astra_dynamic_avoidance_static.launch | 修复动态障碍 world 路径 | 可以保留 |
 | stage0.md | ROS/PX4 基础学习阶段 | 需要重构或迁移归档 |
 | stage1.md | Offboard 基础学习阶段 | 需要重构：含旧控制逻辑 |
 | stage2.md | 旧自动降落学习阶段 | 需要重构，优先级最高：含危险的 21196 指令 |
 | stage3.md | 航点任务说明 | 需要重构：降落描述与源码不符 |
 | stage4.md | 轨迹飞行和分析说明 | 需要重构 |
-| stage6.md | EGO/PX4/FAST-LIO 集成说明 | 需要重构并成为唯一权威架构文档 |
+| legacy_ego_integration.md（历史名 `stage6.md`） | 旧路线 EGO/PX4/FAST-LIO 集成说明 | 历史记录；当前事实需与源码和阶段文档复核 |
 | studymap.md | 总学习路线 | 需要重构：与当前 Stage 6 架构直接矛盾 |
 | studynote.md | 综合学习笔记 | 需要重构或合并归档 |
 
@@ -525,7 +525,7 @@ Stage 6 脚本默认依赖：
 - 增加 FAST-LIO 日志忽略规则。
 - 合并重复教程。
 - 删除所有 21196 当前操作指导。
-- 以 stage6.md 或正式架构文档作为唯一集成事实来源。
+- 以正式架构文档作为当前集成事实来源；`legacy_ego_integration.md` 仅保留旧0–6路线历史。
 - 为脚本增加 headless、超时、版本检测和明确的控制模式。
 - 禁止 pc_example.sh 默认启动控制器。
 

@@ -5,14 +5,14 @@ set -Eeuo pipefail
 script_path="$(readlink -f "${BASH_SOURCE[0]}")"
 script_dir="$(dirname "$script_path")"
 repo_root="$(readlink -f "$script_dir/../..")"
-session_name="stage6_planner"
+session_name="ego_planner_stack"
 default_world="$repo_root/simulation/astra_gazebo_worlds/dynamic_avoidance.world"
 
 usage() {
     cat <<'EOF'
 用法：
-  stage6_planner.sh [--headless] [--world WORLD_FILE] [--control] [--attach]
-  stage6_planner.sh --stop
+  ego_planner_stack.sh [--headless] [--world WORLD_FILE] [--control] [--attach]
+  ego_planner_stack.sh --stop
 
 默认启动：PX4 + NVIDIA 硬件渲染 Gazebo GUI + FAST-LIO +
           EGO-Planner + NVIDIA 硬件渲染 RViz（DRY_RUN，不解锁无人机）。
@@ -101,7 +101,7 @@ run_component() {
             else
                 echo "启动 EGO-Planner 与 NVIDIA 硬件渲染 RViz（DRY_RUN）……"
             fi
-            exec roslaunch ego_gazebo_bridge stage6_gazebo.launch \
+            exec roslaunch ego_gazebo_bridge ego_gazebo_bridge.launch \
                 enable_control:="$enable_control_value" rviz:=true
             ;;
         *)
@@ -111,7 +111,7 @@ run_component() {
     esac
 }
 
-stage6_runtime_running() {
+ego_planner_runtime_running() {
     local process_name
     for process_name in rosmaster gzserver gzclient rviz px4 \
         fastlio_mapping ego_planner_node traj_server waypoint_generator \
@@ -128,7 +128,7 @@ wait_for_runtime_exit() {
     local elapsed
 
     for ((elapsed = 0; elapsed < max_seconds; elapsed++)); do
-        if ! stage6_runtime_running; then
+        if ! ego_planner_runtime_running; then
             return 0
         fi
         sleep 1
@@ -207,20 +207,20 @@ if [[ "$stop" == true ]]; then
             tmux kill-session -t "$session_name"
         fi
         if wait_for_runtime_exit 10; then
-            echo "已停止 Stage6 仿真会话：$session_name"
+            echo "已停止 EGO 规划栈仿真会话：$session_name"
         else
-            echo "Stage6 的部分进程仍未退出；请稍候后再次执行 --stop。" >&2
+            echo "EGO 规划栈的部分进程仍未退出；请稍候后再次执行 --stop。" >&2
             exit 1
         fi
     else
-        if stage6_runtime_running; then
+        if ego_planner_runtime_running; then
             echo "tmux 会话已结束，正在等待残留进程自行清理……"
             if ! wait_for_runtime_exit 20; then
                 echo "仍检测到 ROS/Gazebo 进程；它们可能不属于本脚本，未强制终止。" >&2
                 exit 1
             fi
         fi
-        echo "Stage6 仿真会话未运行。"
+        echo "EGO 规划栈仿真会话未运行。"
     fi
     exit 0
 fi
@@ -239,7 +239,7 @@ fi
 world_file="$(readlink -f "$world_file")"
 
 if ! nvidia-smi >/dev/null 2>&1; then
-    echo "NVIDIA 驱动当前不可用；请先完整重启电脑，再启动 Stage6。" >&2
+    echo "NVIDIA 驱动当前不可用；请先完整重启电脑，再启动 EGO 规划栈。" >&2
     exit 1
 fi
 
@@ -250,19 +250,19 @@ if [[ "$driver_version" == 570.* ]]; then
 fi
 
 if journalctl -b -k --no-pager 2>/dev/null | grep -q "GPU Reset Required"; then
-    echo "本次开机已出现 GPU Reset Required；请完整重启后再启动 Stage6。" >&2
+    echo "本次开机已出现 GPU Reset Required；请完整重启后再启动 EGO 规划栈。" >&2
     exit 1
 fi
 
 if tmux has-session -t "$session_name" 2>/dev/null; then
-    echo "Stage6 已在 tmux 会话 $session_name 中运行。"
+    echo "EGO 规划栈已在 tmux 会话 $session_name 中运行。"
     if [[ "$attach" == true ]]; then
         exec tmux attach-session -t "$session_name"
     fi
     exit 0
 fi
 
-if stage6_runtime_running; then
+if ego_planner_runtime_running; then
     echo "检测到 ROS/Gazebo 进程，等待可能仍在进行的退出清理……"
     if ! wait_for_runtime_exit 20; then
         echo "检测到其他 ROS/Gazebo 仿真仍在运行。请先停止它，避免端口和控制源冲突。" >&2
@@ -287,7 +287,7 @@ tmux new-window -d -t "$session_name:" -n planner_rviz "$planner_command"
 
 tmux select-window -t "$session_name:planner_rviz"
 
-echo "Stage6 已启动："
+echo "EGO 规划栈已启动："
 echo "  PX4/Gazebo、FAST-LIO、EGO-Planner 和 RViz 均在 tmux 会话 $session_name 中。"
 if [[ "$open_gazebo_gui" == true ]]; then
     echo "  Gazebo GUI 和 RViz 均使用 NVIDIA GPU（当前驱动：$driver_version）。"

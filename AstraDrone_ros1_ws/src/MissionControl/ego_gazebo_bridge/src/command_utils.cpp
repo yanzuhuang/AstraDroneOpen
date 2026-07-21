@@ -1,6 +1,7 @@
 #include "ego_gazebo_bridge/command_utils.h"
 
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,33 @@ bool finite(double value) {
   return std::isfinite(value);
 }
 
+geometry_msgs::Vector3 rotateVector(
+    const geometry_msgs::Vector3& input,
+    const geometry_msgs::Quaternion& rotation) {
+  tf2::Quaternion quaternion;
+  tf2::fromMsg(rotation, quaternion);
+  const tf2::Vector3 rotated =
+      tf2::quatRotate(quaternion,
+                      tf2::Vector3(input.x, input.y, input.z));
+  geometry_msgs::Vector3 output;
+  output.x = rotated.x();
+  output.y = rotated.y();
+  output.z = rotated.z();
+  return output;
+}
+
+void limitVector(double maximum_norm, geometry_msgs::Vector3* vector) {
+  const double norm =
+      std::sqrt(vector->x * vector->x + vector->y * vector->y +
+                vector->z * vector->z);
+  if (norm > maximum_norm && norm > 0.0) {
+    const double scale = maximum_norm / norm;
+    vector->x *= scale;
+    vector->y *= scale;
+    vector->z *= scale;
+  }
+}
+
 }  // namespace
 
 bool isFinitePositionCommand(
@@ -25,6 +53,16 @@ bool isFinitePositionCommand(
          finite(command.acceleration.x) && finite(command.acceleration.y) &&
          finite(command.acceleration.z) && finite(command.yaw) &&
          finite(command.yaw_dot);
+}
+
+bool isTimestampUsable(const ros::Time& now, const ros::Time& stamp,
+                       double timeout, double future_tolerance) {
+  if (now.isZero() || stamp.isZero() || !finite(timeout) || timeout <= 0.0 ||
+      !finite(future_tolerance) || future_tolerance < 0.0) {
+    return false;
+  }
+  const double age = (now - stamp).toSec();
+  return age >= -future_tolerance && age <= timeout;
 }
 
 bool isFinitePose(const geometry_msgs::PoseStamped& pose) {
@@ -98,6 +136,91 @@ geometry_msgs::PoseStamped transformPose(
   geometry_msgs::PoseStamped output;
   tf2::doTransform(input, output, transform);
   return output;
+}
+
+bool commandToRawTarget(
+    const quadrotor_msgs::PositionCommand& command,
+    const geometry_msgs::TransformStamped& planning_to_mavros,
+    const RawCommandLimits& limits, const ros::Time& stamp,
+    mavros_msgs::PositionTarget* target, std::string* reason) {
+  if (target == nullptr || reason == nullptr) {
+    return false;
+  }
+  if (!isFinitePositionCommand(command) || stamp.isZero() ||
+      !finite(limits.max_velocity) || limits.max_velocity <= 0.0 ||
+      !finite(limits.max_acceleration) || limits.max_acceleration <= 0.0 ||
+      !finite(limits.max_yaw_rate) || limits.max_yaw_rate <= 0.0 ||
+      !finite(limits.gravity_alignment_tolerance) ||
+      limits.gravity_alignment_tolerance < 0.0) {
+    *reason = "invalid command, timestamp or raw-command limit";
+    return false;
+  }
+
+  tf2::Quaternion frame_rotation;
+  tf2::fromMsg(planning_to_mavros.transform.rotation, frame_rotation);
+  if (frame_rotation.length2() <= kQuaternionNormEpsilon) {
+    *reason = "planning-to-MAVROS rotation is invalid";
+    return false;
+  }
+  frame_rotation.normalize();
+  double roll = 0.0;
+  double pitch = 0.0;
+  double frame_yaw = 0.0;
+  tf2::Matrix3x3(frame_rotation).getRPY(roll, pitch, frame_yaw);
+  if (std::abs(roll) > limits.gravity_alignment_tolerance ||
+      std::abs(pitch) > limits.gravity_alignment_tolerance) {
+    *reason =
+        "planning and MAVROS world frames are not gravity-aligned";
+    return false;
+  }
+
+  const geometry_msgs::PoseStamped planning_pose =
+      commandToPose(command, planning_to_mavros.child_frame_id);
+  const geometry_msgs::PoseStamped mavros_pose =
+      transformPose(planning_pose, planning_to_mavros);
+  if (!isFinitePose(mavros_pose)) {
+    *reason = "transformed command pose is invalid";
+    return false;
+  }
+
+  mavros_msgs::PositionTarget output;
+  output.header.stamp = stamp;
+  output.header.frame_id = planning_to_mavros.header.frame_id;
+  output.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+  // ROS fields are ENU. MAVROS converts them to MAVLink/PX4 NED. All
+  // position, velocity, acceleration, yaw and yaw-rate fields are active.
+  output.type_mask = 0;
+  output.position = mavros_pose.pose.position;
+  output.velocity = rotateVector(command.velocity,
+                                 planning_to_mavros.transform.rotation);
+  output.acceleration_or_force =
+      rotateVector(command.acceleration,
+                   planning_to_mavros.transform.rotation);
+  limitVector(limits.max_velocity, &output.velocity);
+  limitVector(limits.max_acceleration, &output.acceleration_or_force);
+  output.yaw = static_cast<float>(
+      std::atan2(std::sin(command.yaw + frame_yaw),
+                 std::cos(command.yaw + frame_yaw)));
+  output.yaw_rate = static_cast<float>(
+      std::max(-limits.max_yaw_rate,
+               std::min(limits.max_yaw_rate, command.yaw_dot)));
+
+  *target = output;
+  reason->clear();
+  return true;
+}
+
+mavros_msgs::PositionTarget poseToRawTarget(
+    const geometry_msgs::PoseStamped& pose, const ros::Time& stamp) {
+  mavros_msgs::PositionTarget target;
+  target.header.stamp = stamp;
+  target.header.frame_id = pose.header.frame_id;
+  target.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+  target.type_mask = 0;
+  target.position = pose.pose.position;
+  target.yaw = static_cast<float>(yawFromQuaternion(pose.pose.orientation));
+  target.yaw_rate = 0.0F;
+  return target;
 }
 
 bool isWithinBounds(const geometry_msgs::PoseStamped& target,

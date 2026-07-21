@@ -19,7 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES ego_bridge_command_utils ego_bridge_control_authority
+  LIBRARIES ego_bridge_command_utils ego_bridge_control_authority ego_bridge_cloud_filter
   CATKIN_DEPENDS
     geometry_msgs
     mavros_msgs
@@ -51,6 +51,12 @@ add_library(ego_bridge_control_authority
 target_link_libraries(ego_bridge_control_authority ${catkin_LIBRARIES})
 add_dependencies(ego_bridge_control_authority ${catkin_EXPORTED_TARGETS})
 
+add_library(ego_bridge_cloud_filter
+  src/cloud_filter.cpp
+)
+target_link_libraries(ego_bridge_cloud_filter ${catkin_LIBRARIES})
+add_dependencies(ego_bridge_cloud_filter ${catkin_EXPORTED_TARGETS})
+
 add_executable(ego_mavros_bridge
   src/ego_mavros_bridge.cpp
   src/ego_mavros_bridge_node.cpp
@@ -62,7 +68,17 @@ target_link_libraries(ego_mavros_bridge
 )
 add_dependencies(ego_mavros_bridge ${catkin_EXPORTED_TARGETS})
 
-install(TARGETS ego_bridge_command_utils ego_bridge_control_authority ego_mavros_bridge
+add_executable(ground_cloud_filter
+  src/ground_cloud_filter_node.cpp
+)
+target_link_libraries(ground_cloud_filter
+  ego_bridge_cloud_filter
+  ${catkin_LIBRARIES}
+)
+add_dependencies(ground_cloud_filter ${catkin_EXPORTED_TARGETS})
+
+install(TARGETS ego_bridge_command_utils ego_bridge_control_authority
+  ego_bridge_cloud_filter ego_mavros_bridge ground_cloud_filter
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -87,6 +103,14 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET control_authority_test)
     target_link_libraries(control_authority_test
       ego_bridge_control_authority
+      ${catkin_LIBRARIES}
+    )
+  endif()
+
+  catkin_add_gtest(cloud_filter_test test/cloud_filter_test.cpp)
+  if(TARGET cloud_filter_test)
+    target_link_libraries(cloud_filter_test
+      ego_bridge_cloud_filter
       ${catkin_LIBRARIES}
     )
   endif()

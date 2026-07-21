@@ -35,7 +35,7 @@ MAVROS -> autoarming_control.cpp，形成闭环
 
 关键边界：`autoarming_control.cpp` 只生成上层 setpoint，不直接控制姿态和电机；PX4 内部控制器负责底层闭环。
 
-默认的 `pc_example.sh + autoarming_control` 链路中，FAST-LIO 虽由脚本启动，但 `autoarming_control` 不订阅它的 `/Odometry`，EGO-Planner 也不会自动接管无人机。阶段 6 使用独立的 `stage6_gazebo.launch` 和 `ego_mavros_bridge`，才把 FAST-LIO、EGO-Planner 与 PX4/Gazebo 安全地连接起来。
+默认的 `pc_example.sh + autoarming_control` 链路中，FAST-LIO 虽由脚本启动，但 `autoarming_control` 不订阅它的 `/Odometry`，EGO-Planner 也不会自动接管无人机。旧路线阶段 6 当时使用独立集成 launch；该入口现按功能命名为 `ego_gazebo_bridge.launch`，由 `ego_mavros_bridge` 把 FAST-LIO、EGO-Planner 与 PX4/Gazebo 安全地连接起来。
 
 ## 3. 主控制链术语
 
@@ -115,9 +115,9 @@ PX4、MAVROS、Gazebo 是独立软件；本仓库主要保存安装脚本、项�
 
 当前 `pc_example.sh` 直接加载仓库内这份 launch，不再依赖 `~/PX4-Autopilot` 中的同名副本。
 
-### `offboard/launch/autoarming_control.launch` 与 `stage4_trajectory.launch`
+### `offboard/launch/autoarming_control.launch` 与 `continuous_trajectory.launch`
 
-`autoarming_control.launch` 启动阶段 3 航点任务，从 YAML 读取相对 home 的航点；`stage4_trajectory.launch` 启动圆、方形、8 字或椭圆连续轨迹。两者都设置 `map -> camera_init` 静态 TF、集中配置实验参数，并可启动 RViz。只改 launch/YAML 参数通常不需要重新编译。
+`autoarming_control.launch` 启动相对 home 航点任务，从 `relative_waypoint_mission.yaml` 读取航点；`continuous_trajectory.launch` 启动圆、方形、8 字或椭圆连续轨迹。两者都设置 `map -> camera_init` 静态 TF、集中配置实验参数，并可启动 RViz。只改 launch/YAML 参数通常不需要重新编译。
 
 连续轨迹常用参数包括 `trajectory_type`、`speed`、`yaw_mode`、`target_laps`、`radius`、`side_length`、`ellipse_a/b`、`max_tracking_error` 和 `loop_rate`。新增参数时要同时完成：launch 定义参数，C++ 读取参数，并让参数真正参与计算。
 

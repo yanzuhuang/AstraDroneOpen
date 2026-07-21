@@ -1,6 +1,8 @@
 #include "ego_gazebo_bridge/command_utils.h"
 
 #include <gtest/gtest.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <cmath>
 #include <limits>
@@ -31,6 +33,15 @@ TEST(CommandValidation, RejectsNonFiniteInput) {
   EXPECT_FALSE(isFinitePositionCommand(command));
 }
 
+TEST(TimestampValidation, AllowsBoundedCrossProcessClockSkew) {
+  const ros::Time now(100, 0);
+  EXPECT_TRUE(isTimestampUsable(now, ros::Time(100, 1000000), 0.6, 0.02));
+  EXPECT_TRUE(isTimestampUsable(now, ros::Time(99, 500000000), 0.6, 0.02));
+  EXPECT_FALSE(isTimestampUsable(now, ros::Time(100, 21000000), 0.6, 0.02));
+  EXPECT_FALSE(isTimestampUsable(now, ros::Time(99, 399000000), 0.6, 0.02));
+  EXPECT_FALSE(isTimestampUsable(now, ros::Time(0), 0.6, 0.02));
+}
+
 TEST(CommandConversion, PreservesFrameAndYaw) {
   quadrotor_msgs::PositionCommand command;
   command.header.frame_id = "camera_init";
@@ -59,6 +70,62 @@ TEST(FrameTransform, AppliesRotationBeforeTranslation) {
   EXPECT_NEAR(1.0, output.pose.position.x, 1e-9);
   EXPECT_NEAR(3.0, output.pose.position.y, 1e-9);
   EXPECT_NEAR(0.5 * kPi, yawFromQuaternion(output.pose.orientation), 1e-9);
+}
+
+TEST(RawCommandConversion, PreservesAllDerivativesAndUsesZeroMask) {
+  quadrotor_msgs::PositionCommand command;
+  command.header.frame_id = "camera_init";
+  command.position.x = 1.0;
+  command.position.y = 2.0;
+  command.position.z = 3.0;
+  command.velocity.x = 2.0;
+  command.acceleration.y = 4.0;
+  command.yaw = 0.25;
+  command.yaw_dot = 1.5;
+
+  geometry_msgs::TransformStamped transform;
+  transform.header.frame_id = "map";
+  transform.child_frame_id = "camera_init";
+  transform.transform.translation.x = 10.0;
+  transform.transform.rotation = quaternionFromYaw(0.5 * kPi);
+
+  RawCommandLimits limits;
+  limits.max_velocity = 1.0;
+  limits.max_acceleration = 2.0;
+  limits.max_yaw_rate = 0.5;
+  mavros_msgs::PositionTarget target;
+  std::string reason;
+  ASSERT_TRUE(commandToRawTarget(command, transform, limits, ros::Time(5.0),
+                                 &target, &reason))
+      << reason;
+  EXPECT_EQ(mavros_msgs::PositionTarget::FRAME_LOCAL_NED,
+            target.coordinate_frame);
+  EXPECT_EQ(0u, target.type_mask);
+  EXPECT_EQ("map", target.header.frame_id);
+  EXPECT_NEAR(8.0, target.position.x, 1e-9);
+  EXPECT_NEAR(1.0, target.position.y, 1e-9);
+  EXPECT_NEAR(0.0, target.velocity.x, 1e-9);
+  EXPECT_NEAR(1.0, target.velocity.y, 1e-9);
+  EXPECT_NEAR(-2.0, target.acceleration_or_force.x, 1e-9);
+  EXPECT_NEAR(0.25 + 0.5 * kPi, target.yaw, 1e-6);
+  EXPECT_NEAR(0.5, target.yaw_rate, 1e-6);
+}
+
+TEST(RawCommandConversion, RejectsTiltedWorldFrames) {
+  quadrotor_msgs::PositionCommand command;
+  command.header.frame_id = "camera_init";
+  geometry_msgs::TransformStamped transform;
+  transform.header.frame_id = "map";
+  transform.child_frame_id = "camera_init";
+  tf2::Quaternion tilted;
+  tilted.setRPY(0.1, 0.0, 0.0);
+  transform.transform.rotation = tf2::toMsg(tilted);
+
+  mavros_msgs::PositionTarget target;
+  std::string reason;
+  EXPECT_FALSE(commandToRawTarget(command, transform, RawCommandLimits(),
+                                  ros::Time(1.0), &target, &reason));
+  EXPECT_NE(std::string::npos, reason.find("gravity-aligned"));
 }
 
 TEST(CommandBoundsTest, EnforcesHeightAndHorizontalEnvelope) {

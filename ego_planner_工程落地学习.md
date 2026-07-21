@@ -4,9 +4,10 @@
 > 审计与复核日期：2026-07-21
 > 当前分支：`ego-project`  
 > 阶段1开始时 HEAD：`dcd5bd5697ae141712df43766e9a0483e912a294`（提交主题“前置优化”）
+> 阶段2开始时 HEAD：`85dc37b1d32233cec69abf237083d0e6fdbe772e`（开始时工作区干净）
 > 已确认学习/Gazebo 开发基线：`ego-project@498c7c6`
 > 本文范围：ROS1、PX4、MAVROS、Gazebo、FAST-LIO、EGO-Planner、无人机运动与避障；不涉及 YOLO、违规判断和 QGIS。  
-> 本文同时记录前置优化和阶段1的实际完成项；除明确标记的阶段1证据外，后续路线不代表对应代码或飞行已经验收。
+> 本文同时记录前置优化、阶段1和阶段2的实际完成项；除明确标记的运行证据外，后续路线不代表对应代码或飞行已经验收。
 
 ## 阅读说明与证据等级
 
@@ -28,7 +29,7 @@
 - **[已确认决策]** 使用 `ego-project@498c7c6` 作为学习和 Gazebo 仿真开发基线；它不是生产或真机基线。
 - **[已确认]** `CODE_AUDIT_REPORT.md` 审计的是 `498c7c6`。2026-07-21 阶段1开始时实际 HEAD 为 `dcd5bd5`，提交主题为“前置优化”；分支、HEAD 和相关 diff 复核后，工作区干净，没有来源不明的修改。
 - **[已确认]** 早先的 `forest.world` 默认值修改和前置优化已经进入当前 HEAD。阶段1没有覆盖或恢复用户资产；FAST-LIO 运行时覆盖的受跟踪日志已按任务开始时的 HEAD 内容恢复，不计入成果。
-- **[已确认]** 当前分支没有配置远端跟踪分支。Codex 不得 commit 或 push，所有提交由项目负责人亲自完成。
+- **[阶段2开始时已确认]** 当前分支跟踪 `origin/ego-project`。Codex 不得 commit 或 push，所有提交由项目负责人亲自完成。
 
 ### 当前分支是否适合作为后续基础
 
@@ -52,11 +53,11 @@
 |---|---|---|
 | PX4 SITL + Gazebo + MAVROS | `simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch` | 默认机型 `iris_mid360`；用户已有修改把默认 world 设为 `forest.world` |
 | FAST-LIO | `roslaunch fast_lio mapping_mid360.launch rviz:=false` | 输入 `/livox/lidar`、`/livox/imu` |
-| EGO 集成层 | `roslaunch ego_gazebo_bridge stage6_gazebo.launch` | 启动 EGO、`traj_server`、`waypoint_generator`、bridge；默认不控制无人机 |
-| 一键 Stage 6 编排 | `scripts/run_sh/stage6_planner.sh` | 依次启动仿真、FAST-LIO、规划层和 RViz；默认 dry-run |
+| EGO 集成层 | `roslaunch ego_gazebo_bridge ego_gazebo_bridge.launch` | 启动 EGO、`traj_server`、`waypoint_generator`、bridge；默认不控制无人机 |
+| EGO规划栈通用编排 | `scripts/run_sh/ego_planner_stack.sh` | 依次启动仿真、FAST-LIO、规划层和 RViz；默认 dry-run |
 | 阶段1固定高度绕塔 | `scripts/run_sh/stage1_tower.sh` | 默认只做 RViz preview；只有显式 `--control` 才启动 PX4/Gazebo、FAST-LIO 和任务控制 |
-| 既有基础飞行/多航点 | `roslaunch offboard autoarming_control.launch` | 读取 `stage3_waypoints.yaml`，执行起飞、悬停、多航点、返航和降落 |
-| 既有连续轨迹 | `roslaunch offboard stage4_trajectory.launch` | 圆、方形、8 字、椭圆参考轨迹 |
+| 既有基础飞行/多航点 | `roslaunch offboard autoarming_control.launch` | 读取 `relative_waypoint_mission.yaml`，执行起飞、悬停、多航点、返航和降落 |
+| 既有连续轨迹 | `roslaunch offboard continuous_trajectory.launch` | 圆、方形、8 字、椭圆参考轨迹 |
 
 **[已确认]** `forest.world` 中存在 `radio_tower` 和 `radio_tower_0` 两个实例。两者 visual 与 collision 都使用同一 `radio_tower.dae`；world pose 分别为 `(-17.4209, 22.29, 0)` 与 `(24.4614, 39.3288, 0)`。阶段1按用户本轮授权采用周围更疏的 `radio_tower_0`，以 10 m 半径、4 m 高度、南侧起点和 0.3 m/s 完成两次完整仿真；这仍不是未经复核即可迁移到其他 world 或真机的坐标。
 
@@ -94,7 +95,7 @@
 | EGO → traj_server | `/planning/bspline` | `ego_planner/Bspline` | 规划坐标系 | **[已确认]** 含阶次、控制点、结点和开始时间 |
 | traj_server → bridge | `/planning/pos_cmd` | `quadrotor_msgs/PositionCommand` | `camera_init` | **[已确认]** 含位置、速度、加速度、yaw、yaw_dot |
 | MAVROS → bridge | `/mavros/state`、`/mavros/extended_state`、`/mavros/local_position/pose` | `mavros_msgs/State`、`ExtendedState`、`geometry_msgs/PoseStamped` | `map -> base_link` 语义 | **[已确认]** 用于状态机、home 和对齐检查 |
-| bridge → MAVROS/PX4 | `/mavros/setpoint_position/local` | `geometry_msgs/PoseStamped` | ROS ENU `map` | **[已确认]** MAVROS 再转换到 PX4 NED |
+| bridge → MAVROS/PX4 | `/mavros/setpoint_raw/local` | `mavros_msgs/PositionTarget` | ROS ENU `map`，`FRAME_LOCAL_NED` | **[阶段2已验证]** `type_mask=0`，p/v/a/yaw/yaw_rate有效；MAVROS再转换到PX4 NED |
 | bridge → MAVROS | `/mavros/cmd/arming`、`/mavros/set_mode` | `CommandBool`、`SetMode` 服务 | 不适用 | **[已确认]** 用于解锁和模式切换 |
 
 简化的数据流是：
@@ -124,7 +125,7 @@
 
 - **[仍未验证]** 当前仍只做目标包构建，没有重新构建仓库全部 catkin 包或验证干净 clone/install-space。
 - **[仍未验证]** 阶段1启动了 PX4/Gazebo/FAST-LIO 但没有启动EGO，因此仍没有EGO目标跟踪、避障、重规划或EGO降落的运行证据。
-- **[已确认]** bridge 把完整 PositionCommand 转为 PoseStamped，只保留 position 和 yaw，速度、加速度和 yaw_dot 没有进入 MAVROS 控制接口。这不是完整的 EGO 轨迹执行闭环。
+- **[阶段2已修复并验证]** bridge 把完整 PositionCommand 转为 raw `PositionTarget`，位置、速度、加速度、yaw 和 yaw_dot 均进入 MAVROS 控制接口并受独立限幅。
 - **[前置优化实际完成]** planner/MAVROS 对齐、目标/指令变换和控制权检查已前移到 EGO 控制启用前的完整 preflight；没有重写完整安全状态机。
 - **[已确认]** 当前 EGO 核心源码有项目定制改动，其中包括 frame 参数化、手动目标高度固定、输入检查，也包括可能影响原始能力的 flight type 限制。尚未形成可重放的 vendor patch 管理。
 
@@ -152,7 +153,7 @@
 9. **[已确认] 直接修改 EGO vendor 核心。** 后续升级、回退和比较上游版本困难。
 10. **[已确认] 外部环境不可复现。** PX4 为 dirty detached HEAD；脚本绑定 ROS Noetic、用户 PX4 目录和特定 NVIDIA 驱动策略。
 11. **[已确认] 硬编码和 namespace 风险。** FAST-LIO 源码固定 `camera_init`、`body`、绝对 Topic；部分脚本固定路径；当前单机 Topic 多为绝对名称，不适合直接复制成多机实例。
-12. **[已确认] 文档与代码不一致。** 旧文档有强制上锁、AUTO.LAND、Stage 6 架构等过期说明；`stage3_waypoints.yaml` 还把改变高度的第三个航点注释成“原地转向”。
+12. **[已确认] 文档与代码不一致。** 旧文档有强制上锁、AUTO.LAND、旧路线 Stage 6 架构等过期说明；`relative_waypoint_mission.yaml` 还把改变高度的第三个航点注释成“原地转向”。
 13. **[无法确认] 真机外参与性能。** 雷达-IMU、IMU-机体、`body-base_link` 外参，时间同步、计算负载、网络延迟和真实障碍净空均没有本轮证据。
 14. **[已确认] 动态障碍与多机能力缺失。** 当前代码没有障碍物跟踪/预测，也没有 EGO-Swarm 的轨迹广播与多机互避实现。
 
@@ -191,7 +192,7 @@
 - 两塔 visual/collision 使用同一 mesh。mesh 全高轴对齐范围约 x `[-5.87,5.86]`、y `[-6.67,6.72]`、z `[0,44.17]` m，最大水平顶点半径约 7.75 m；在 z=4–5 m 顶点切片的最大水平半径约 6.41 m。不能再假定“塔是细杆”。
 - 阶段1实际采用半径 10 m、固定 `map z=4 m`、速度 0.3 m/s、加速度 0.5 m/s²。该高度切片对塔 mesh 的原始径向余量约 3.59 m，配置要求至少保留 2 m；RViz路线和两次实际闭环均通过。因为没有 EGO 避障，换 world、塔、半径或高度后必须重新审计。
 - `iris_mid360` 的 D435i 光轴组合后朝机体/base 的 `+X`，即前向安装。当前 Stage 6 规划不使用 D435 深度图，而使用 MID360 → FAST-LIO 的注册点云。
-- 当前 bridge 的相对 home 水平包络 10 m、高度包络 2 m，以及 EGO `map_size_z=3 m`，都不适合直接执行远处铁塔任务；阶段1没有使用或修改 bridge/EGO 参数，阶段2仍须单独处理。
+- 阶段1时 bridge 的相对 home 水平包络10 m、高度包络2 m、EGO `map_size_z=3 m` 不适合远处铁塔。阶段2专用配置已扩为60 m水平、5 m相对高度及80×110×6 m地图；只对当前4 m固定高度仿真验收。
 
 ---
 
@@ -201,10 +202,10 @@
 
 这四个概念是一条从“任务意图”到“电机动作”的逐级细化链：
 
-- **航点（Waypoint）**：一个离散目标，例如“到塔东侧 `(cx+R, cy, h)` 悬停 2 秒并朝向塔”。当前 `stage3_waypoints.yaml` 就是一组相对 home 的航点。
+- **航点（Waypoint）**：一个离散目标，例如“到塔东侧 `(cx+R, cy, h)` 悬停 2 秒并朝向塔”。当前 `relative_waypoint_mission.yaml` 就是一组相对 home 的航点。
 - **路径（Path）**：只关心空间几何，即从哪里经过，不规定每个时刻在哪里。`nav_msgs/Path` 常用于表达有序位姿，但消息本身不保证速度和加速度连续。
 - **轨迹（Trajectory）**：路径加时间。它回答“在时刻 t，位置、速度、加速度、yaw 是多少”。EGO 的 B 样条和 `PositionCommand` 属于轨迹层。
-- **控制指令（Setpoint）**：给飞控或低层控制器的实时目标。当前 bridge 发布 `PoseStamped` 到 `/mavros/setpoint_position/local`；PX4 内部位置控制器再生成姿态和推力。
+- **控制指令（Setpoint）**：给飞控或低层控制器的实时目标。阶段2 bridge 发布完整 raw `PositionTarget` 到 `/mavros/setpoint_raw/local`；MAVROS完成ENU/NED转换，PX4内部位置控制器再生成姿态和推力。
 
 关键认识：航点管理器不应该直接把遥远航点当成每周期飞控 setpoint；EGO 也不应该承担任务队列、返航政策和多机分工。每层只解决自己的问题，接口才容易从仿真迁移到真机。
 
@@ -240,7 +241,7 @@ B 样条由控制点、阶次和结点向量定义。它的常用优势是局部
 - 速度、加速度等动力学可行性代价；
 - 与参考路线的贴合代价。
 
-“规划轨迹动力学可行”只说明规划器按配置的 `max_vel`、`max_acc` 等约束生成了轨迹；若执行器丢掉速度、加速度，只用位置追赶，实际飞行器可能滞后，规划器假设的未来位置就不再成立。当前 bridge 正存在这个问题，因此阶段 2 必须先决定 PositionCommand 的执行策略。
+“规划轨迹动力学可行”只说明规划器按配置的 `max_vel`、`max_acc` 等约束生成了轨迹；若执行器丢掉速度、加速度，只用位置追赶，实际飞行器可能滞后。阶段2已改为完整raw p/v/a/yaw/yaw_rate执行，并以最终raw门限保护规划器偶发的参考峰值超限。
 
 ## B.6 里程计、IMU、点云、深度图和 TF
 
@@ -308,7 +309,7 @@ flowchart TD
 
 | 层 | 主要输入 | 主要输出 | 当前可复用内容 | 需要补齐 |
 |---|---|---|---|---|
-| 绕塔航点生成 | 塔中心、半径、层高、方向、点数、home | 有序任务点、每点 yaw、任务状态 | `stage3_waypoints.yaml`、轨迹数学工具 | 参数化自动生成、塔中心来源、任务取消/暂停 |
+| 绕塔航点生成 | 塔中心、半径、层高、方向、点数、home | 有序任务点、每点 yaw、任务状态 | `relative_waypoint_mission.yaml`、轨迹数学工具 | 参数化自动生成、塔中心来源、任务取消/暂停 |
 | 任务管理 | 当前位姿、规划状态、到达判定、安全状态 | 当前局部目标、下一航点、返航请求 | 既有 WAYPOINTS 状态逻辑 | 与飞控状态机解耦、明确成功/失败事件 |
 | 安全状态机 | FCU/定位/地图/控制权/跟踪误差 | allow-control、hold、RTL/land、终态 | bridge 和 offboard 的部分门禁 | 解锁前完整 preflight、总超时、有限重试 |
 | 规划适配 | 任务目标、TF | `PoseStamped` / `Path` | bridge goal 转换、waypoint_generator | 高度语义、goal ID、取消与结果接口 |
@@ -369,7 +370,7 @@ flowchart TD
 1. 使用 `ego-project@498c7c6` 作为学习和 Gazebo 仿真开发基线。
 2. 当前只验收 Gazebo 仿真，但核心模块不能写死 Gazebo 接口。
 3. 阶段 1 新建独立任务管理器，不继续扩展大型 offboard 状态机，不把任务逻辑写入 EGO 核心。
-4. 后续 EGO 轨迹优先通过 `/mavros/setpoint_raw/local` 的 `PositionTarget` 执行；属于阶段 2，本轮不得提前实现。
+4. 阶段2 EGO轨迹已通过 `/mavros/setpoint_raw/local` 的 `PositionTarget` 执行；后续不得退回丢弃速度/加速度的Pose位置追赶。
 5. 继续使用 FAST-LIO，并建立统一的 `map/camera_init/body/base_link/sensor` 坐标契约。
 6. 铁塔及任务航点使用 `map` 绝对坐标，home 只用于起飞点、返航和降落。
 7. 阶段 1 最终采用固定高度 8 航点，按单点→4 点→8 点验证；yaw 朝塔；方向参数化且默认逆时针。
@@ -398,7 +399,7 @@ flowchart TD
 
 1. **已确认**：阶段 2 优先用 `/mavros/setpoint_raw/local` 的 `mavros_msgs/PositionTarget` 保留位置、速度、加速度与 yaw/yaw_rate 语义。
 2. **阶段 2 仍须验证**：type mask、ENU/NED、PX4 支持、限幅、跟踪误差和 failsafe；若验证不满足控制质量，再由负责人决定独立跟踪器方案。
-3. **当前实际状态**：没有实现用于EGO动态轨迹的 `PositionTarget` 执行器；阶段1只在OFFBOARD受控下降阶段使用raw-local，现 bridge 仍是 PoseStamped 位置跟随器。
+3. **阶段2实际状态**：已实现并实测EGO动态轨迹的raw `PositionTarget`执行器；`FRAME_LOCAL_NED`配合ROS ENU字段、`type_mask=0`，并保留p/v/a/yaw/yaw_rate。
 
 ### 决策门 4：坐标、定位和地图契约
 
@@ -544,7 +545,7 @@ flowchart TD
 
 ### 9. 本阶段关键决策点
 
-**已落实并验证**：独立任务管理器、`map`绝对塔坐标、home仅返航/降落、固定高度8点加显式闭环、默认逆时针、yaw朝塔、目标z边界、唯一控制发布者、全正常流程OFFBOARD、超时和明确终态。当前采用 `radio_tower_0`、10 m、4 m、0.3 m/s、0.5 m/s²和至少2 m配置安全余量。下一步是项目负责人检查diff并亲自提交；本轮不进入阶段2。
+**阶段1已落实并验证**：独立任务管理器、`map`绝对塔坐标、home仅返航/降落、固定高度8点加显式闭环、默认逆时针、yaw朝塔、目标z边界、唯一控制发布者、全正常流程OFFBOARD、超时和明确终态。阶段1采用 `radio_tower_0`、10 m、4 m、0.3 m/s、0.5 m/s²和至少2 m配置安全余量；阶段2成果另见下一节和 `ego-stage2学习.md`。
 
 ## 阶段 2：接入 EGO-Planner
 
@@ -566,13 +567,13 @@ flowchart TD
 2. 建立正式 TF 表：每个 frame 的父子、物理含义、发布者和仿真/真机来源。
 3. 复核本轮已补强的完整 preflight：输入有限值/源时戳/新鲜度、TF、planner/MAVROS 对齐、home、目标包络和全部控制类别唯一性，并用 SITL 故障注入补足运行证据。
 4. 任务管理器只发布一个经 frame 转换的当前目标；EGO 返回轨迹，任务管理器依据实际 odom 和规划状态决定下一目标。
-5. 按已确认方案优先通过 `/mavros/setpoint_raw/local` 的 `PositionTarget` 实现轨迹执行器，明确 MAVROS type mask、位置/速度/加速度/yaw/yaw_rate 语义与限幅。此项属于阶段 2，本轮未实现。
+5. **[阶段2已实现]** `/planning/pos_cmd` 经 `/mavros/setpoint_raw/local` 的 `PositionTarget` 执行，`type_mask=0`，保留位置、速度、加速度、yaw/yaw_rate 并分别限幅。
 6. 增加跟踪误差监视：实际位置与当前轨迹参考偏差超过阈值时暂停任务并进入 hold/失败策略。
 7. 空场先测试单目标，再测试两个目标，最后测试绕塔航点；此阶段不故意放复杂障碍。
 
 ### 4. 涉及或预计修改的文件
 
-- `ego_gazebo_bridge/launch/stage6_gazebo.launch`、`config/stage6_gazebo.yaml`；
+- `ego_gazebo_bridge/launch/ego_gazebo_bridge.launch`、`config/ego_gazebo_bridge.yaml`；
 - `ego_gazebo_bridge/src/ego_mavros_bridge.cpp` 及头文件，或经批准拆出的通用安全/执行模块；
 - 任务管理器包；
 - EGO `advanced_param.xml` 只做必要配置；若需改核心，触发专门决策门和 vendor patch 方案。
@@ -608,7 +609,7 @@ flowchart TD
 
 ### 9. 本阶段关键决策点
 
-**已确认**：独立任务管理器、raw-local `PositionTarget` 优先方案、继续 FAST-LIO、统一 frame 契约、目标 z 保留、EGO 外部适配优先。**仍待阶段 2 确认/验证**：具体公共接口、type mask、坐标转换、容差、failsafe 和必要 vendor patch。未完成这些验证前不进入 EGO 飞行验收。
+**[阶段2已验证]**：独立任务管理器逐目标发布；FAST-LIO → 过滤点云 → EGO → traj_server → raw-local `PositionTarget` 链路；`FRAME_LOCAL_NED`/ROS ENU、`type_mask=0`、p/v/a/yaw/yaw_rate、限幅、单位 `map -> camera_init` 仿真契约、唯一发布者、跟踪误差和锁存 HOLD 安全终态。dry-run、故障注入、单目标、双目标和8个唯一点加首点闭环的低速绕塔按顺序完成。详细证据见 `ego-stage2学习.md`。仍未解决通用目标 z、朝塔 yaw、正式 `body/base_link/sensor` 外参、OFFBOARD 正常降落和阶段3静态障碍验收。
 
 ## 阶段 3：静态障碍物与重新规划
 
@@ -636,7 +637,7 @@ flowchart TD
 ### 4. 涉及或预计修改的文件
 
 - 新增独立静态障碍测试 world/model 配置；
-- `stage6_gazebo.launch` 的 world 参数或专用测试 launch；
+- `ego_gazebo_bridge.launch` 的 world 参数或专用测试 launch；
 - EGO 地图/膨胀 YAML；
 - 安全状态机的规划失败接口和测试。
 
@@ -1040,17 +1041,37 @@ flowchart TD
 5. 单元测试、无解锁RViz、悬停、1点、4点、首次8点和第二次8点按顺序通过；两次完整任务都返航、受控降落，最终 `armed=false`、`ON_GROUND`。
 6. 新增 `ego-stage1学习.md`，记录参数、数据流、真实启动命令、误差、失败案例、重编译/重启区别和安全清理方法。
 
-## G.2 仍未验证或不属于阶段1
+## G.2 阶段1结束时仍未验证或不属于阶段1（历史记录）
 
 - 完整仓库全包构建、干净 clone 和 install-space；本轮只回归目标包；
 - 阶段1对其他world、其他塔、其他spawn、不同参数、长期循环、故障注入和真机的适用性；
 - 阶段1没有在线避障，固定路线中突然出现障碍不会自动绕行；
-- EGO空场闭环、静态避障、持续重规划、断流/不可达故障和动态轨迹执行；
+- EGO空场闭环、静态避障、持续重规划、断流/不可达故障和动态轨迹执行（其中阶段2已完成空场/绕塔动态执行与断流安全终态；静态障碍和不可达仍未完成）；
 - 正式 `map/camera_init/body/base_link/sensor` 外参与目标z不被EGO `manual_target_height`覆盖；
 - 外部PX4 dirty/detached的可复现部署、EGO vendor patch管理和全工程安全状态机。
 
-## G.3 等待项目负责人
+## G.3 阶段2实际完成
 
-1. 检查阶段1源码、YAML、脚本、文档、测试和仿真证据；重点复核 `radio_tower_0`、10 m半径、4 m高度及南侧进场。
+1. 新增阶段二任务节点和启动编排；任务节点只发一个当前 EGO 目标，不创建 MAVROS 控制 publisher。
+2. bridge 使用 raw-local `PositionTarget` 执行完整 p/v/a/yaw/yaw_rate，raw Topic 唯一发布者为 `/ego_mavros_bridge`。
+3. 明确并实测 `map/camera_init/body/base_link/sensor` 的当前仿真契约；单位 `map -> camera_init` 明确标为仿真假设。
+4. dry-run 实测 odom/点云约10 Hz、PositionCommand 100 Hz，MAVROS 控制 Topic 零发布者。
+5. 控制权冲突在 raw publisher 创建前阻断；指令断流进入锁存 HOLD 和有限时间降落，不再无限自动恢复。
+6. 单目标、双目标和8个唯一点加首点闭环的低速绕塔依次成功；最终闭环653.900 s，任务最大跟踪误差0.295 m，最终解锁并接地。
+7. 新增 `ego-stage2学习.md`，记录 raw/type mask/ENU 语义、TF、时间戳容差、轨迹字段、测试和仿真证据。
+
+## G.4 仍未验证或不属于阶段2
+
+- 专门静态障碍、不可达目标、最小净空和穿模验证；不得宣称阶段3完成；
+- 多层/螺旋、动态障碍、多机、真机；
+- 朝塔 yaw：当前 traj_server yaw 是轨迹前视方向；
+- 通用目标 z：当前只以固定4 m严格匹配 `manual_target_height`；
+- 正式 `body -> base_link`/sensor 外参和非单位 `map -> camera_init` 标定；
+- 将 bridge 正常 `AUTO.LAND` 收敛到项目长期要求的 OFFBOARD 受控降落；
+- 完整仓库、干净 clone、install-space 和长期循环。
+
+## G.5 等待项目负责人
+
+1. 检查阶段1/2源码、YAML、脚本、文档、测试和仿真证据；重点复核 raw/type mask/ENU 语义、锁存 HOLD、`radio_tower_0`、10 m半径、4 m高度及南侧进场。
 2. 项目负责人亲自commit；Codex不commit、不push。
-3. 未收到新的阶段2明确指令前停止。不得把阶段1固定航点闭环描述成EGO避障已经通过，也不得自动进入阶段2。
+3. 未收到新的阶段3明确指令前停止。不得把阶段2固定高度 EGO 闭环描述成专门静态避障已经通过，也不得自动进入阶段3。

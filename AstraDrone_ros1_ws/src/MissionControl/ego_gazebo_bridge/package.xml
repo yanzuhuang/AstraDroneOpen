@@ -2,7 +2,7 @@
 <package format="2">
   <name>ego_gazebo_bridge</name>
   <version>0.1.0</version>
-  <description>Simulation-only safety bridge from EGO-Planner PositionCommand to PX4 MAVROS position setpoints.</description>
+  <description>Simulation-only safety bridge from EGO-Planner PositionCommand to PX4 MAVROS raw local trajectory setpoints.</description>
 
   <maintainer email="maintainer@example.com">AstraDroneOpen Maintainers</maintainer>
   <license>BSD-3-Clause</license>

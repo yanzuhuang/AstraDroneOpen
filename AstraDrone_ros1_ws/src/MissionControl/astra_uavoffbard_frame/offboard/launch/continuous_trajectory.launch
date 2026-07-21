@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <launch>
-    <!-- 初学者通常只改前九项；所有坐标都是相对 home 的 ENU 坐标。 -->
+    <!-- 通用连续轨迹入口；初学者通常只改前九项，所有坐标都是相对 home 的 ENU 坐标。 -->
     <arg name="rviz" default="true"/>
     <arg name="trajectory_type" default="circle"/> <!-- circle/square/figure8/ellipse -->
     <arg name="speed" default="0.375"/>            <!-- m/s，原 0.25 m/s 的 1.5 倍 -->
@@ -21,7 +21,7 @@
     <arg name="corner_speed_ratio" default="0.35"/>
     <arg name="loop_rate" default="20.0"/>
 
-    <!-- 沿用阶段 3 的安全门限。 -->
+    <!-- 与相对航点任务共用保守安全门限。 -->
     <arg name="initial_hover_duration" default="3.0"/>
     <arg name="takeoff_tolerance" default="0.15"/>
     <arg name="horizontal_tolerance" default="0.20"/>

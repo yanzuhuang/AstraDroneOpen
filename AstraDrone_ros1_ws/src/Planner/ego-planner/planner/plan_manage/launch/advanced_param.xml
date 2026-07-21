@@ -38,6 +38,9 @@
   <arg name="planning_frame" default="world"/>
   <arg name="manual_target_height" default="1.0"/>
   <arg name="obstacles_inflation" default="0.099"/>
+  <arg name="map_resolution" default="0.1"/>
+  <arg name="ground_height" default="-0.01"/>
+  <arg name="virtual_ceil_height" default="2.5"/>
 
   <!-- main node -->
   <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen">
@@ -74,7 +77,7 @@
     <param name="fsm/waypoint4_y" value="$(arg point4_y)" type="double"/>
     <param name="fsm/waypoint4_z" value="$(arg point4_z)" type="double"/>
 
-    <param name="grid_map/resolution"      value="0.1" /> 
+    <param name="grid_map/resolution"      value="$(arg map_resolution)" />
     <param name="grid_map/map_size_x"   value="$(arg map_size_x_)" /> 
     <param name="grid_map/map_size_y"   value="$(arg map_size_y_)" /> 
     <param name="grid_map/map_size_z"   value="$(arg map_size_z_)" /> 
@@ -83,7 +86,7 @@
     <param name="grid_map/local_update_range_z"  value="4.5" /> 
     <param name="grid_map/obstacles_inflation"     value="$(arg obstacles_inflation)" />
     <param name="grid_map/local_map_margin" value="30"/>
-    <param name="grid_map/ground_height"        value="-0.01"/>
+    <param name="grid_map/ground_height"        value="$(arg ground_height)"/>
     <!-- camera parameter -->
     <param name="grid_map/cx" value="$(arg cx)"/>
     <param name="grid_map/cy" value="$(arg cy)"/>
@@ -106,8 +109,8 @@
     <param name="grid_map/min_ray_length" value="0.1"/>
     <param name="grid_map/max_ray_length" value="4.5"/>
 
-    <param name="grid_map/virtual_ceil_height"   value="2.5"/>
-    <param name="grid_map/visualization_truncate_height"   value="2.4"/>
+    <param name="grid_map/virtual_ceil_height"   value="$(arg virtual_ceil_height)"/>
+    <param name="grid_map/visualization_truncate_height"   value="$(arg virtual_ceil_height)"/>
     <param name="grid_map/show_occ_time"  value="false"/>
     <param name="grid_map/pose_type"     value="2"/>  
     <param name="grid_map/frame_id"      value="$(arg planning_frame)"/>

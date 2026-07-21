@@ -1,4 +1,6 @@
-# 阶段 6：EGO-Planner 的 Gazebo 工程落地
+# 旧0–6路线记录：EGO-Planner 的 Gazebo 工程落地
+
+> 本文是旧0–6学习路线的历史记录，不代表当前新阶段编号；其中可执行资产均已改为按功能命名。
 
 > 面向已经完成基础 Offboard 控制的新手。本阶段的最终产物是 **PX4 SITL + Gazebo + MAVROS + EGO-Planner** 的可复现闭环，只做电脑仿真，不接真机。
 >
@@ -80,8 +82,8 @@ RViz /move_base_simple/goal
 AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/
 ├── CMakeLists.txt
 ├── package.xml
-├── config/stage6_gazebo.yaml
-├── launch/stage6_gazebo.launch
+├── config/ego_gazebo_bridge.yaml
+├── launch/ego_gazebo_bridge.launch
 ├── include/ego_gazebo_bridge/
 │   ├── command_utils.h
 │   └── ego_mavros_bridge.h
@@ -245,7 +247,7 @@ rostopic hz /cloud_registered
 
 ### 6.3 建立 Gazebo 专用 EGO launch
 
-新建 `stage6_gazebo.launch`，不要直接复用 `run_in_sim.launch` 后仍包含 `simulator.xml`。它只应启动：
+新建通用集成入口 `ego_gazebo_bridge.launch`（原旧路线名 `stage6_gazebo.launch`），不要直接复用 `run_in_sim.launch` 后仍包含 `simulator.xml`。它只应启动：
 
 ```text
 ego_planner_node
@@ -301,7 +303,7 @@ rosrun tf view_frames
 
 ```bash
 source ~/AstraDroneOpen/AstraDrone_ros1_ws/devel/setup.bash
-roslaunch ego_gazebo_bridge stage6_gazebo.launch \
+roslaunch ego_gazebo_bridge ego_gazebo_bridge.launch \
   enable_control:=false rviz:=true
 ```
 
@@ -405,7 +407,7 @@ cd ~/AstraDroneOpen/AstraDrone_ros1_ws
 catkin_make -j2 -DCATKIN_WHITELIST_PACKAGES="cmake_utils;pose_utils;quadrotor_msgs;uav_utils;waypoint_generator;plan_env;path_searching;bspline_opt;traj_utils;ego_planner;ego_gazebo_bridge"
 source devel/setup.bash
 rospack find ego_gazebo_bridge
-roslaunch --nodes ego_gazebo_bridge stage6_gazebo.launch
+roslaunch --nodes ego_gazebo_bridge ego_gazebo_bridge.launch
 ```
 
 ### 7.5 起飞前测试
@@ -464,7 +466,7 @@ rosparam get /use_sim_time
 1. roscore
 2. PX4 + Gazebo + MAVROS
 3. FAST-LIO，等待初始化完成
-4. 启动 stage6_gazebo.launch enable_control:=true（暂不发目标）
+4. 启动 `ego_gazebo_bridge.launch enable_control:=true`（暂不发目标）
 5. bridge 自动完成预发送、OFFBOARD、解锁、起飞、悬停
 6. 确认 HOVER_READY 后发送 RViz 目标，再显式启用轨迹接管
 7. 到达后通过服务请求返航或降落
@@ -476,7 +478,7 @@ rosparam get /use_sim_time
 下面的 `publish_identity_planning_tf:=true` 只允许在 G2 已证明 `map` 与 `camera_init` 同原点、同轴向、同 yaw 后使用；若不满足，应发布测得的真实 TF，不能开启这个开关。
 
 ```bash
-roslaunch ego_gazebo_bridge stage6_gazebo.launch \
+roslaunch ego_gazebo_bridge ego_gazebo_bridge.launch \
   enable_control:=true rviz:=true \
   publish_identity_planning_tf:=true
 

@@ -1,0 +1,56 @@
+# Stage 2 fixed-height EGO integration. This intentionally uses the historical
+# radio_tower_0 / 4 m baseline; it does not overwrite the unvalidated Stage 1
+# default radio_tower / 8 m continuous-circle configuration.
+enable_control: false
+scenario: dry_run
+planning_frame: camera_init
+manual_target_height: 4.0
+height_match_tolerance: 0.000001
+
+tower:
+  name: radio_tower_0
+  frame_id: map
+  center:
+    x: 24.4614
+    y: 39.3288
+  collision_radius: 6.41
+
+mission:
+  radius: 10.0
+  height: 4.0
+  waypoint_count: 8
+  start_angle_deg: -90.0
+  direction: counter_clockwise
+  camera_yaw_offset_deg: 0.0
+  minimum_height: 2.0
+  maximum_height: 6.0
+  minimum_safety_distance: 2.0
+
+# Empty-space validation goals are absolute map ENU coordinates near home.
+validation:
+  single: {x: 3.0, y: 0.0}
+  second: {x: 3.0, y: 3.0}
+
+loop_rate: 20.0
+input_timeout: 0.70
+goal_retry_period: 0.50
+planning_timeout: 10.0
+goal_timeout: 240.0
+arrival_tolerance: 0.40
+arrival_hold_duration: 1.0
+tracking_error_limit: 1.0
+failure_hold_duration: 3.0
+return_timeout: 300.0
+overall_timeout: 1500.0
+report_period: 0.20
+report_file: /tmp/astra_stage2_latest.csv
+
+topics:
+  odom: /Odometry
+  command: /planning/pos_cmd
+  bridge_state: /ego_mavros_bridge/state
+  goal: /move_base_simple/goal
+services:
+  tracking: /ego_mavros_bridge/enable_tracking
+  return_home: /ego_mavros_bridge/return_home
+  land: /ego_mavros_bridge/land

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print beginner-friendly Stage 4 tracking metrics from one rosbag."""
+"""Print beginner-friendly continuous-trajectory metrics from one rosbag."""
 
 import argparse
 import math
@@ -105,7 +105,7 @@ def analyze(path):
     rmse = math.sqrt(sum(value * value for value in errors) / len(errors))
     yaw_rmse = math.sqrt(
         sum(value * value for value in yaw_errors) / len(yaw_errors))
-    print("阶段 4 rosbag 分析")
+    print("连续轨迹 rosbag 分析")
     print("  TRACKING 时长:       {:.2f} s".format(duration))
     print("  样本数:              {}".format(len(errors)))
     if moving_reference_speeds:
@@ -125,7 +125,7 @@ def analyze(path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="分析 stage4_trajectory.launch 录制的 rosbag")
+        description="分析 continuous_trajectory.launch 录制的 rosbag")
     parser.add_argument("bag", help="rosbag 文件路径")
     args = parser.parse_args()
     try:

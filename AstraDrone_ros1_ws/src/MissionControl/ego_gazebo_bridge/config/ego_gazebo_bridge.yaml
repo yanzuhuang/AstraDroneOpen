@@ -1,3 +1,4 @@
+# Reusable EGO-to-MAVROS bridge defaults; this file is not tied to a roadmap stage.
 # Control remains disabled until the complete dry-run checklist passes.
 enable_control: false
 require_sim_time: true
@@ -19,6 +20,7 @@ max_horizontal_radius: 10.0
 
 # Input watchdogs. A short command loss first enters HOLD, then AUTO.LAND.
 command_timeout: 0.2
+timestamp_future_tolerance: 0.02
 goal_timeout: 2.0
 fcu_state_timeout: 1.0
 extended_state_timeout: 1.0
@@ -26,12 +28,22 @@ mavros_pose_timeout: 0.2
 planner_odom_timeout: 0.2
 cloud_timeout: 0.5
 land_after_loss: 3.0
+wait_fcu_timeout: 60.0
+wait_inputs_timeout: 120.0
+arm_offboard_timeout: 30.0
+takeoff_timeout: 60.0
+landing_timeout: 90.0
 
 # Setpoint slew-rate limiting prevents a discontinuous EGO command from
 # becoming an equally discontinuous MAVROS target. The node converts these
 # rates to a per-cycle step using publish_rate.
 max_position_rate: 0.5
 max_yaw_rate: 0.75
+max_velocity: 0.5
+max_acceleration: 1.0
+gravity_alignment_tolerance: 0.017453292519943295  # 1 degree
+tracking_error_limit: 1.0
+tracking_error_duration: 1.0
 
 # FAST-LIO odometry and MAVROS local pose must describe the same vehicle pose.
 alignment_position_tolerance: 0.25
@@ -49,9 +61,9 @@ cloud_topic: /cloud_registered
 mavros_state_topic: /mavros/state
 mavros_extended_state_topic: /mavros/extended_state
 mavros_pose_topic: /mavros/local_position/pose
-setpoint_topic: /mavros/setpoint_position/local
+setpoint_topic: /mavros/setpoint_raw/local
 # All standard MAVROS command paths are authority gates. The bridge only
-# publishes setpoint_topic; the remaining topics are monitored, never emitted.
+# publishes only raw-local setpoint_topic; every category remains monitored.
 control_topics:
   position:
     - /mavros/setpoint_position/local

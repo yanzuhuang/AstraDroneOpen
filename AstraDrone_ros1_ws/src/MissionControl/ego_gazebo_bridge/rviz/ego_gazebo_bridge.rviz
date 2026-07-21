@@ -1,3 +1,4 @@
+# Reusable EGO/PX4 integration view; not tied to a roadmap stage number.
 Panels:
   - Class: rviz/Displays
     Help Height: 0

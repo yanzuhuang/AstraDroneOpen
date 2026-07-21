@@ -7,6 +7,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/ExtendedState.h>
+#include <mavros_msgs/PositionTarget.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 #include <nav_msgs/Odometry.h>
@@ -14,6 +15,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/String.h>
+#include <std_msgs/Float64.h>
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
 #include <tf2_ros/buffer.h>
@@ -52,6 +54,7 @@ struct BridgeConfig {
   double takeoff_tolerance{0.15};
   double hover_duration{1.0};
   double command_timeout{0.2};
+  double timestamp_future_tolerance{0.02};
   double goal_timeout{2.0};
   double fcu_state_timeout{1.0};
   double extended_state_timeout{1.0};
@@ -59,8 +62,18 @@ struct BridgeConfig {
   double planner_odom_timeout{0.2};
   double cloud_timeout{0.5};
   double land_after_loss{3.0};
+  double wait_fcu_timeout{60.0};
+  double wait_inputs_timeout{120.0};
+  double arm_offboard_timeout{30.0};
+  double takeoff_timeout{60.0};
+  double landing_timeout{90.0};
   double max_position_rate{0.5};
   double max_yaw_rate{0.75};
+  double max_velocity{0.5};
+  double max_acceleration{1.0};
+  double gravity_alignment_tolerance{0.017453292519943295};
+  double tracking_error_limit{1.0};
+  double tracking_error_duration{1.0};
   double alignment_position_tolerance{0.25};
   double alignment_yaw_tolerance{0.2617993878};
   double return_tolerance{0.25};
@@ -75,7 +88,7 @@ struct BridgeConfig {
   std::string mavros_state_topic{"/mavros/state"};
   std::string mavros_extended_state_topic{"/mavros/extended_state"};
   std::string mavros_pose_topic{"/mavros/local_position/pose"};
-  std::string setpoint_topic{"/mavros/setpoint_position/local"};
+  std::string setpoint_topic{"/mavros/setpoint_raw/local"};
   std::string arming_service{"/mavros/cmd/arming"};
   std::string set_mode_service{"/mavros/set_mode"};
   std::string input_goal_topic{"/move_base_simple/goal"};
@@ -130,11 +143,13 @@ class EgoMavrosBridge {
   void publishState();
   void publishSetpoint(const geometry_msgs::PoseStamped& desired,
                        const ros::Time& now);
+  void publishTrajectorySetpoint(const ros::Time& now);
   void publishHold(const ros::Time& now);
 
   bool baseInputsFresh(const ros::Time& now, std::string* reason) const;
   bool commandFresh(const ros::Time& now) const;
   bool plannerAlignmentValid(std::string* reason) const;
+  bool flightPreflightValid(const ros::Time& now, std::string* reason);
   bool fullPreflightValid(const ros::Time& now, std::string* reason);
   bool captureHomeIfSafe(std::string* reason);
   bool transformToMavros(const geometry_msgs::PoseStamped& input,
@@ -143,6 +158,9 @@ class EgoMavrosBridge {
   bool transformToPlanning(const geometry_msgs::PoseStamped& input,
                            geometry_msgs::PoseStamped* output,
                            std::string* reason) const;
+  bool planningToMavrosTransform(
+      const ros::Time& stamp, geometry_msgs::TransformStamped* transform,
+      std::string* reason) const;
   bool hasControlConflict(std::string* detail) const;
   bool controlAuthorityValid(const ros::Time& now, std::string* detail);
   std::vector<MonitoredControlTopic> monitoredControlTopics() const;
@@ -169,6 +187,7 @@ class EgoMavrosBridge {
   ros::Publisher setpoint_publisher_;
   ros::Publisher debug_setpoint_publisher_;
   ros::Publisher state_publisher_;
+  ros::Publisher tracking_error_publisher_;
   ros::Publisher goal_publisher_;
   ros::ServiceClient arming_client_;
   ros::ServiceClient set_mode_client_;
@@ -187,6 +206,7 @@ class EgoMavrosBridge {
   geometry_msgs::PoseStamped output_setpoint_;
   geometry_msgs::PoseStamped planner_target_mavros_;
   geometry_msgs::PoseStamped validated_goal_mavros_;
+  mavros_msgs::PositionTarget planner_raw_target_;
 
   bool have_fcu_state_{false};
   bool have_extended_state_{false};
@@ -202,6 +222,7 @@ class EgoMavrosBridge {
   bool return_in_progress_{false};
   bool return_inside_tolerance_{false};
   bool takeoff_inside_tolerance_{false};
+  bool tracking_error_active_{false};
 
   ros::Time last_fcu_state_time_;
   ros::Time last_extended_state_time_;
@@ -219,6 +240,8 @@ class EgoMavrosBridge {
   ros::Time last_authority_check_time_;
   ros::Time return_inside_since_;
   ros::Time takeoff_inside_since_;
+  ros::Time tracking_error_since_;
+  double maximum_tracking_error_{0.0};
   bool cached_control_conflict_{false};
   std::string cached_control_conflict_detail_;
   std::string hold_reason_;

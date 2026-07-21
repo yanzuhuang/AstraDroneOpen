@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <launch>
     <arg name="rviz" default="true"/>
-    <arg name="mission_file" default="$(find offboard)/config/stage3_waypoints.yaml"/>
+    <arg name="mission_file" default="$(find offboard)/config/relative_waypoint_mission.yaml"/>
     <arg name="takeoff_height" default="3.0"/>
     <arg name="initial_hover_duration" default="3.0"/>
     <arg name="takeoff_tolerance" default="0.15"/>

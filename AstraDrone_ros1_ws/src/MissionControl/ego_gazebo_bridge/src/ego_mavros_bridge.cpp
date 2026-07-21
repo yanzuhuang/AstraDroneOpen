@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -131,7 +132,7 @@ EgoMavrosBridge::EgoMavrosBridge(ros::NodeHandle node_handle,
     return;
   }
 
-  setpoint_publisher_ = node_handle_.advertise<geometry_msgs::PoseStamped>(
+  setpoint_publisher_ = node_handle_.advertise<mavros_msgs::PositionTarget>(
       config_.setpoint_topic, 20);
   transitionTo(BridgeState::kWaitFcu, "bridge initialized");
 }
@@ -160,6 +161,9 @@ void EgoMavrosBridge::loadConfig() {
                              config_.hover_duration);
   private_node_handle_.param("command_timeout", config_.command_timeout,
                              config_.command_timeout);
+  private_node_handle_.param("timestamp_future_tolerance",
+                             config_.timestamp_future_tolerance,
+                             config_.timestamp_future_tolerance);
   private_node_handle_.param("goal_timeout", config_.goal_timeout,
                              config_.goal_timeout);
   private_node_handle_.param("fcu_state_timeout", config_.fcu_state_timeout,
@@ -177,10 +181,35 @@ void EgoMavrosBridge::loadConfig() {
                              config_.cloud_timeout);
   private_node_handle_.param("land_after_loss", config_.land_after_loss,
                              config_.land_after_loss);
+  private_node_handle_.param("wait_fcu_timeout", config_.wait_fcu_timeout,
+                             config_.wait_fcu_timeout);
+  private_node_handle_.param("wait_inputs_timeout",
+                             config_.wait_inputs_timeout,
+                             config_.wait_inputs_timeout);
+  private_node_handle_.param("arm_offboard_timeout",
+                             config_.arm_offboard_timeout,
+                             config_.arm_offboard_timeout);
+  private_node_handle_.param("takeoff_timeout", config_.takeoff_timeout,
+                             config_.takeoff_timeout);
+  private_node_handle_.param("landing_timeout", config_.landing_timeout,
+                             config_.landing_timeout);
   private_node_handle_.param("max_position_rate", config_.max_position_rate,
                              config_.max_position_rate);
   private_node_handle_.param("max_yaw_rate", config_.max_yaw_rate,
                              config_.max_yaw_rate);
+  private_node_handle_.param("max_velocity", config_.max_velocity,
+                             config_.max_velocity);
+  private_node_handle_.param("max_acceleration", config_.max_acceleration,
+                             config_.max_acceleration);
+  private_node_handle_.param("gravity_alignment_tolerance",
+                             config_.gravity_alignment_tolerance,
+                             config_.gravity_alignment_tolerance);
+  private_node_handle_.param("tracking_error_limit",
+                             config_.tracking_error_limit,
+                             config_.tracking_error_limit);
+  private_node_handle_.param("tracking_error_duration",
+                             config_.tracking_error_duration,
+                             config_.tracking_error_duration);
   private_node_handle_.param("alignment_position_tolerance",
                              config_.alignment_position_tolerance,
                              config_.alignment_position_tolerance);
@@ -251,12 +280,20 @@ bool EgoMavrosBridge::validateConfig() const {
       config_.request_interval > 0.0 && config_.takeoff_height > 0.0 &&
       config_.takeoff_tolerance > 0.0 && config_.hover_duration >= 0.0 &&
       config_.command_timeout > 0.0 && config_.goal_timeout > 0.0 &&
+      config_.timestamp_future_tolerance >= 0.0 &&
       config_.fcu_state_timeout > 0.0 &&
       config_.extended_state_timeout > 0.0 &&
       config_.mavros_pose_timeout > 0.0 &&
       config_.planner_odom_timeout > 0.0 && config_.cloud_timeout > 0.0 &&
       config_.land_after_loss > config_.command_timeout &&
+      config_.wait_fcu_timeout > 0.0 && config_.wait_inputs_timeout > 0.0 &&
+      config_.arm_offboard_timeout > 0.0 && config_.takeoff_timeout > 0.0 &&
+      config_.landing_timeout > 0.0 &&
       config_.max_position_rate > 0.0 && config_.max_yaw_rate > 0.0 &&
+      config_.max_velocity > 0.0 && config_.max_acceleration > 0.0 &&
+      config_.gravity_alignment_tolerance >= 0.0 &&
+      config_.tracking_error_limit > 0.0 &&
+      config_.tracking_error_duration > 0.0 &&
       config_.alignment_position_tolerance > 0.0 &&
       config_.alignment_yaw_tolerance > 0.0 &&
       config_.return_tolerance > 0.0 &&
@@ -320,7 +357,9 @@ void EgoMavrosBridge::setupRosInterfaces() {
       config_.cloud_topic, 1, &EgoMavrosBridge::cloudCallback, this);
   command_subscriber_ =
       node_handle_.subscribe<quadrotor_msgs::PositionCommand>(
-          config_.command_topic, 10,
+          // PositionCommand is a real-time reference: after any callback
+          // backlog only the newest sample is useful and safe to execute.
+          config_.command_topic, 1,
           &EgoMavrosBridge::commandCallback, this);
   goal_subscriber_ = node_handle_.subscribe<geometry_msgs::PoseStamped>(
       config_.input_goal_topic, 10, &EgoMavrosBridge::goalCallback, this);
@@ -330,6 +369,9 @@ void EgoMavrosBridge::setupRosInterfaces() {
           "debug_setpoint", 10);
   state_publisher_ = private_node_handle_.advertise<std_msgs::String>(
       "state", 1, true);
+  tracking_error_publisher_ =
+      private_node_handle_.advertise<std_msgs::Float64>(
+          "tracking_error", 10);
   goal_publisher_ = node_handle_.advertise<geometry_msgs::PoseStamped>(
       config_.planner_goal_topic, 1, false);
 
@@ -477,12 +519,17 @@ void EgoMavrosBridge::commandCallback(
     return;
   }
   const ros::Time now = ros::Time::now();
-  if (message->header.stamp.isZero() || now < message->header.stamp ||
-      now - message->header.stamp >
-          ros::Duration(config_.command_timeout)) {
+  const double command_age = message->header.stamp.isZero()
+                                 ? std::numeric_limits<double>::infinity()
+                                 : (now - message->header.stamp).toSec();
+  if (!isTimestampUsable(now, message->header.stamp,
+                         config_.command_timeout,
+                         config_.timestamp_future_tolerance)) {
     ROS_ERROR_THROTTLE(
         1.0,
-        "[BRIDGE] PositionCommand rejected because its timestamp is zero, future or stale.");
+        "[BRIDGE] PositionCommand timestamp rejected: age=%.3f s, timeout=%.3f s, now=%.6f, stamp=%.6f.",
+        command_age, config_.command_timeout, now.toSec(),
+        message->header.stamp.toSec());
     return;
   }
 
@@ -510,7 +557,29 @@ void EgoMavrosBridge::commandCallback(
     return;
   }
 
+  geometry_msgs::TransformStamped planning_to_mavros;
+  if (!planningToMavrosTransform(message->header.stamp,
+                                 &planning_to_mavros, &reason)) {
+    ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Command TF rejected: %s",
+                       reason.c_str());
+    return;
+  }
+  RawCommandLimits limits;
+  limits.max_velocity = config_.max_velocity;
+  limits.max_acceleration = config_.max_acceleration;
+  limits.max_yaw_rate = config_.max_yaw_rate;
+  limits.gravity_alignment_tolerance =
+      config_.gravity_alignment_tolerance;
+  mavros_msgs::PositionTarget raw_target;
+  if (!commandToRawTarget(*message, planning_to_mavros, limits, now,
+                          &raw_target, &reason)) {
+    ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Raw command conversion failed: %s",
+                       reason.c_str());
+    return;
+  }
+
   planner_target_mavros_ = mavros_target;
+  planner_raw_target_ = raw_target;
   have_planner_target_ = true;
   last_command_time_ = now;
   last_command_stamp_ = message->header.stamp;
@@ -547,8 +616,9 @@ void EgoMavrosBridge::goalCallback(
              reason.c_str());
     return;
   }
-  if (message->header.stamp.isZero() || now < message->header.stamp ||
-      now - message->header.stamp > ros::Duration(config_.goal_timeout)) {
+  if (!isTimestampUsable(now, message->header.stamp,
+                         config_.goal_timeout,
+                         config_.timestamp_future_tolerance)) {
     ROS_ERROR("[BRIDGE] Goal rejected because its timestamp is zero, future or stale.");
     return;
   }
@@ -691,6 +761,11 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
   if (now.isZero()) {
     return;
   }
+  // With /use_sim_time the constructor can run before the first /clock
+  // sample. Anchor finite state timeouts on the first usable simulation time.
+  if (state_entered_time_.isZero()) {
+    state_entered_time_ = now;
+  }
 
   if (state_ == BridgeState::kDryRun) {
     std::string reason;
@@ -754,6 +829,9 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
     case BridgeState::kWaitFcu:
       if (have_fcu_state_ && fcu_state_.connected) {
         transitionTo(BridgeState::kWaitInputs, "FCU connected");
+      } else if (now - state_entered_time_ >=
+                 ros::Duration(config_.wait_fcu_timeout)) {
+        transitionTo(BridgeState::kError, "FCU connection timeout");
       }
       break;
 
@@ -762,12 +840,16 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
       if (baseInputsFresh(now, &reason) && !have_home_) {
         captureHomeIfSafe(&reason);
       }
-      if (fullPreflightValid(now, &reason)) {
+      if (flightPreflightValid(now, &reason)) {
         output_setpoint_ = home_pose_;
         hold_pose_ = home_pose_;
         have_output_setpoint_ = true;
         transitionTo(BridgeState::kPrestream,
-                     "full EGO preflight passed");
+                     "flight preflight passed; EGO goal is accepted after hover");
+      } else if (now - state_entered_time_ >=
+                 ros::Duration(config_.wait_inputs_timeout)) {
+        transitionTo(BridgeState::kError,
+                     "flight preflight timeout: " + reason);
       } else {
         ROS_INFO_THROTTLE(2.0, "[WAIT_INPUTS] %s", reason.c_str());
       }
@@ -776,7 +858,7 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
 
     case BridgeState::kPrestream: {
       std::string reason;
-      if (!fullPreflightValid(now, &reason)) {
+      if (!flightPreflightValid(now, &reason)) {
         transitionTo(BridgeState::kWaitInputs,
                      "preflight failed during prestream: " + reason);
         break;
@@ -791,7 +873,7 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
 
     case BridgeState::kArmOffboard: {
       std::string reason;
-      if (!fullPreflightValid(now, &reason)) {
+      if (!flightPreflightValid(now, &reason)) {
         if (fcu_state_.armed) {
           startHold("arming preflight failure: " + reason);
         } else {
@@ -801,6 +883,12 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
         break;
       }
       publishSetpoint(home_pose_, now);
+      if (now - state_entered_time_ >=
+          ros::Duration(config_.arm_offboard_timeout)) {
+        transitionTo(BridgeState::kError,
+                     "OFFBOARD/arming confirmation timeout");
+        break;
+      }
       if (fcu_state_.mode != "OFFBOARD") {
         requestMode("OFFBOARD", now);
       } else if (!fcu_state_.armed) {
@@ -815,6 +903,11 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
       std::string reason;
       if (!baseInputsFresh(now, &reason)) {
         startHold("takeoff input failure: " + reason);
+        break;
+      }
+      if (now - state_entered_time_ >=
+          ros::Duration(config_.takeoff_timeout)) {
+        startHold("takeoff timeout");
         break;
       }
       if (fcu_state_.mode != "OFFBOARD") {
@@ -854,9 +947,9 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
         break;
       }
       if (tracking_requested_ && commandFresh(now)) {
-        if (plannerAlignmentValid(&reason)) {
+        if (fullPreflightValid(now, &reason)) {
           transitionTo(BridgeState::kTrackEgo,
-                       "fresh planner command and aligned odometry");
+                       "fresh bounded EGO command and aligned odometry");
         } else {
           ROS_ERROR_THROTTLE(1.0, "[HOVER_READY] %s", reason.c_str());
         }
@@ -884,22 +977,42 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
         break;
       }
 
-      publishSetpoint(planner_target_mavros_, now);
+      const double tracking_error =
+          positionDistance(mavros_pose_, planner_target_mavros_);
+      maximum_tracking_error_ =
+          std::max(maximum_tracking_error_, tracking_error);
+      std_msgs::Float64 tracking_message;
+      tracking_message.data = tracking_error;
+      tracking_error_publisher_.publish(tracking_message);
+      if (tracking_error > config_.tracking_error_limit) {
+        if (!tracking_error_active_) {
+          tracking_error_active_ = true;
+          tracking_error_since_ = now;
+        } else if (now - tracking_error_since_ >=
+                   ros::Duration(config_.tracking_error_duration)) {
+          std::ostringstream stream;
+          stream << "tracking error " << tracking_error
+                 << " m exceeds limit " << config_.tracking_error_limit
+                 << " m";
+          startHold(stream.str());
+          break;
+        }
+      } else {
+        tracking_error_active_ = false;
+        tracking_error_since_ = ros::Time(0);
+      }
+
+      publishTrajectorySetpoint(now);
       updateReturnProgress(now);
       break;
     }
 
     case BridgeState::kHold: {
       publishHold(now);
-      std::string reason;
-      const bool recovered = tracking_requested_ && commandFresh(now) &&
-                             baseInputsFresh(now, &reason) &&
-                             plannerAlignmentValid(&reason) &&
-                             fcu_state_.mode == "OFFBOARD";
-      if (recovered) {
-        transitionTo(BridgeState::kTrackEgo,
-                     "all tracking inputs recovered");
-      } else if (now - state_entered_time_ >=
+      // HOLD is a latched safety state. A transiently fresh sample must not
+      // silently resume a failed trajectory; the mission supervisor requests
+      // landing, and the bridge independently lands after the finite timeout.
+      if (now - state_entered_time_ >=
                  ros::Duration(config_.land_after_loss)) {
         land_requested_ = true;
         transitionTo(BridgeState::kLanding,
@@ -926,6 +1039,9 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
               mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND) {
         transitionTo(BridgeState::kDone,
                      "PX4 reports disarmed and on ground");
+      } else if (now - state_entered_time_ >=
+                 ros::Duration(config_.landing_timeout)) {
+        transitionTo(BridgeState::kError, "landing timeout");
       }
       break;
     }
@@ -945,6 +1061,14 @@ void EgoMavrosBridge::transitionTo(BridgeState next_state,
   }
   ROS_WARN("[BRIDGE] %s -> %s: %s", bridgeStateName(state_),
            bridgeStateName(next_state), reason.c_str());
+  if (next_state == BridgeState::kTrackEgo) {
+    tracking_error_active_ = false;
+    tracking_error_since_ = ros::Time(0);
+  }
+  if (next_state == BridgeState::kDone || next_state == BridgeState::kError) {
+    ROS_WARN("[BRIDGE] Terminal maximum tracking error: %.3f m",
+             maximum_tracking_error_);
+  }
   state_ = next_state;
   state_entered_time_ = ros::Time::now();
   publishState();
@@ -981,7 +1105,18 @@ void EgoMavrosBridge::publishSetpoint(
   }
   output_setpoint_.header.stamp = now;
   output_setpoint_.header.frame_id = config_.mavros_frame;
-  setpoint_publisher_.publish(output_setpoint_);
+  setpoint_publisher_.publish(poseToRawTarget(output_setpoint_, now));
+}
+
+void EgoMavrosBridge::publishTrajectorySetpoint(const ros::Time& now) {
+  if (!config_.enable_control || !setpoint_publisher_ ||
+      !have_planner_target_) {
+    return;
+  }
+  mavros_msgs::PositionTarget target = planner_raw_target_;
+  target.header.stamp = now;
+  target.header.frame_id = config_.mavros_frame;
+  setpoint_publisher_.publish(target);
 }
 
 void EgoMavrosBridge::publishHold(const ros::Time& now) {
@@ -1039,8 +1174,10 @@ bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
 
 bool EgoMavrosBridge::commandFresh(const ros::Time& now) const {
   return have_planner_target_ &&
-         isStampedFresh(now, last_command_time_, last_command_stamp_,
-                        config_.command_timeout);
+         isFresh(now, last_command_time_, config_.command_timeout) &&
+         isTimestampUsable(now, last_command_stamp_,
+                           config_.command_timeout,
+                           config_.timestamp_future_tolerance);
 }
 
 bool EgoMavrosBridge::plannerAlignmentValid(std::string* reason) const {
@@ -1103,8 +1240,8 @@ bool EgoMavrosBridge::captureHomeIfSafe(std::string* reason) {
   return true;
 }
 
-bool EgoMavrosBridge::fullPreflightValid(const ros::Time& now,
-                                         std::string* reason) {
+bool EgoMavrosBridge::flightPreflightValid(const ros::Time& now,
+                                           std::string* reason) {
   if (!baseInputsFresh(now, reason)) {
     return false;
   }
@@ -1114,6 +1251,18 @@ bool EgoMavrosBridge::fullPreflightValid(const ros::Time& now,
   }
   if (!plannerAlignmentValid(reason)) {
     *reason = "planner/MAVROS alignment or TF invalid: " + *reason;
+    return false;
+  }
+  if (!controlAuthorityValid(now, reason)) {
+    return false;
+  }
+  reason->clear();
+  return true;
+}
+
+bool EgoMavrosBridge::fullPreflightValid(const ros::Time& now,
+                                         std::string* reason) {
+  if (!flightPreflightValid(now, reason)) {
     return false;
   }
   if (!have_valid_goal_) {
@@ -1137,11 +1286,34 @@ bool EgoMavrosBridge::fullPreflightValid(const ros::Time& now,
               *reason;
     return false;
   }
-  if (!controlAuthorityValid(now, reason)) {
-    return false;
-  }
   reason->clear();
   return true;
+}
+
+bool EgoMavrosBridge::planningToMavrosTransform(
+    const ros::Time& stamp, geometry_msgs::TransformStamped* transform,
+    std::string* reason) const {
+  if (transform == nullptr || reason == nullptr) {
+    return false;
+  }
+  if (config_.planning_frame == config_.mavros_frame) {
+    transform->header.stamp = stamp;
+    transform->header.frame_id = config_.mavros_frame;
+    transform->child_frame_id = config_.planning_frame;
+    transform->transform.rotation.w = 1.0;
+    reason->clear();
+    return true;
+  }
+  try {
+    *transform = tf_buffer_.lookupTransform(
+        config_.mavros_frame, config_.planning_frame, stamp,
+        ros::Duration(kTfTimeout));
+    reason->clear();
+    return true;
+  } catch (const tf2::TransformException& exception) {
+    *reason = exception.what();
+    return false;
+  }
 }
 
 bool EgoMavrosBridge::transformToMavros(
@@ -1280,11 +1452,11 @@ EgoMavrosBridge::monitoredControlTopics() const {
         }
       };
 
-  std::vector<std::string> position_topics =
-      config_.position_control_topics;
-  position_topics.push_back(config_.setpoint_topic);
-  add_topics("position", position_topics);
-  add_topics("raw local", config_.raw_local_control_topics);
+  add_topics("position", config_.position_control_topics);
+  std::vector<std::string> raw_local_topics =
+      config_.raw_local_control_topics;
+  raw_local_topics.push_back(config_.setpoint_topic);
+  add_topics("raw local", raw_local_topics);
   add_topics("velocity", config_.velocity_control_topics);
   add_topics("attitude", config_.attitude_control_topics);
   add_topics("thrust", config_.thrust_control_topics);

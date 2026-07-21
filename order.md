@@ -173,7 +173,7 @@ rospack find offboard
 确认能找到包后，再启动阶段 4：
 
 ```bash
-roslaunch offboard stage4_trajectory.launch \
+roslaunch offboard continuous_trajectory.launch \
   trajectory_type:=circle radius:=1.0 speed:=0.25 \
   yaw_mode:=tangent target_laps:=1
 ```
@@ -181,10 +181,10 @@ roslaunch offboard stage4_trajectory.launch \
 阶段 4 默认启动 RViz，并默认使用 `yaw_mode:=tangent` 让机头跟随前进方向；不需要额外填写 `rviz:=true` 或 `yaw_mode:=tangent`，也不要在常规飞行命令中填写 `rviz:=false`。使用 launch 中的默认参数时，四种轨迹可以简写为：
 
 ```bash
-roslaunch offboard stage4_trajectory.launch
-roslaunch offboard stage4_trajectory.launch trajectory_type:=square
-roslaunch offboard stage4_trajectory.launch trajectory_type:=figure8
-roslaunch offboard stage4_trajectory.launch trajectory_type:=ellipse
+roslaunch offboard continuous_trajectory.launch
+roslaunch offboard continuous_trajectory.launch trajectory_type:=square
+roslaunch offboard continuous_trajectory.launch trajectory_type:=figure8
+roslaunch offboard continuous_trajectory.launch trajectory_type:=ellipse
 ```
 
 如果 `rospack find offboard` 仍然提示找不到包，先编译一次：
@@ -365,7 +365,7 @@ messages    每个话题保存了多少条消息
 
 ```bash
 astra
-rosrun offboard stage4_analyze_bag.py "$HOME/bag/stage4_circle.bag"
+rosrun offboard analyze_trajectory_bag.py "$HOME/bag/stage4_circle.bag"
 ```
 
 ### 5.5 查看 bag 中的具体数值

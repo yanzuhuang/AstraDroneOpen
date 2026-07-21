@@ -61,6 +61,6 @@ install(DIRECTORY include/${PROJECT_NAME}/
 )
 
 catkin_install_python(PROGRAMS
-  scripts/stage4_analyze_bag.py
+  scripts/analyze_trajectory_bag.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

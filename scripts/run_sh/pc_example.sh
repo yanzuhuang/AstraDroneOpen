@@ -41,7 +41,7 @@ if [ "$start_default_control" = true ]; then
     tmux send-keys "astra" C-m
     tmux send-keys "roslaunch offboard autoarming_control.launch" C-m
 else
-    tmux send-keys "echo 'Stage 4 base-only: 未启动控制节点，请在新终端启动 stage4_trajectory.launch'" C-m
+    tmux send-keys "echo '连续轨迹 base-only：未启动控制节点，请在新终端启动 continuous_trajectory.launch'" C-m
 fi
 
 tmux select-pane -t 4
