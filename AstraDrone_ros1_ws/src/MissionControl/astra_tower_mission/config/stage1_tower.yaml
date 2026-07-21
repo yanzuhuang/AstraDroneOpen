@@ -1,96 +1,88 @@
-# Stage 1 only: fixed-height circular flight without EGO or obstacle avoidance.
-# Coordinates are absolute in the MAVROS local ENU `map` frame. The simulation
-# launch spawns at world (0, 0); the preflight origin check rejects a mismatch.
+# 阶段1：固定高度圆周飞行，不使用 EGO，也不具备避障能力。
+# 坐标均为 MAVROS 本地 ENU `map` 绝对坐标，仿真出生点为世界坐标 (0, 0)。
 
 tower:
-  name: radio_tower
-  frame_id: map
+  name: radio_tower                  # 目标塔名称，仅用于标识和日志
+  frame_id: map                      # 塔中心及任务轨迹所属坐标系
   center:
-    x: -17.4209
-    y: 22.29
-  # Both forest-world tower instances use the same mesh. Keep the audited
-  # conservative envelope, but revalidate its clearance at the new 8 m slice.
-  collision_radius: 6.41
+    x: -17.4209                      # 塔中心 X 坐标（m）
+    y: 22.29                         # 塔中心 Y 坐标（m）
+  collision_radius: 6.41             # 塔的保守碰撞包络半径（m）
 
 mission:
-  radius: 10.0
-  height: 8.0
-  waypoint_count: 8
-  # Start south of the closer tower. Revalidate the full ingress and ring in
-  # preview because this Stage 1 executor has no obstacle avoidance.
-  start_angle_deg: -90.0
-  direction: counter_clockwise
-  # Camera optical-axis yaw relative to body +X. Body yaw = tower bearing - offset.
-  camera_yaw_offset_deg: 0.0
-  maximum_speed: 0.30
-  maximum_acceleration: 0.50
-  maximum_yaw_rate_deg_s: 30.0
-  position_tolerance: 0.40
-  yaw_tolerance_deg: 12.0
-  # The 8 samples are pass-through inspection checkpoints; the commanded
-  # reference follows a continuous circle and never dwells at a checkpoint.
-  waypoint_timeout: 240.0
-  mission_timeout: 600.0
-  overall_timeout: 1200.0
-  minimum_height: 2.0
-  maximum_height: 10.0
-  minimum_safety_distance: 2.0
-  maximum_home_distance: 60.0
+  radius: 10.0                       # 绕塔圆轨迹半径（m）
+  height: 8.0                        # 绕塔阶段目标高度（m）
+  waypoint_count: 8                  # 圆周检查点数量，仅检查通过、不停留
+  start_angle_deg: -90.0             # 圆周起点相对塔心的角度（deg，-90°为南侧）
+  direction: counter_clockwise       # 绕塔方向：counter_clockwise / clockwise
+  camera_yaw_offset_deg: 0.0         # 相机光轴相对机头 +X 的偏航安装角（deg）
+  maximum_speed: 0.30                # 任务轨迹最大速度（m/s）
+  maximum_acceleration: 0.50         # 任务轨迹最大加速度（m/s²）
+  maximum_yaw_rate_deg_s: 30.0       # 最大偏航角速度（deg/s）
+  position_tolerance: 0.40           # 到达位置判定容差（m）
+  yaw_tolerance_deg: 12.0            # 到达偏航判定容差（deg）
+  waypoint_timeout: 240.0            # 单段/检查点推进超时（s）
+  mission_timeout: 600.0             # 绕塔阶段总超时（s）
+  overall_timeout: 1200.0            # 从启动到结束的全任务超时（s）
+  minimum_height: 2.0                # 允许的最低任务高度（m）
+  maximum_height: 10.0               # 允许的最高任务高度（m）
+  minimum_safety_distance: 2.0       # 轨迹到塔碰撞包络的最小净距（m）
+  maximum_home_distance: 60.0        # 任务点距 home 的最大水平距离（m）
 
 flight:
-  takeoff_height: 8.0
-  takeoff_tolerance: 0.25
-  takeoff_hold_time: 1.0
-  takeoff_timeout: 60.0
-  initial_hover_duration: 3.0
-  initial_hover_timeout: 30.0
-  return_height: 8.0
-  return_hold_time: 2.0
-  return_timeout: 240.0
-  preland_hover_duration: 3.0
-  preland_hover_timeout: 30.0
+  takeoff_height: 8.0                # 起飞目标高度（m）
+  takeoff_tolerance: 0.25            # 到达起飞高度的容差（m）
+  takeoff_hold_time: 1.0             # 起飞点稳定保持时间（s）
+  takeoff_timeout: 60.0              # 起飞阶段超时（s）
+  initial_hover_duration: 3.0        # 起飞后初始悬停时间（s）
+  initial_hover_timeout: 30.0        # 初始悬停阶段超时（s）
+  return_height: 8.0                 # 返航飞行高度（m）
+  return_hold_time: 2.0              # home 上方稳定保持时间（s）
+  return_timeout: 240.0              # 返航阶段超时（s）
+  preland_hover_duration: 3.0        # 降落前悬停时间（s）
+  preland_hover_timeout: 30.0        # 降落前悬停阶段超时（s）
 
 landing:
-  # Normal descent stays in OFFBOARD. This is not PX4 MPC_LAND_SPEED.
-  cruise_speed: 0.40
-  touchdown_speed: 0.20
-  slowdown_height: 1.20
-  flare_height: 0.30
-  contact_height: 0.12
-  contact_velocity_max: 0.10
-  contact_confirm_time: 0.20
-  contact_descent_speed: 0.30
-  ground_confirm_time: 0.80
-  timeout: 90.0
-  disarm_retry_interval: 1.0
-  disarm_timeout: 15.0
+  # 以下是 OFFBOARD 受控下降参数，不是 PX4 的 MPC_LAND_SPEED。
+  cruise_speed: 0.40                 # 常规下降速度（m/s）
+  touchdown_speed: 0.20              # 近地接地速度（m/s）
+  slowdown_height: 1.20              # 开始减速的离地高度（m）
+  flare_height: 0.30                 # 进入末端缓降的离地高度（m）
+  contact_height: 0.12               # 判定可能接地的高度阈值（m）
+  contact_velocity_max: 0.10         # 接地判定允许的最大垂直速度（m/s）
+  contact_confirm_time: 0.20         # 接地条件持续确认时间（s）
+  contact_descent_speed: 0.30        # 接地探测阶段下降指令速度（m/s）
+  ground_confirm_time: 0.80          # 在地状态持续确认时间（s）
+  timeout: 90.0                      # 整个降落阶段超时（s）
+  disarm_retry_interval: 1.0         # 上锁服务重试间隔（s）
+  disarm_timeout: 15.0               # 上锁阶段超时（s）
 
 safety:
-  loop_rate: 20.0
-  prestream_duration: 3.0
-  preflight_timeout: 120.0
-  input_timeout: 2.0
-  service_retry_interval: 2.0
-  arm_offboard_timeout: 30.0
-  authority_check_interval: 1.0
-  mode_recovery_timeout: 5.0
-  expected_home_x: 0.0
-  expected_home_y: 0.0
-  home_origin_tolerance: 2.0
+  loop_rate: 20.0                    # 状态机及控制循环频率（Hz）
+  prestream_duration: 3.0            # 切入 OFFBOARD 前预发送设定点时间（s）
+  preflight_timeout: 120.0           # 解锁前检查等待超时（s）
+  input_timeout: 2.0                 # MAVROS 状态/位姿等输入失效阈值（s）
+  service_retry_interval: 2.0        # 模式切换和解锁服务重试间隔（s）
+  arm_offboard_timeout: 30.0         # 进入 OFFBOARD 并解锁的超时（s）
+  authority_check_interval: 1.0      # 控制 Topic 唯一发布者检查间隔（s）
+  mode_recovery_timeout: 5.0         # OFFBOARD 意外退出后的恢复时限（s）
+  expected_home_x: 0.0               # 预期 home 的 X 坐标（m）
+  expected_home_y: 0.0               # 预期 home 的 Y 坐标（m）
+  home_origin_tolerance: 2.0         # 实际 home 与预期原点的容差（m）
 
 record:
-  maximum_actual_path_points: 25000
-  report_period: 0.20
-  report_file: /tmp/astra_stage1_latest.csv
+  maximum_actual_path_points: 25000  # RViz/内存保留的实际轨迹点上限
+  report_period: 0.20                # CSV 状态记录周期（s）
+  report_file: /tmp/astra_stage1_latest.csv  # CSV 报告输出路径
 
 topics:
-  mavros_state: /mavros/state
-  mavros_extended_state: /mavros/extended_state
-  mavros_pose: /mavros/local_position/pose
-  mavros_velocity: /mavros/local_position/velocity_local
-  setpoint_position: /mavros/setpoint_position/local
-  setpoint_raw_local: /mavros/setpoint_raw/local
-  monitored_control:
+  mavros_state: /mavros/state                         # 飞控连接、模式和解锁状态
+  mavros_extended_state: /mavros/extended_state      # 着陆状态
+  mavros_pose: /mavros/local_position/pose            # 无人机本地位姿反馈
+  mavros_velocity: /mavros/local_position/velocity_local  # 本地速度反馈
+  setpoint_position: /mavros/setpoint_position/local  # 飞行阶段位置设定点输出
+  setpoint_raw_local: /mavros/setpoint_raw/local      # 降落阶段原始本地设定点输出
+  monitored_control:                                  # 监控以下控制 Topic，防止多控制器冲突
     - /mavros/setpoint_position/local
     - /mavros/setpoint_position/global
     - /mavros/setpoint_position/global_to_local
@@ -103,21 +95,21 @@ topics:
     - /mavros/setpoint_attitude/thrust
 
 services:
-  arming: /mavros/cmd/arming
-  set_mode: /mavros/set_mode
+  arming: /mavros/cmd/arming          # 解锁/上锁服务
+  set_mode: /mavros/set_mode          # PX4 飞行模式切换服务
 
-# These are private to the tower_mission node and can still be remapped.
+# 以下为 tower_mission 节点私有输出，可通过 ROS remap 修改。
 outputs:
-  route_preview: route_preview
-  waypoint_poses: waypoint_poses
-  markers: route_markers
-  current_target: current_target
-  actual_path: actual_path
-  state: state
-  progress: progress
-  waypoint_index: waypoint_index
-  position_error: position_error
-  yaw_error: yaw_error_deg
-  hold_time: hold_time
-  final_result: final_result
-  report_file: report_file
+  route_preview: route_preview        # 完整规划路线 Path
+  waypoint_poses: waypoint_poses      # 8 个检查点 PoseArray
+  markers: route_markers              # RViz 路线/塔/检查点标记
+  current_target: current_target      # 当前控制目标位姿
+  actual_path: actual_path            # 无人机实际飞行轨迹
+  state: state                        # 当前任务状态名
+  progress: progress                  # 当前任务进度
+  waypoint_index: waypoint_index      # 当前检查点序号
+  position_error: position_error      # 当前目标位置误差
+  yaw_error: yaw_error_deg            # 当前目标偏航误差（deg）
+  hold_time: hold_time                # 当前状态已保持时间
+  final_result: final_result          # 任务最终结果
+  report_file: report_file            # 实际 CSV 报告路径
