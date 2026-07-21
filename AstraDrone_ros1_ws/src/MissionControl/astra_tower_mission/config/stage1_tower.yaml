@@ -1,22 +1,23 @@
-# Stage 1 only: fixed-height waypoint flight without EGO or obstacle avoidance.
+# Stage 1 only: fixed-height circular flight without EGO or obstacle avoidance.
 # Coordinates are absolute in the MAVROS local ENU `map` frame. The simulation
 # launch spawns at world (0, 0); the preflight origin check rejects a mismatch.
 
 tower:
-  name: radio_tower_0
+  name: radio_tower
   frame_id: map
   center:
-    x: 24.4614
-    y: 39.3288
-  # Conservative radial mesh envelope measured near the 4 m flight slice.
+    x: -17.4209
+    y: 22.29
+  # Both forest-world tower instances use the same mesh. Keep the audited
+  # conservative envelope, but revalidate its clearance at the new 8 m slice.
   collision_radius: 6.41
 
 mission:
   radius: 10.0
   height: 8.0
   waypoint_count: 8
-  # Start south of the tower to keep the direct ingress from home away from
-  # the closest forest obstacles.
+  # Start south of the closer tower. Revalidate the full ingress and ring in
+  # preview because this Stage 1 executor has no obstacle avoidance.
   start_angle_deg: -90.0
   direction: counter_clockwise
   # Camera optical-axis yaw relative to body +X. Body yaw = tower bearing - offset.
@@ -26,7 +27,8 @@ mission:
   maximum_yaw_rate_deg_s: 30.0
   position_tolerance: 0.40
   yaw_tolerance_deg: 12.0
-  waypoint_hold_time: 2.0
+  # The 8 samples are pass-through inspection checkpoints; the commanded
+  # reference follows a continuous circle and never dwells at a checkpoint.
   waypoint_timeout: 240.0
   mission_timeout: 600.0
   overall_timeout: 1200.0

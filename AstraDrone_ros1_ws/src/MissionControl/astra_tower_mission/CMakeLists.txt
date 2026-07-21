@@ -38,7 +38,7 @@ target_link_libraries(tower_route ${catkin_LIBRARIES})
 add_dependencies(tower_route ${catkin_EXPORTED_TARGETS})
 
 add_library(motion_limiter src/motion_limiter.cpp)
-target_link_libraries(motion_limiter ${catkin_LIBRARIES})
+target_link_libraries(motion_limiter tower_route ${catkin_LIBRARIES})
 add_dependencies(motion_limiter ${catkin_EXPORTED_TARGETS})
 
 add_executable(tower_mission_node src/tower_mission_node.cpp)

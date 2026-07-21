@@ -11,12 +11,12 @@ namespace {
 
 RouteConfig validConfig() {
   RouteConfig config;
-  config.tower_name = "radio_tower_0";
+  config.tower_name = "radio_tower";
   config.frame_id = "map";
-  config.center_x = 24.4614;
-  config.center_y = 39.3288;
+  config.center_x = -17.4209;
+  config.center_y = 22.29;
   config.radius = 10.0;
-  config.height = 4.0;
+  config.height = 8.0;
   config.waypoint_count = 8;
   config.start_angle_rad = -kPi / 2.0;
   config.direction = OrbitDirection::kCounterClockwise;
@@ -117,6 +117,64 @@ TEST(MotionLimiter, AppliesSpeedAccelerationAndShortestYawLimits) {
   EXPECT_NEAR(0.5, next.x, 1e-9);
   EXPECT_GT(normalizeAngle(next.yaw - current.yaw), 0.0);
   EXPECT_LE(std::abs(normalizeAngle(next.yaw - current.yaw)), 0.1 + 1e-9);
+}
+
+TEST(CircularMotion, EveryReferenceLiesOnStrictCircleAndFacesTower) {
+  const RouteConfig config = validConfig();
+  CircularMotionReference orbit = initializeCircularMotionReference(config);
+  EXPECT_NEAR(config.radius,
+              std::hypot(orbit.motion.x - config.center_x,
+                         orbit.motion.y - config.center_y),
+              1e-9);
+
+  std::size_t crossed_checkpoints = 0;
+  const double checkpoint_step = 2.0 * kPi / config.waypoint_count;
+  for (int step = 0; step < 10000 && !orbit.complete; ++step) {
+    const CircularMotionReference next = stepCircularMotionReference(
+        orbit, config, 0.05, 0.30, 0.50);
+    EXPECT_GE(next.angular_progress, orbit.angular_progress);
+    EXPECT_NEAR(config.radius,
+                std::hypot(next.motion.x - config.center_x,
+                           next.motion.y - config.center_y),
+                1e-9);
+    EXPECT_NEAR(config.height, next.motion.z, 1e-12);
+    const double tower_bearing = std::atan2(
+        config.center_y - next.motion.y, config.center_x - next.motion.x);
+    EXPECT_NEAR(0.0, normalizeAngle(next.motion.yaw - tower_bearing), 1e-9);
+
+    while (crossed_checkpoints <
+               static_cast<std::size_t>(config.waypoint_count) &&
+           next.angular_progress + 1e-12 >=
+               (crossed_checkpoints + 1U) * checkpoint_step) {
+      ++crossed_checkpoints;
+      // Crossing a checkpoint must not command a stop.
+      EXPECT_GT(next.speed, 0.0);
+      EXPECT_GT(std::hypot(next.motion.vx, next.motion.vy), 0.0);
+    }
+    orbit = next;
+  }
+
+  EXPECT_TRUE(orbit.complete);
+  EXPECT_EQ(8U, crossed_checkpoints);
+  EXPECT_NEAR(2.0 * kPi, orbit.angular_progress, 1e-12);
+  EXPECT_NEAR(config.center_x, orbit.motion.x, 1e-9);
+  EXPECT_NEAR(config.center_y - config.radius, orbit.motion.y, 1e-9);
+}
+
+TEST(CircularMotion, ClockwiseReferenceHasClockwiseTangent) {
+  RouteConfig config = validConfig();
+  config.direction = OrbitDirection::kClockwise;
+  const CircularMotionReference initial =
+      initializeCircularMotionReference(config);
+  const CircularMotionReference next = stepCircularMotionReference(
+      initial, config, 1.0, 0.30, 0.50);
+  EXPECT_GT(next.speed, 0.0);
+  EXPECT_LT(normalizeAngle(
+                std::atan2(next.motion.y - config.center_y,
+                           next.motion.x - config.center_x) -
+                config.start_angle_rad),
+            0.0);
+  EXPECT_LT(next.motion.vx, 0.0);
 }
 
 }  // namespace

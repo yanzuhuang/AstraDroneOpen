@@ -87,4 +87,58 @@ MotionReference stepMotionReference(const MotionReference& current,
   return result;
 }
 
+CircularMotionReference initializeCircularMotionReference(
+    const RouteConfig& config) {
+  CircularMotionReference reference;
+  const TowerWaypoint point = towerWaypointAtProgress(config, 0.0);
+  reference.motion.x = point.x;
+  reference.motion.y = point.y;
+  reference.motion.z = point.z;
+  reference.motion.yaw = point.yaw;
+  return reference;
+}
+
+CircularMotionReference stepCircularMotionReference(
+    const CircularMotionReference& current,
+    const RouteConfig& config,
+    double dt,
+    double maximum_speed,
+    double maximum_acceleration) {
+  if (!std::isfinite(dt) || dt <= 0.0 || !std::isfinite(maximum_speed) ||
+      maximum_speed <= 0.0 || !std::isfinite(maximum_acceleration) ||
+      maximum_acceleration <= 0.0 || !std::isfinite(config.radius) ||
+      config.radius <= 0.0 || current.complete) {
+    return current;
+  }
+
+  CircularMotionReference result = current;
+  result.speed = std::min(maximum_speed,
+                          current.speed + maximum_acceleration * dt);
+  const double remaining_angle =
+      std::max(0.0, 2.0 * kPi - current.angular_progress);
+  const double angular_step =
+      std::min(remaining_angle, result.speed * dt / config.radius);
+  result.angular_progress = current.angular_progress + angular_step;
+  result.complete = result.angular_progress >= 2.0 * kPi - 1e-12;
+  if (result.complete) {
+    result.angular_progress = 2.0 * kPi;
+  }
+
+  const TowerWaypoint point =
+      towerWaypointAtProgress(config, result.angular_progress);
+  const double direction_sign =
+      config.direction == OrbitDirection::kCounterClockwise ? 1.0 : -1.0;
+  result.motion.x = point.x;
+  result.motion.y = point.y;
+  result.motion.z = point.z;
+  result.motion.vx = -direction_sign * result.speed * std::sin(point.theta);
+  result.motion.vy = direction_sign * result.speed * std::cos(point.theta);
+  result.motion.vz = 0.0;
+  // The orbit pose is sampled from the circle every cycle. Its desired yaw is
+  // therefore recomputed from that same sample instead of interpolated between
+  // checkpoint headings.
+  result.motion.yaw = point.yaw;
+  return result;
+}
+
 }  // namespace astra_tower_mission

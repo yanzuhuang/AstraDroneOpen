@@ -42,6 +42,8 @@ double normalizeAngle(double angle);
 bool parseDirection(const std::string& text, OrbitDirection* direction);
 const char* directionName(OrbitDirection direction);
 bool validateRouteConfig(const RouteConfig& config, std::string* reason);
+TowerWaypoint towerWaypointAtProgress(const RouteConfig& config,
+                                      double angular_progress);
 std::vector<TowerWaypoint> generateTowerWaypoints(const RouteConfig& config);
 
 }  // namespace astra_tower_mission

@@ -93,23 +93,29 @@ std::vector<TowerWaypoint> generateTowerWaypoints(const RouteConfig& config) {
 
   std::vector<TowerWaypoint> waypoints;
   waypoints.reserve(static_cast<std::size_t>(config.waypoint_count));
-  const double direction_sign =
-      config.direction == OrbitDirection::kCounterClockwise ? 1.0 : -1.0;
-  const double angular_step =
-      direction_sign * 2.0 * kPi / config.waypoint_count;
+  const double angular_step = 2.0 * kPi / config.waypoint_count;
   for (int index = 0; index < config.waypoint_count; ++index) {
-    TowerWaypoint waypoint;
-    waypoint.theta = normalizeAngle(config.start_angle_rad + index * angular_step);
-    waypoint.x = config.center_x + config.radius * std::cos(waypoint.theta);
-    waypoint.y = config.center_y + config.radius * std::sin(waypoint.theta);
-    waypoint.z = config.height;
-    const double camera_bearing =
-        std::atan2(config.center_y - waypoint.y,
-                   config.center_x - waypoint.x);
-    waypoint.yaw = normalizeAngle(camera_bearing - config.camera_yaw_offset_rad);
-    waypoints.push_back(waypoint);
+    waypoints.push_back(towerWaypointAtProgress(config, index * angular_step));
   }
   return waypoints;
+}
+
+TowerWaypoint towerWaypointAtProgress(const RouteConfig& config,
+                                      double angular_progress) {
+  const double direction_sign =
+      config.direction == OrbitDirection::kCounterClockwise ? 1.0 : -1.0;
+  TowerWaypoint waypoint;
+  waypoint.theta = normalizeAngle(config.start_angle_rad +
+                                  direction_sign * angular_progress);
+  waypoint.x = config.center_x + config.radius * std::cos(waypoint.theta);
+  waypoint.y = config.center_y + config.radius * std::sin(waypoint.theta);
+  waypoint.z = config.height;
+  const double camera_bearing =
+      std::atan2(config.center_y - waypoint.y,
+                 config.center_x - waypoint.x);
+  waypoint.yaw = normalizeAngle(camera_bearing -
+                                config.camera_yaw_offset_rad);
+  return waypoint;
 }
 
 }  // namespace astra_tower_mission

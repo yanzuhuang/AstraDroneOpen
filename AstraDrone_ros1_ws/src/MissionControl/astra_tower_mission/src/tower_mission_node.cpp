@@ -156,7 +156,6 @@ struct NodeConfig {
   double maximum_yaw_rate{0.0};
   double position_tolerance{0.0};
   double yaw_tolerance{0.0};
-  double waypoint_hold_time{0.0};
   double waypoint_timeout{0.0};
   double mission_timeout{0.0};
   double overall_timeout{0.0};
@@ -247,8 +246,9 @@ class TowerMissionNode {
         setTarget(waypoints_.front());
       }
       publishTelemetry(ros::Time::now());
-      ROS_INFO("[PREVIEW] %zu unique waypoints plus one closing segment; no "
-               "MAVROS setpoint publisher or flight service was created",
+      ROS_INFO("[PREVIEW] strict circular route with %zu inspection "
+               "checkpoints; no MAVROS setpoint publisher or flight service "
+               "was created",
                waypoints_.size());
       return;
     }
@@ -315,7 +315,6 @@ class TowerMissionNode {
     pnh_.param("mission/maximum_yaw_rate_deg_s", maximum_yaw_rate_deg, 0.0);
     pnh_.param("mission/position_tolerance", config_.position_tolerance, 0.0);
     pnh_.param("mission/yaw_tolerance_deg", yaw_tolerance_deg, 0.0);
-    pnh_.param("mission/waypoint_hold_time", config_.waypoint_hold_time, 0.0);
     pnh_.param("mission/waypoint_timeout", config_.waypoint_timeout, 0.0);
     pnh_.param("mission/mission_timeout", config_.mission_timeout, 0.0);
     pnh_.param("mission/overall_timeout", config_.overall_timeout, 0.0);
@@ -471,8 +470,8 @@ class TowerMissionNode {
       }
     }
     const double nonnegative_values[] = {
-        config_.waypoint_hold_time, config_.takeoff_hold_time,
-        config_.initial_hover_duration, config_.return_hold_time,
+        config_.takeoff_hold_time, config_.initial_hover_duration,
+        config_.return_hold_time,
         config_.preland_hover_duration, config_.landing_flare_height,
         config_.landing_contact_height};
     for (double value : nonnegative_values) {
@@ -491,6 +490,12 @@ class TowerMissionNode {
         config_.waypoint_timeout > config_.mission_timeout ||
         config_.mission_timeout > config_.overall_timeout) {
       ROS_FATAL("[PARAM] Landing profile or path recording relation invalid");
+      return false;
+    }
+    if (config_.maximum_speed / config_.route.radius >
+        config_.maximum_yaw_rate) {
+      ROS_FATAL("[PARAM] maximum_yaw_rate_deg_s is too low to keep the "
+                "camera facing the tower at maximum_speed");
       return false;
     }
     if (!std::isfinite(config_.expected_home_x) ||
@@ -598,14 +603,18 @@ class TowerMissionNode {
     geometry_msgs::PoseArray poses;
     poses.header = path.header;
     for (const auto& waypoint : waypoints_) {
-      geometry_msgs::PoseStamped pose = waypointPose(waypoint, stamp);
-      path.poses.push_back(pose);
-      poses.poses.push_back(pose.pose);
+      poses.poses.push_back(waypointPose(waypoint, stamp).pose);
     }
-    // A path containing only N unique points is not a full circle. Repeat the
-    // first point explicitly so RViz and the executor both expose the closing
-    // leg from the final angular sample back to theta_0.
-    path.poses.push_back(waypointPose(waypoints_.front(), stamp));
+    // The checkpoints remain discrete, but the commanded inspection route is
+    // a circle. Publish a dense circle here so preview does not suggest that
+    // the executor will fly the old polygonal chords.
+    const int preview_segment_count = std::max(180, config_.route.waypoint_count);
+    for (int index = 0; index <= preview_segment_count; ++index) {
+      const double progress =
+          2.0 * kPi * index / static_cast<double>(preview_segment_count);
+      path.poses.push_back(waypointPose(
+          towerWaypointAtProgress(config_.route, progress), stamp));
+    }
     route_preview_pub_.publish(path);
     waypoint_poses_pub_.publish(poses);
 
@@ -863,14 +872,13 @@ class TowerMissionNode {
       *reason = stream.str();
       return false;
     }
-    for (const auto& waypoint : waypoints_) {
-      const double distance = std::hypot(
-          waypoint.x - current_pose_.pose.position.x,
-          waypoint.y - current_pose_.pose.position.y);
-      if (distance > config_.maximum_home_distance) {
-        *reason = "route exceeds maximum_home_distance";
-        return false;
-      }
+    const double maximum_route_distance =
+        std::hypot(config_.route.center_x - current_pose_.pose.position.x,
+                   config_.route.center_y - current_pose_.pose.position.y) +
+        config_.route.radius;
+    if (maximum_route_distance > config_.maximum_home_distance) {
+      *reason = "continuous circle exceeds maximum_home_distance";
+      return false;
     }
     reason->clear();
     return true;
@@ -956,7 +964,7 @@ class TowerMissionNode {
         handleMission(now, dt);
         break;
       case MissionState::kCloseLoop:
-        handleCloseLoop(now, dt);
+        handleMission(now, dt);
         break;
       case MissionState::kReturnHome:
         handleReturnHome(now, dt);
@@ -1062,9 +1070,9 @@ class TowerMissionNode {
         current_waypoint_index_ = 0;
         completed_legs_ = 0;
         mission_started_time_ = now;
-        setTarget(waypoints_.front());
+        setIngressTarget(now);
         transitionTo(MissionState::kMission,
-                     "initial hover stable; WP1 started");
+                     "initial hover stable; forward-facing ingress started");
       }
       return;
     }
@@ -1077,68 +1085,75 @@ class TowerMissionNode {
   void handleMission(const ros::Time& now, double dt) {
     if (!mission_started_time_.isZero() &&
         now - mission_started_time_ > ros::Duration(config_.mission_timeout)) {
-      failAndReturn("mission timeout before closing the orbit");
+      failAndReturn("mission timeout before completing the circular orbit");
       return;
     }
-    advanceReference(dt);
-    publishPositionReference(now);
-    ROS_INFO_THROTTLE(
-        1.0,
-        "[WAYPOINT] WP%zu/%zu pos_err=%.2f m yaw_err=%.1f deg hold=%.1f/%.1f s",
-        current_waypoint_index_ + 1, waypoints_.size(),
-        currentPositionError(), radiansToDegrees(currentYawError()),
-        currentHoldDuration(now), config_.waypoint_hold_time);
-    if (arrivalHeld(now, config_.position_tolerance, config_.yaw_tolerance,
-                    config_.waypoint_hold_time)) {
-      ++completed_legs_;
-      ROS_INFO("[WAYPOINT_DONE] WP%zu/%zu pos_err=%.3f m "
-               "yaw_err=%.2f deg held=%.2f s",
-               current_waypoint_index_ + 1, waypoints_.size(),
-               currentPositionError(), radiansToDegrees(currentYawError()),
-               currentHoldDuration(now));
-      if (current_waypoint_index_ + 1 < waypoints_.size()) {
-        ++current_waypoint_index_;
-        setTarget(waypoints_[current_waypoint_index_]);
+    if (!orbit_started_) {
+      updateIngressTargetYaw(now);
+      advanceReference(dt);
+      publishPositionReference(now);
+      ROS_INFO_THROTTLE(
+          1.0,
+          "[INGRESS] target=CP1/%zu pos_err=%.2f m yaw_err=%.1f deg "
+          "heading=%.1f deg",
+          waypoints_.size(), currentPositionError(),
+          radiansToDegrees(currentYawError()), radiansToDegrees(target_.yaw));
+      const double reference_entry_error = std::hypot(
+          reference_.x - waypoints_.front().x,
+          reference_.y - waypoints_.front().y);
+      if (currentPositionError() <= config_.position_tolerance &&
+          reference_entry_error <= 1e-6) {
+        circular_reference_ =
+            initializeCircularMotionReference(config_.route);
+        reference_ = circular_reference_.motion;
+        orbit_started_ = true;
+        setDynamicOrbitTarget(now);
         transitionTo(MissionState::kMission,
-                     "next tower waypoint started");
-      } else {
-        current_waypoint_index_ = 0;
-        setTarget(waypoints_.front());
-        transitionTo(MissionState::kCloseLoop,
-                     "all unique points held; executing WP8-to-WP1 closing leg");
+                     "circle entry reached; continuous strict arc started");
+        ROS_INFO("[CHECKPOINT_ENTRY] CP1/%zu reached; no checkpoint dwell",
+                 waypoints_.size());
+      } else if (now - state_entered_time_ >
+                 ros::Duration(config_.waypoint_timeout)) {
+        failAndReturn("circle-entry timeout");
       }
       return;
     }
-    if (now - state_entered_time_ >
-        ros::Duration(config_.waypoint_timeout)) {
-      std::ostringstream reason;
-      reason << "WP" << current_waypoint_index_ + 1 << " timeout";
-      failAndReturn(reason.str());
-    }
-  }
 
-  void handleCloseLoop(const ros::Time& now, double dt) {
-    advanceReference(dt);
+    circular_reference_ = stepCircularMotionReference(
+        circular_reference_, config_.route, dt, config_.maximum_speed,
+        config_.maximum_acceleration);
+    reference_ = circular_reference_.motion;
+    setDynamicOrbitTarget(now);
+    recordTrackingErrors(now);
     publishPositionReference(now);
+
+    const double checkpoint_step =
+        2.0 * kPi / static_cast<double>(waypoints_.size());
+    while (completed_legs_ < waypoints_.size() &&
+           circular_reference_.angular_progress + 1e-12 >=
+               (completed_legs_ + 1U) * checkpoint_step) {
+      ++completed_legs_;
+      current_waypoint_index_ = completed_legs_ % waypoints_.size();
+      ROS_INFO("[CHECKPOINT_PASS] CP%zu/%zu passed at %.1f deg; continuing "
+               "without dwell",
+               current_waypoint_index_ + 1U, waypoints_.size(),
+               radiansToDegrees(circular_reference_.angular_progress));
+    }
     ROS_INFO_THROTTLE(
         1.0,
-        "[CLOSE_LOOP] target=WP1 pos_err=%.2f m yaw_err=%.1f deg hold=%.1f/%.1f s",
-        currentPositionError(), radiansToDegrees(currentYawError()),
-        currentHoldDuration(now), config_.waypoint_hold_time);
-    if (arrivalHeld(now, config_.position_tolerance, config_.yaw_tolerance,
-                    config_.waypoint_hold_time)) {
-      ++completed_legs_;
+        "[ORBIT] progress=%.1f%% checkpoint=CP%zu/%zu speed=%.2f m/s "
+        "tracking_err=%.2f m yaw_err=%.1f deg",
+        100.0 * circular_reference_.angular_progress / (2.0 * kPi),
+        current_waypoint_index_ + 1U, waypoints_.size(),
+        circular_reference_.speed, currentPositionError(),
+        radiansToDegrees(currentYawError()));
+    if (circular_reference_.complete) {
       orbit_completed_ = true;
-      ROS_INFO("[ORBIT_DONE] %zu unique waypoints plus closing leg complete; "
-               "elapsed=%.2f s",
+      ROS_INFO("[ORBIT_DONE] strict circle and %zu checkpoints complete; "
+               "elapsed=%.2f s; checkpoints were pass-through",
                waypoints_.size(),
                (now - mission_started_time_).toSec());
-      startReturn("full fixed-height orbit completed");
-      return;
-    }
-    if (now - state_entered_time_ >
-        ros::Duration(config_.waypoint_timeout)) {
-      failAndReturn("closing leg timeout");
+      startReturn("full fixed-height circular orbit completed");
     }
   }
 
@@ -1463,20 +1478,61 @@ class TowerMissionNode {
     arrival_since_ = ros::Time(0);
   }
 
+  double ingressForwardYaw() const {
+    const double from_x = have_pose_ ? current_pose_.pose.position.x
+                                     : reference_.x;
+    const double from_y = have_pose_ ? current_pose_.pose.position.y
+                                     : reference_.y;
+    const double dx = waypoints_.front().x - from_x;
+    const double dy = waypoints_.front().y - from_y;
+    if (std::hypot(dx, dy) > 1e-6) {
+      return std::atan2(dy, dx);
+    }
+    if (std::hypot(reference_.vx, reference_.vy) > 1e-6) {
+      return std::atan2(reference_.vy, reference_.vx);
+    }
+    return reference_.yaw;
+  }
+
+  void setIngressTarget(const ros::Time& now) {
+    geometry_msgs::PoseStamped ingress = waypointPose(waypoints_.front(), now);
+    ingress.pose.orientation = yawQuaternion(ingressForwardYaw());
+    setTarget(ingress);
+  }
+
+  void updateIngressTargetYaw(const ros::Time& now) {
+    target_.yaw = ingressForwardYaw();
+    target_pose_.header.stamp = now;
+    target_pose_.pose.orientation = yawQuaternion(target_.yaw);
+    current_target_pub_.publish(target_pose_);
+  }
+
+  void setDynamicOrbitTarget(const ros::Time& now) {
+    target_.x = reference_.x;
+    target_.y = reference_.y;
+    target_.z = reference_.z;
+    target_.yaw = reference_.yaw;
+    target_pose_ = makePose(target_.x, target_.y, target_.z, target_.yaw, now);
+    current_target_pub_.publish(target_pose_);
+  }
+
+  void recordTrackingErrors(const ros::Time& now) {
+    if (!have_pose_) {
+      return;
+    }
+    const geometry_msgs::PoseStamped reference_pose = makePose(
+        reference_.x, reference_.y, reference_.z, reference_.yaw, now);
+    maximum_reference_tracking_error_ = std::max(
+        maximum_reference_tracking_error_,
+        positionDistance(current_pose_, reference_pose));
+    maximum_yaw_error_ = std::max(maximum_yaw_error_, currentYawError());
+  }
+
   void advanceReference(double dt) {
     reference_ = stepMotionReference(
         reference_, target_, dt, config_.maximum_speed,
         config_.maximum_acceleration, config_.maximum_yaw_rate);
-    if (have_pose_) {
-      const geometry_msgs::PoseStamped reference_pose = makePose(
-          reference_.x, reference_.y, reference_.z, reference_.yaw,
-          ros::Time::now());
-      maximum_reference_tracking_error_ = std::max(
-          maximum_reference_tracking_error_,
-          positionDistance(current_pose_, reference_pose));
-      maximum_yaw_error_ =
-          std::max(maximum_yaw_error_, currentYawError());
-    }
+    recordTrackingErrors(ros::Time::now());
   }
 
   void publishPositionReference(const ros::Time& now) {
@@ -1544,7 +1600,7 @@ class TowerMissionNode {
     state_pub_.publish(state_message);
 
     std_msgs::Float64 progress;
-    const double total_legs = static_cast<double>(waypoints_.size() + 1U);
+    const double total_legs = static_cast<double>(waypoints_.size());
     progress.data = total_legs > 0.0 ? completed_legs_ / total_legs : 0.0;
     if (orbit_completed_) {
       progress.data = 1.0;
@@ -1579,7 +1635,7 @@ class TowerMissionNode {
         reference_.x, reference_.y, reference_.z, reference_.yaw, now);
     report_ << std::fixed << std::setprecision(6) << now.toSec() << ','
             << stateName(state_) << ',' << current_waypoint_index_ + 1U << ','
-            << completed_legs_ << ',' << waypoints_.size() + 1U << ','
+            << completed_legs_ << ',' << waypoints_.size() << ','
             << target_pose_.pose.position.x << ','
             << target_pose_.pose.position.y << ','
             << target_pose_.pose.position.z << ','
@@ -1600,7 +1656,8 @@ class TowerMissionNode {
     const double clearance =
         config_.route.radius - config_.route.tower_collision_radius;
     ROS_INFO("[%s] tower=%s frame=%s center=(%.4f, %.4f) radius=%.2f m "
-             "height=%.2f m points=%d direction=%s start=%.1f deg",
+             "height=%.2f m trajectory=strict_circle checkpoints=%d "
+             "direction=%s start=%.1f deg",
              prefix, config_.route.tower_name.c_str(),
              config_.route.frame_id.c_str(), config_.route.center_x,
              config_.route.center_y, config_.route.radius,
@@ -1669,6 +1726,7 @@ class TowerMissionNode {
   geometry_msgs::PoseStamped target_pose_;
   MotionReference reference_;
   MotionTarget target_;
+  CircularMotionReference circular_reference_;
   nav_msgs::Path actual_path_;
   double home_yaw_{0.0};
   double landing_x_{0.0};
@@ -1696,6 +1754,7 @@ class TowerMissionNode {
   bool cached_authority_conflict_{false};
   std::string cached_conflict_detail_;
   bool landing_contact_assist_{false};
+  bool orbit_started_{false};
   bool orbit_completed_{false};
   bool returned_home_{false};
   bool landed_and_disarmed_{false};

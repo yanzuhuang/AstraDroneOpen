@@ -23,8 +23,8 @@ usage() {
 选项：
   --preview       明确选择只读路线预览（默认）
   --control       启用 PX4/Gazebo 与阶段1自动控制
-  --mode MODE     hover 仅起飞/悬停/返航/降落；mission 执行航点（默认）
-  --waypoints N   本轮均匀航点数；逐级测试用 1、4、8
+  --mode MODE     hover 仅起飞/悬停/返航/降落；mission 执行圆周（默认）
+  --waypoints N   本轮均匀检查点数；正式任务8，逐级测试可用1、4
   --headless      Gazebo 无 GUI，同时不启动 RViz
   --no-rviz       不启动 RViz
   --world FILE    指定 world；默认 forest.world
@@ -292,7 +292,7 @@ if [[ "$enable_control" == false ]]; then
     printf -v preview_command '%q --component preview %q %q' \
         "$script_path" "$waypoint_count" "$rviz"
     tmux new-session -d -s "$session_name" -n preview "$preview_command"
-    echo "阶段1路线预览已启动：${waypoint_count} 个唯一点 + 闭环段。"
+    echo "阶段1路线预览已启动：严格圆周 + ${waypoint_count} 个检查点。"
     echo "未启动 PX4/Gazebo，未注册 MAVROS setpoint publisher，不会解锁。"
 else
     [[ -f "$world_file" ]] || { echo "world 不存在：$world_file" >&2; exit 1; }
@@ -312,7 +312,7 @@ else
     tmux new-window -d -t "$session_name:" -n tower_mission "$mission_command"
     tmux select-window -t "$session_name:tower_mission"
     echo "阶段1控制任务已启动：PX4/Gazebo + FAST-LIO，world=$world_file"
-    echo "模式=$run_mode，航点=${waypoint_count}，CSV=$report_file"
+    echo "模式=$run_mode，检查点=${waypoint_count}，CSV=$report_file"
     echo "控制节点将在完整 preflight、setpoint 预发送后才请求 OFFBOARD 和解锁。"
 fi
 
