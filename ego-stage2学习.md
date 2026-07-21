@@ -1,10 +1,57 @@
 # AstraDroneOpen 阶段二：EGO-Planner 接入与验收记录
 
+## 启动方式（先看这里）
+
+本任务不是同时启动阶段1和阶段2两套脚本，而是只使用阶段2入口。阶段2已经复用阶段1的绕塔任务语义，并接入 FAST-LIO、EGO 局部重规划、raw-local 执行和分段 yaw 策略。两套入口同时运行会造成 ROS master、Gazebo/PX4 和控制权冲突。
+
+如果之前启动了阶段1，先只停止阶段1自己的 tmux 会话：
+
+```bash
+cd /home/yanzu/AstraDroneOpen
+scripts/run_sh/stage1_tower.sh --stop
+```
+
+首次先运行带 Gazebo GUI 和 EGO/FAST-LIO RViz 的 dry-run。此命令会启动 PX4/Gazebo、FAST-LIO、EGO、`traj_server`、bridge 和任务管理器，但不创建 MAVROS setpoint publisher、不解锁、不起飞：
+
+```bash
+scripts/run_sh/stage2_ego.sh --scenario dry-run --gui --rviz --attach
+```
+
+检查 RViz 中存在 `FAST-LIO/Registered Cloud`、`EGO-Planner/Inflated Occupancy`，并确认 preflight 健康后，按 `Ctrl+B`、再按 `D` 脱离 tmux，然后停止 dry-run：
+
+```bash
+scripts/run_sh/stage2_ego.sh --stop
+```
+
+正式执行“起飞 → 选最近塔 → 16 m高度绕一圈 → EGO局部重规划 → 返航 → 降落”的完整任务：
+
+```bash
+scripts/run_sh/stage2_ego.sh --control --scenario tower --waypoints 8 --gui --rviz --attach
+```
+
+该入口中，EGO高度上限为30 m，绕塔参考高度为16 m；绕塔时机头朝最近塔中心，进场和返程按 `PositionCommand` 的水平速度方向计算机头朝向。任务结束或异常时使用同一停止命令：
+
+```bash
+scripts/run_sh/stage2_ego.sh --stop
+```
+
 > 日期：2026-07-21  
 > 分支：`ego-project`  
 > 实施前/当前 HEAD：`85dc37b1d32233cec69abf237083d0e6fdbe772e`  
 > 范围：单机 Gazebo/PX4 SITL、FAST-LIO、EGO-Planner、traj_server、MAVROS raw-local 执行  
 > 不包含：阶段三专门静态障碍验收、多层/螺旋、动态障碍、多机、真机
+
+## 0. 当前配置增量（尚未飞行验收）
+
+下文第1至第8节保留的是 `radio_tower_0`、固定4 m阶段二验收历史，不能当作当前16 m配置的飞行证据。当前工作树在不修改EGO vendor核心的前提下新增：
+
+- EGO地图覆盖到30.5 m，并以30.0 m虚拟天花板和bridge相对高度上限形成三重高度门禁；绕塔参考高度改为16.0 m；
+- 任务层从 `forest.world` 已知的 `radio_tower`、`radio_tower_0` 候选配置中，按任务开始时的实际里程计位置只选最近的一座；新增world时必须同步维护候选配置；
+- `/tower_mission/global_reference` 保存最近塔的一圈闭合全局参考，任务层逐段给目标，EGO继续负责每段局部避障与重规划；
+- 进场第一段和返航由bridge按 `PositionCommand` 水平速度重算机头前向；进入圆周后，bridge根据 `/tower_mission/selected_tower_center` 重算并限速执行朝塔yaw，闭环完成前切回速度前向；
+- 起飞仍为4.0 m；由于当前EGO `manual_target_height` 固定为16.0 m，EGO返航参考和bridge到达判据新增独立 `return_height=16.0 m`，保持两端一致。
+
+当前代码已通过三包构建及单元回归，但没有使用 `--control`，因此30 m地图资源占用、16 m定位/点云质量、最近塔整圈轨迹、净空和朝塔yaw仍必须从dry-run开始重新分级验证。
 
 ## 1. 结论
 
@@ -92,12 +139,9 @@ stage2_ego_mission_node
 
 ### yaw 的实际含义
 
-当前 EGO `traj_server` 根据轨迹前视方向生成 yaw/yaw_rate，所以阶段二执行的是“沿运动方向看”的 EGO yaw。任务目标虽然携带朝塔 orientation，但当前 EGO manual goal 链不消费该 orientation，不能把本轮描述成相机始终朝塔。若后续必须保持朝塔，需要在以下两种方案间先决策：
+历史阶段二验收时，EGO `traj_server` 根据轨迹前视方向生成 yaw/yaw_rate，所以执行的是“沿运动方向看”的 EGO yaw。任务目标虽然携带朝塔 orientation，但 EGO manual goal 链不消费该 orientation，不能把历史证据描述成相机始终朝塔。
 
-1. 外部适配器根据塔中心重算 yaw/yaw_rate；优点是不改 vendor，缺点是不再原样执行 `/planning/pos_cmd` yaw；
-2. 修改 EGO/traj_server yaw 生成并形成可重放 vendor patch；影响 vendor 管理和回归范围。
-
-本轮按要求没有擅自选择或实现这两种扩展。
+当前增量已经采用外部适配方案：圆周段由bridge按最近塔中心重算 yaw/yaw_rate；进场和返航按 `PositionCommand` 的水平速度重算 yaw/yaw_rate，低速时保持上一航向防止抖动，两者均以 `max_yaw_rate` 做连续限幅。EGO vendor保持不变，新增策略尚无飞行证据。
 
 ## 5. 任务与安全状态
 
@@ -186,11 +230,11 @@ scripts/run_sh/stage2_ego.sh --stop
 ## 8. 未解决风险与下一步边界
 
 1. `map -> camera_init` 仍是仿真单位假设；`body -> base_link` 和 sensor 外参没有形成真机标定链。
-2. EGO vendor 的 `manual_target_height` 仍覆盖目标 z。阶段二只通过严格校验“所有目标 z == 4 m == manual_target_height”避免静默错误；多层前必须做适配层方案或批准 vendor patch。
-3. 当前 yaw 是轨迹前视方向，不保证相机朝塔；方案见第 4 节，需负责人决定。
+2. EGO vendor 的 `manual_target_height` 仍覆盖目标 z。当前通过严格校验“所有EGO任务目标 z == 16 m == manual_target_height”，并将返航判据显式设为16 m来避免静默错误；通用多层目标仍需适配层方案或批准 vendor patch。
+3. 当前已在外部bridge实现“圆周朝塔、其他段速度前向”的yaw策略，但只有数学单测和构建证据，尚未完成16 m飞行验收。
 4. 地面带过滤阈值可能隐藏低矮障碍；阶段三前必须结合障碍几何和地图策略复核。
 5. 正常返航后的 bridge 降落仍为 `AUTO.LAND`，尚未统一为项目长期要求的 OFFBOARD 受控降落。
 6. 本轮没有不可达目标、专门静态障碍最小净空、长期循环、干净 clone、install-space 或真机证据。
 7. 外部 PX4 仍是 dirty/detached 固定树；本轮只读使用，没有修改。
 
-因此，阶段二的“当前固定高度单机 Gazebo EGO 接入”验收通过；不得自动进入阶段三，不得把本轮称为静态避障、多层巡检或真机验收。
+因此，历史4 m阶段二“固定高度单机 Gazebo EGO 接入”验收通过；当前30/16 m最近塔与分段yaw增量仍待重新飞行验收。不得自动进入阶段三，不得把本轮称为静态避障、多层巡检或真机验收。

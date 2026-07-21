@@ -4,6 +4,7 @@
 #include "ego_gazebo_bridge/command_utils.h"
 #include "ego_gazebo_bridge/control_authority.h"
 
+#include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/ExtendedState.h>
@@ -14,6 +15,7 @@
 #include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Float64.h>
 #include <std_srvs/SetBool.h>
@@ -47,10 +49,12 @@ struct BridgeConfig {
   bool enable_control{false};
   bool require_sim_time{true};
   bool auto_track_on_command{false};
+  bool tower_yaw_override_enabled{false};
   double publish_rate{50.0};
   double prestream_duration{2.0};
   double request_interval{2.0};
   double takeoff_height{1.0};
+  double return_height{1.0};
   double takeoff_tolerance{0.15};
   double hover_duration{1.0};
   double command_timeout{0.2};
@@ -78,6 +82,8 @@ struct BridgeConfig {
   double alignment_yaw_tolerance{0.2617993878};
   double return_tolerance{0.25};
   double return_hold_duration{1.0};
+  double tower_camera_yaw_offset{0.0};
+  double forward_yaw_min_speed{0.05};
   CommandBounds bounds;
 
   std::string planning_frame{"camera_init"};
@@ -93,6 +99,8 @@ struct BridgeConfig {
   std::string set_mode_service{"/mavros/set_mode"};
   std::string input_goal_topic{"/move_base_simple/goal"};
   std::string planner_goal_topic{"/planning/goal"};
+  std::string tower_center_topic{"/tower_mission/selected_tower_center"};
+  std::string tower_yaw_mode_topic{"/tower_mission/face_tower"};
   std::vector<std::string> position_control_topics{
       "/mavros/setpoint_position/local",
       "/mavros/setpoint_position/global",
@@ -130,6 +138,9 @@ class EgoMavrosBridge {
   void commandCallback(
       const quadrotor_msgs::PositionCommand::ConstPtr& message);
   void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& message);
+  void towerCenterCallback(
+      const geometry_msgs::PointStamped::ConstPtr& message);
+  void towerYawModeCallback(const std_msgs::Bool::ConstPtr& message);
 
   bool trackingService(std_srvs::SetBool::Request& request,
                        std_srvs::SetBool::Response& response);
@@ -184,6 +195,8 @@ class EgoMavrosBridge {
   ros::Subscriber cloud_subscriber_;
   ros::Subscriber command_subscriber_;
   ros::Subscriber goal_subscriber_;
+  ros::Subscriber tower_center_subscriber_;
+  ros::Subscriber tower_yaw_mode_subscriber_;
   ros::Publisher setpoint_publisher_;
   ros::Publisher debug_setpoint_publisher_;
   ros::Publisher state_publisher_;
@@ -206,6 +219,7 @@ class EgoMavrosBridge {
   geometry_msgs::PoseStamped output_setpoint_;
   geometry_msgs::PoseStamped planner_target_mavros_;
   geometry_msgs::PoseStamped validated_goal_mavros_;
+  geometry_msgs::PointStamped tower_center_;
   mavros_msgs::PositionTarget planner_raw_target_;
 
   bool have_fcu_state_{false};
@@ -223,6 +237,9 @@ class EgoMavrosBridge {
   bool return_inside_tolerance_{false};
   bool takeoff_inside_tolerance_{false};
   bool tracking_error_active_{false};
+  bool have_tower_center_{false};
+  bool tower_yaw_mode_{false};
+  bool have_effective_yaw_{false};
 
   ros::Time last_fcu_state_time_;
   ros::Time last_extended_state_time_;
@@ -241,7 +258,9 @@ class EgoMavrosBridge {
   ros::Time return_inside_since_;
   ros::Time takeoff_inside_since_;
   ros::Time tracking_error_since_;
+  ros::Time last_effective_yaw_time_;
   double maximum_tracking_error_{0.0};
+  double effective_yaw_{0.0};
   bool cached_control_conflict_{false};
   std::string cached_control_conflict_detail_;
   std::string hold_reason_;

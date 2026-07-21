@@ -1,29 +1,36 @@
-# Stage 2 fixed-height EGO integration. This intentionally uses the historical
-# radio_tower_0 / 4 m baseline; it does not overwrite the unvalidated Stage 1
-# default radio_tower / 8 m continuous-circle configuration.
+# EGO绕塔任务外层：按起始里程计位置选择最近铁塔，生成闭合全局参考路径；
+# EGO-Planner继续负责各参考段的局部避障和重规划。当前16 m配置尚需重新飞行验收。
 enable_control: false
 scenario: dry_run
 planning_frame: camera_init
-manual_target_height: 4.0
+manual_target_height: 16.0
 height_match_tolerance: 0.000001
 
 tower:
-  name: radio_tower_0
+  # 保留单塔字段作为兼容回退；正常forest.world任务使用下面的候选列表。
+  name: radio_tower
   frame_id: map
   center:
-    x: 24.4614
-    y: 39.3288
+    x: -17.4209
+    y: 22.29
   collision_radius: 6.41
+
+tower_candidates:
+  frame_id: map
+  names: [radio_tower, radio_tower_0]
+  center_x: [-17.4209, 24.4614]
+  center_y: [22.29, 39.3288]
+  collision_radius: [6.41, 6.41]
 
 mission:
   radius: 10.0
-  height: 4.0
+  height: 16.0
   waypoint_count: 8
   start_angle_deg: -90.0
   direction: counter_clockwise
   camera_yaw_offset_deg: 0.0
   minimum_height: 2.0
-  maximum_height: 6.0
+  maximum_height: 30.0
   minimum_safety_distance: 2.0
 
 # Empty-space validation goals are absolute map ENU coordinates near home.
@@ -50,6 +57,12 @@ topics:
   command: /planning/pos_cmd
   bridge_state: /ego_mavros_bridge/state
   goal: /move_base_simple/goal
+# 私有锁存输出形成跨层契约：global_reference是全局层；center/mode供bridge执行yaw策略。
+outputs:
+  global_reference: /tower_mission/global_reference
+  selected_tower_center: /tower_mission/selected_tower_center
+  selected_tower_name: /tower_mission/selected_tower_name
+  face_tower: /tower_mission/face_tower
 services:
   tracking: /ego_mavros_bridge/enable_tracking
   return_home: /ego_mavros_bridge/return_home

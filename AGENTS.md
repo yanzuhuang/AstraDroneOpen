@@ -23,7 +23,7 @@ AstraDroneOpen 正在把已有无人机学习代码整理成可复现、可维�
 - 已确认的学习和 Gazebo 开发基线：`ego-project@498c7c6`。
 - 2026-07-21 阶段1开始时实际 HEAD：`dcd5bd5697ae141712df43766e9a0483e912a294`（提交主题“前置优化”）。开始时工作区干净，先前的 `forest.world` 默认值修改和前置优化已进入 HEAD。每个新任务仍须重新检查，不能假定 HEAD 不变。
 - 2026-07-21 阶段2开始时实际 HEAD：`85dc37b1d32233cec69abf237083d0e6fdbe772e`，分支 `ego-project` 跟踪 `origin/ego-project`，工作区干净；这说明阶段1成果已进入当前 HEAD，不能再按旧文档假定其未提交。
-- 当前工作区包含尚未提交的阶段2 EGO任务、raw轨迹执行、安全监控、配置、脚本和文档，属于本轮成果；后续代理必须保护并先查看 diff。FAST-LIO 仿真期间受保护的跟踪日志权限和内容已恢复，未混入成果。
+- 2026-07-21 最近塔/30-16 m/yaw增量开始时实际 HEAD：`988e75a73375bb9c19d94ea98edf976ee74b5744`（阶段2成果已由负责人提交），分支相对远端领先1。开始时工作区仅有受保护的 `FAST_LIO/Log/mat_pre.txt` 修改；后续代理必须保护并先查看 diff。
 - 已观察技术栈：Ubuntu 20.04.6、ROS1 Noetic、Gazebo Classic 11.15.1、MAVROS 1.20.1、CMake 3.16.3、GCC 9.4、Python 3.8。
 - 外部 PX4 位于 `/home/yanzu/PX4-Autopilot`，只读审计为 detached `99c40407ffd7ac184e2d7b4b293f36f10fe561ef`、`v1.15.4-dirty`。未经批准不得修改、清理、切换或升级。
 - 当前 ROS、MAVROS、Gazebo、PX4、EGO 和 FAST-LIO 版本全部锁定；无项目负责人批准不升级。
@@ -65,11 +65,12 @@ README 中的 ROS2、完整实机、探索和蜂群描述超前于当前代码�
 - 阶段1按悬停→1点→4点→8点→第二次8点完成 `forest.world`/`radio_tower_0` 实测；两次完整任务均518 s，最终 `SUCCESS`、`armed=false`、`ON_GROUND`，控制图上唯一发布者为 `/tower_mission`。详细误差见 `ego-stage1学习.md`。
 - 2026-07-21 阶段2实现 FAST-LIO→过滤点云→EGO→traj_server→raw-local `PositionTarget` 闭环；`type_mask=0` 保留p/v/a/yaw/yaw_rate，raw唯一发布者为 `/ego_mavros_bridge`。任务逐目标等待新trajectory id和实际odom到达；HOLD锁存并有限时间降落。
 - 阶段2按dry-run→控制冲突/指令断流故障注入→单目标→双目标→8个唯一点加首点闭环的低速绕塔完成验证。最终闭环653.900 s，任务最大跟踪误差0.295 m，最终`SUCCESS`、`armed=false`、`ON_GROUND`。详细证据见 `ego-stage2学习.md`。
+- 当前未提交增量把EGO虚拟天花板/bridge包络提高到30 m，绕塔固定高度改为16 m；任务层按起始odom从两座配置候选塔中只选最近塔并发布闭合全局参考，EGO逐段局部重规划；bridge在圆周段朝塔、进场/返航沿轨迹前视。相关三包构建和37个目标单测通过，但未启动控制或飞行，不能继承历史4 m飞行结论。
 
 仍未完成运行验收：
 
 - 专门静态障碍、最小净空、不可达目标和规划失败场景；阶段2绕塔成功不能替代阶段3验收；
-- 通用目标z和朝塔yaw：阶段2固定4 m严格匹配`manual_target_height`，当前traj_server yaw为轨迹前视方向；
+- 当前30/16 m最近塔整圈、地图资源占用、净空和朝塔yaw尚未重新飞行验收；通用目标z仍受`manual_target_height`覆盖；
 - 动态障碍预测、多机、相机检测主链接入、QGIS/Cloud、真机和干净 clone 交付。
 
 ## 5. 节点、数据流、frame 与重要 Topic
@@ -176,14 +177,14 @@ catkin_test_results build/test_results
 
 主要遗留风险：
 
-- 当前 EGO vendor 没有可识别的精确上游 commit，直接修改尚未形成可重放 patch；`manual_target_height` 仍覆盖目标 z。阶段2只允许固定4 m并在启动时严格匹配；多层前仍需适配层方案或批准vendor patch。
-- 当前traj_server yaw是轨迹前视航向，不消费任务目标的朝塔orientation；朝塔巡检yaw须在外部重算或形成批准vendor patch，阶段2没有擅自扩展。
+- 当前 EGO vendor 没有可识别的精确上游 commit，直接修改尚未形成可重放 patch；`manual_target_height` 仍覆盖目标 z。当前增量只允许固定16 m并在启动时严格匹配；通用多层前仍需适配层方案或批准vendor patch。
+- traj_server仍生成轨迹前视航向，不消费任务目标orientation；当前增量已在外部bridge按任务模式重算圆周朝塔yaw并限速，进场/返航保留前视yaw，但尚无飞行证据。
 - bridge 仍是位置跟随器，不是完整 EGO 动态轨迹执行器；不得把它描述成避障闭环已验收。
 - 已确认的正常降落架构是 OFFBOARD 受控降落，但 bridge 现有异常/land 状态仍会请求 `AUTO.LAND`；本轮明确不重设计降落控制，后续须按批准阶段消除该差异。
 - `map -> camera_init`、`body -> base_link` 和传感器外参尚未形成实测正式契约。
 - `autoarming_control.cpp`、bridge 状态机仍较大；只允许随阶段增量拆分。
 - 外部 PX4 dirty、detached；仓库部署资产与外部树尚无可复现同步机制。
-- `forest.world` 的 `radio_tower_0` 已完成阶段1固定航线和阶段2 EGO闭环，但换塔/world/参数仍需重验；没有专门静态障碍最小净空证据。
+- `forest.world` 的 `radio_tower_0` 已完成历史阶段1固定航线和阶段2 EGO闭环；当前增量会从 `radio_tower`、`radio_tower_0` 中按起始odom选择最近塔（原点附近为 `radio_tower`）。换塔/world/30-16 m参数均需重验，且没有专门静态障碍最小净空证据。
 - bridge阶段2新增有限超时、锁存HOLD、跟踪误差和断流/控制冲突证据；完整不可达目标、全部服务失败、长期稳定性仍未验收。
 
 任何 GPT/Codex 开始任务前必须只读执行并报告 `git branch --show-current`、`git rev-parse HEAD`、`git status --short --branch`、相关 diff；现有修改、删除、未跟踪文件均视为用户资产。

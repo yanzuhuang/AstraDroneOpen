@@ -4,6 +4,7 @@
 #include <ros/this_node.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <tf2/exceptions.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <xmlrpcpp/XmlRpcValue.h>
 
 #include <algorithm>
@@ -145,6 +146,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("auto_track_on_command",
                              config_.auto_track_on_command,
                              config_.auto_track_on_command);
+  private_node_handle_.param("tower_yaw_override_enabled",
+                             config_.tower_yaw_override_enabled,
+                             config_.tower_yaw_override_enabled);
   private_node_handle_.param("publish_rate", config_.publish_rate,
                              config_.publish_rate);
   private_node_handle_.param("prestream_duration",
@@ -154,6 +158,9 @@ void EgoMavrosBridge::loadConfig() {
                              config_.request_interval);
   private_node_handle_.param("takeoff_height", config_.takeoff_height,
                              config_.takeoff_height);
+  config_.return_height = config_.takeoff_height;
+  private_node_handle_.param("return_height", config_.return_height,
+                             config_.return_height);
   private_node_handle_.param("takeoff_tolerance",
                              config_.takeoff_tolerance,
                              config_.takeoff_tolerance);
@@ -221,6 +228,12 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("return_hold_duration",
                              config_.return_hold_duration,
                              config_.return_hold_duration);
+  private_node_handle_.param("tower_camera_yaw_offset",
+                             config_.tower_camera_yaw_offset,
+                             config_.tower_camera_yaw_offset);
+  private_node_handle_.param("forward_yaw_min_speed",
+                             config_.forward_yaw_min_speed,
+                             config_.forward_yaw_min_speed);
   private_node_handle_.param("min_relative_height",
                              config_.bounds.min_relative_height,
                              config_.bounds.min_relative_height);
@@ -262,6 +275,12 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("planner_goal_topic",
                              config_.planner_goal_topic,
                              config_.planner_goal_topic);
+  private_node_handle_.param("tower_center_topic",
+                             config_.tower_center_topic,
+                             config_.tower_center_topic);
+  private_node_handle_.param("tower_yaw_mode_topic",
+                             config_.tower_yaw_mode_topic,
+                             config_.tower_yaw_mode_topic);
   private_node_handle_.getParam("control_topics/position",
                                 config_.position_control_topics);
   private_node_handle_.getParam("control_topics/raw_local",
@@ -278,6 +297,7 @@ bool EgoMavrosBridge::validateConfig() const {
   const bool valid_positive_values =
       config_.publish_rate >= 20.0 && config_.prestream_duration > 0.0 &&
       config_.request_interval > 0.0 && config_.takeoff_height > 0.0 &&
+      config_.return_height > 0.0 &&
       config_.takeoff_tolerance > 0.0 && config_.hover_duration >= 0.0 &&
       config_.command_timeout > 0.0 && config_.goal_timeout > 0.0 &&
       config_.timestamp_future_tolerance >= 0.0 &&
@@ -298,9 +318,14 @@ bool EgoMavrosBridge::validateConfig() const {
       config_.alignment_yaw_tolerance > 0.0 &&
       config_.return_tolerance > 0.0 &&
       config_.return_hold_duration >= 0.0 &&
+      std::isfinite(config_.tower_camera_yaw_offset) &&
+      std::isfinite(config_.forward_yaw_min_speed) &&
+      config_.forward_yaw_min_speed > 0.0 &&
       config_.bounds.min_relative_height >= 0.0 &&
       config_.bounds.max_relative_height >
           config_.bounds.min_relative_height &&
+      config_.takeoff_height <= config_.bounds.max_relative_height &&
+      config_.return_height <= config_.bounds.max_relative_height &&
       config_.bounds.max_horizontal_radius > 0.0;
   const bool valid_names =
       !config_.planning_frame.empty() && !config_.mavros_frame.empty() &&
@@ -313,7 +338,10 @@ bool EgoMavrosBridge::validateConfig() const {
       !config_.set_mode_service.empty() &&
       !config_.input_goal_topic.empty() &&
       !config_.planner_goal_topic.empty() &&
-      config_.input_goal_topic != config_.planner_goal_topic;
+      config_.input_goal_topic != config_.planner_goal_topic &&
+      (!config_.tower_yaw_override_enabled ||
+       (!config_.tower_center_topic.empty() &&
+        !config_.tower_yaw_mode_topic.empty()));
   const auto valid_topic_group = [](const std::vector<std::string>& topics) {
     return !topics.empty() &&
            std::all_of(topics.begin(), topics.end(),
@@ -363,6 +391,15 @@ void EgoMavrosBridge::setupRosInterfaces() {
           &EgoMavrosBridge::commandCallback, this);
   goal_subscriber_ = node_handle_.subscribe<geometry_msgs::PoseStamped>(
       config_.input_goal_topic, 10, &EgoMavrosBridge::goalCallback, this);
+  if (config_.tower_yaw_override_enabled) {
+    tower_center_subscriber_ =
+        node_handle_.subscribe<geometry_msgs::PointStamped>(
+            config_.tower_center_topic, 1,
+            &EgoMavrosBridge::towerCenterCallback, this);
+    tower_yaw_mode_subscriber_ = node_handle_.subscribe<std_msgs::Bool>(
+        config_.tower_yaw_mode_topic, 1,
+        &EgoMavrosBridge::towerYawModeCallback, this);
+  }
 
   debug_setpoint_publisher_ =
       private_node_handle_.advertise<geometry_msgs::PoseStamped>(
@@ -488,6 +525,34 @@ void EgoMavrosBridge::cloudCallback(
   last_cloud_stamp_ = message->header.stamp;
 }
 
+void EgoMavrosBridge::towerCenterCallback(
+    const geometry_msgs::PointStamped::ConstPtr& message) {
+  if (message->header.frame_id.empty() ||
+      !std::isfinite(message->point.x) ||
+      !std::isfinite(message->point.y) ||
+      !std::isfinite(message->point.z)) {
+    ROS_ERROR("[BRIDGE] Invalid selected tower center was rejected.");
+    have_tower_center_ = false;
+    return;
+  }
+  tower_center_ = *message;
+  have_tower_center_ = true;
+  ROS_INFO("[BRIDGE] Selected tower center received: frame=%s, "
+           "center=(%.3f, %.3f, %.3f).",
+           tower_center_.header.frame_id.c_str(), tower_center_.point.x,
+           tower_center_.point.y, tower_center_.point.z);
+}
+
+void EgoMavrosBridge::towerYawModeCallback(
+    const std_msgs::Bool::ConstPtr& message) {
+  if (tower_yaw_mode_ == message->data) {
+    return;
+  }
+  tower_yaw_mode_ = message->data;
+  ROS_INFO("[BRIDGE] Yaw policy changed to %s.",
+           tower_yaw_mode_ ? "FACE_SELECTED_TOWER" : "VELOCITY_FORWARD");
+}
+
 void EgoMavrosBridge::commandCallback(
     const quadrotor_msgs::PositionCommand::ConstPtr& message) {
   have_planner_target_ = false;
@@ -533,8 +598,71 @@ void EgoMavrosBridge::commandCallback(
     return;
   }
 
+  quadrotor_msgs::PositionCommand effective_command = *message;
+  if (config_.tower_yaw_override_enabled && tower_yaw_mode_) {
+    if (!have_tower_center_) {
+      ROS_ERROR_THROTTLE(
+          1.0,
+          "[BRIDGE] Tower-facing yaw requested without a selected tower center.");
+      return;
+    }
+    geometry_msgs::PointStamped center = tower_center_;
+    center.header.stamp = message->header.stamp;
+    geometry_msgs::PointStamped planning_center;
+    try {
+      if (center.header.frame_id == config_.planning_frame) {
+        planning_center = center;
+      } else {
+        const auto transform = tf_buffer_.lookupTransform(
+            config_.planning_frame, center.header.frame_id,
+            message->header.stamp, ros::Duration(kTfTimeout));
+        tf2::doTransform(center, planning_center, transform);
+      }
+    } catch (const tf2::TransformException& exception) {
+      ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Tower center TF failed: %s",
+                         exception.what());
+      return;
+    }
+    std::string yaw_reason;
+    if (!applyPointFacingYaw(planning_center.point,
+                             config_.tower_camera_yaw_offset,
+                             &effective_command, &yaw_reason)) {
+      ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Tower yaw command rejected: %s",
+                         yaw_reason.c_str());
+      return;
+    }
+  } else if (config_.tower_yaw_override_enabled) {
+    std::string yaw_reason;
+    if (!applyVelocityFacingYaw(config_.forward_yaw_min_speed,
+                                &effective_command, &yaw_reason)) {
+      ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Forward yaw command rejected: %s",
+                         yaw_reason.c_str());
+      return;
+    }
+  }
+
+  double next_effective_yaw = effective_command.yaw;
+  double next_effective_yaw_rate = effective_command.yaw_dot;
+  if (have_effective_yaw_ && !last_effective_yaw_time_.isZero()) {
+    const double yaw_dt = (now - last_effective_yaw_time_).toSec();
+    if (yaw_dt > 0.0 && yaw_dt <= config_.command_timeout) {
+      const double desired_change =
+          angularDistance(effective_yaw_, effective_command.yaw);
+      const double maximum_change = config_.max_yaw_rate * yaw_dt;
+      const double limited_change =
+          std::max(-maximum_change,
+                   std::min(maximum_change, desired_change));
+      next_effective_yaw = std::atan2(
+          std::sin(effective_yaw_ + limited_change),
+          std::cos(effective_yaw_ + limited_change));
+      next_effective_yaw_rate = limited_change / yaw_dt;
+    }
+  }
+  effective_command.yaw = next_effective_yaw;
+  effective_command.yaw_dot = next_effective_yaw_rate;
+
   geometry_msgs::PoseStamped planning_pose =
-      commandToPose(*message, config_.planning_frame);
+      commandToPose(effective_command, config_.planning_frame);
   geometry_msgs::PoseStamped mavros_target;
   std::string reason;
   if (!transformToMavros(planning_pose, &mavros_target, &reason)) {
@@ -571,7 +699,7 @@ void EgoMavrosBridge::commandCallback(
   limits.gravity_alignment_tolerance =
       config_.gravity_alignment_tolerance;
   mavros_msgs::PositionTarget raw_target;
-  if (!commandToRawTarget(*message, planning_to_mavros, limits, now,
+  if (!commandToRawTarget(effective_command, planning_to_mavros, limits, now,
                           &raw_target, &reason)) {
     ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Raw command conversion failed: %s",
                        reason.c_str());
@@ -583,6 +711,9 @@ void EgoMavrosBridge::commandCallback(
   have_planner_target_ = true;
   last_command_time_ = now;
   last_command_stamp_ = message->header.stamp;
+  effective_yaw_ = effective_command.yaw;
+  have_effective_yaw_ = true;
+  last_effective_yaw_time_ = now;
   debug_setpoint_publisher_.publish(planner_target_mavros_);
 
   if (config_.auto_track_on_command &&
@@ -725,6 +856,7 @@ bool EgoMavrosBridge::landService(std_srvs::Trigger::Request&,
         "cannot start supervised landing without a fresh, valid pose";
     return true;
   }
+  tower_yaw_mode_ = false;
   land_requested_ = true;
   response.success = true;
   response.message = "AUTO.LAND requested";
@@ -745,6 +877,7 @@ bool EgoMavrosBridge::returnHomeService(
     return true;
   }
 
+  tower_yaw_mode_ = false;
   std::string reason;
   if (!publishReturnGoal(&reason)) {
     response.success = false;
@@ -1526,7 +1659,7 @@ bool EgoMavrosBridge::publishReturnGoal(std::string* reason) {
   geometry_msgs::PoseStamped home_hover = home_pose_;
   home_hover.header.stamp = now;
   home_hover.header.frame_id = config_.mavros_frame;
-  home_hover.pose.position.z += config_.takeoff_height;
+  home_hover.pose.position.z += config_.return_height;
 
   geometry_msgs::PoseStamped planning_goal;
   if (!transformToPlanning(home_hover, &planning_goal, reason)) {
@@ -1546,7 +1679,7 @@ void EgoMavrosBridge::updateReturnProgress(const ros::Time& now) {
     return;
   }
   geometry_msgs::PoseStamped home_hover = home_pose_;
-  home_hover.pose.position.z += config_.takeoff_height;
+  home_hover.pose.position.z += config_.return_height;
   const bool inside =
       positionDistance(mavros_pose_, home_hover) <= config_.return_tolerance;
   if (inside && !return_inside_tolerance_) {

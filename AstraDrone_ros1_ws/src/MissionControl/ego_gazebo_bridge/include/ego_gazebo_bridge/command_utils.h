@@ -1,6 +1,7 @@
 #ifndef EGO_GAZEBO_BRIDGE_COMMAND_UTILS_H_
 #define EGO_GAZEBO_BRIDGE_COMMAND_UTILS_H_
 
+#include <geometry_msgs/Point.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <mavros_msgs/PositionTarget.h>
@@ -36,6 +37,15 @@ double positionDistance(const geometry_msgs::PoseStamped& lhs,
                         const geometry_msgs::PoseStamped& rhs);
 double horizontalDistance(const geometry_msgs::PoseStamped& lhs,
                           const geometry_msgs::PoseStamped& rhs);
+
+bool applyPointFacingYaw(const geometry_msgs::Point& target,
+                         double camera_yaw_offset,
+                         quadrotor_msgs::PositionCommand* command,
+                         std::string* reason);
+
+bool applyVelocityFacingYaw(double minimum_horizontal_speed,
+                            quadrotor_msgs::PositionCommand* command,
+                            std::string* reason);
 
 geometry_msgs::PoseStamped commandToPose(
     const quadrotor_msgs::PositionCommand& command,

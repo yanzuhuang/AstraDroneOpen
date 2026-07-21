@@ -6,11 +6,12 @@ publish_rate: 50.0
 prestream_duration: 3.0
 request_interval: 2.0
 takeoff_height: 4.0
+return_height: 16.0
 takeoff_tolerance: 0.25
 hover_duration: 2.0
 
 min_relative_height: 0.3
-max_relative_height: 5.0
+max_relative_height: 30.0
 max_horizontal_radius: 60.0
 
 command_timeout: 0.60
@@ -33,7 +34,8 @@ landing_timeout: 120.0
 # Position slew is used only by takeoff/HOLD. EGO tracking publishes the
 # complete time-consistent raw target without position chasing.
 max_position_rate: 0.50
-max_yaw_rate: 0.75
+# 与阶段1最终验收的30 deg/s偏航速率上限一致。
+max_yaw_rate: 0.5235987755982988
 max_velocity: 0.35
 max_acceleration: 0.60
 gravity_alignment_tolerance: 0.017453292519943295
@@ -44,6 +46,14 @@ alignment_position_tolerance: 0.25
 alignment_yaw_tolerance: 0.3490658504
 return_tolerance: 0.40
 return_hold_duration: 2.0
+
+# 进场/返航按PositionCommand水平速度直接计算机头前向；圆周段朝最近塔中心。
+# 低于该水平速度时方向无定义，保持上一航向，避免临停点附近抖动。
+tower_yaw_override_enabled: true
+tower_camera_yaw_offset: 0.0
+forward_yaw_min_speed: 0.05
+tower_center_topic: /tower_mission/selected_tower_center
+tower_yaw_mode_topic: /tower_mission/face_tower
 
 planning_frame: camera_init
 mavros_frame: map

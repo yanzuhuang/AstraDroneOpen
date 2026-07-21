@@ -10,6 +10,14 @@
 
 namespace astra_tower_mission {
 
+struct TowerCandidate {
+  std::string name;
+  std::string frame_id;
+  double center_x{0.0};
+  double center_y{0.0};
+  double collision_radius{0.0};
+};
+
 double posePositionDistance(const geometry_msgs::PoseStamped& first,
                             const geometry_msgs::PoseStamped& second);
 
@@ -19,6 +27,9 @@ bool validateFixedHeightGoals(
 
 std::vector<geometry_msgs::PoseStamped> appendClosureGoal(
     const std::vector<geometry_msgs::PoseStamped>& unique_goals);
+
+int nearestTowerIndex(const std::vector<TowerCandidate>& candidates,
+                      double vehicle_x, double vehicle_y);
 
 bool isNewTrajectory(std::uint32_t baseline_id, std::uint32_t command_id,
                      const ros::Time& goal_stamp,

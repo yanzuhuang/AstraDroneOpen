@@ -39,6 +39,26 @@ TEST(EgoTaskGoals, AppendsFirstGoalToCloseMultiPointRoute) {
                 std::vector<geometry_msgs::PoseStamped>(1)).size());
 }
 
+TEST(EgoTaskGoals, SelectsNearestValidTower) {
+  const std::vector<TowerCandidate> candidates{
+      {"far", "map", 24.4614, 39.3288, 6.41},
+      {"near", "map", -17.4209, 22.29, 6.41}};
+  EXPECT_EQ(1, nearestTowerIndex(candidates, 0.0, 0.0));
+  EXPECT_EQ(0, nearestTowerIndex(candidates, 23.0, 38.0));
+}
+
+TEST(EgoTaskGoals, IgnoresInvalidTowerAndRejectsInvalidVehiclePose) {
+  TowerCandidate invalid;
+  invalid.name = "invalid";
+  invalid.frame_id = "map";
+  invalid.center_x = std::numeric_limits<double>::quiet_NaN();
+  invalid.collision_radius = 1.0;
+  TowerCandidate valid{"valid", "map", 2.0, 3.0, 1.0};
+  EXPECT_EQ(1, nearestTowerIndex({invalid, valid}, 0.0, 0.0));
+  EXPECT_EQ(-1, nearestTowerIndex(
+                    {valid}, std::numeric_limits<double>::infinity(), 0.0));
+}
+
 TEST(EgoTaskProgress, RequiresNewIdAfterGoalStamp) {
   EXPECT_TRUE(isNewTrajectory(4, 5, ros::Time(10.0), ros::Time(10.1)));
   EXPECT_FALSE(isNewTrajectory(4, 4, ros::Time(10.0), ros::Time(10.1)));

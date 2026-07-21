@@ -150,6 +150,55 @@ TEST(CommandBoundsTest, ReportsHorizontalDistance) {
   EXPECT_NEAR(5.0, horizontalDistance(home, target), 1e-12);
 }
 
+TEST(YawPolicy, FacesFixedPointAndPreservesOrbitYawRate) {
+  quadrotor_msgs::PositionCommand command;
+  command.position.x = 10.0;
+  command.velocity.y = 1.0;
+  geometry_msgs::Point tower_center;
+  std::string reason;
+
+  ASSERT_TRUE(applyPointFacingYaw(tower_center, 0.0, &command, &reason))
+      << reason;
+  EXPECT_NEAR(kPi, std::abs(command.yaw), 1e-12);
+  EXPECT_NEAR(0.1, command.yaw_dot, 1e-12);
+
+  ASSERT_TRUE(
+      applyPointFacingYaw(tower_center, 0.5 * kPi, &command, &reason));
+  EXPECT_NEAR(0.5 * kPi, command.yaw, 1e-12);
+}
+
+TEST(YawPolicy, RejectsUndefinedTowerCenterBearing) {
+  quadrotor_msgs::PositionCommand command;
+  geometry_msgs::Point tower_center;
+  std::string reason;
+  EXPECT_FALSE(applyPointFacingYaw(tower_center, 0.0, &command, &reason));
+  EXPECT_FALSE(reason.empty());
+}
+
+TEST(YawPolicy, FacesHorizontalVelocityAndComputesYawRate) {
+  quadrotor_msgs::PositionCommand command;
+  command.velocity.x = 0.0;
+  command.velocity.y = 2.0;
+  command.acceleration.x = -1.0;
+  std::string reason;
+
+  ASSERT_TRUE(applyVelocityFacingYaw(0.05, &command, &reason)) << reason;
+  EXPECT_NEAR(0.5 * kPi, command.yaw, 1e-12);
+  EXPECT_NEAR(0.5, command.yaw_dot, 1e-12);
+}
+
+TEST(YawPolicy, PreservesYawWhenHorizontalVelocityIsTooSmall) {
+  quadrotor_msgs::PositionCommand command;
+  command.velocity.x = 0.01;
+  command.yaw = -1.2;
+  command.yaw_dot = 0.4;
+  std::string reason;
+
+  ASSERT_TRUE(applyVelocityFacingYaw(0.05, &command, &reason)) << reason;
+  EXPECT_DOUBLE_EQ(-1.2, command.yaw);
+  EXPECT_DOUBLE_EQ(0.0, command.yaw_dot);
+}
+
 TEST(CommandLimiter, LimitsPositionAndShortestYawStep) {
   const auto current = makePose(0.0, 0.0, 0.0, 170.0 * kPi / 180.0);
   const auto target = makePose(3.0, 4.0, 0.0, -170.0 * kPi / 180.0);

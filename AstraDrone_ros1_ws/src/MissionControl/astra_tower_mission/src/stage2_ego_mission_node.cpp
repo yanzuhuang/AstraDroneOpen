@@ -1,17 +1,20 @@
 /**
- * Stage 2 EGO mission sequencer. This node never advertises a MAVROS control
- * topic. It publishes one existing planning goal at a time and advances only
- * after a new trajectory id and measured odometry arrival are both observed.
+ * EGO tower mission sequencer. The mission layer selects the nearest tower
+ * and owns the closed global reference path. EGO receives one reference point
+ * at a time and owns collision-aware local replanning. This node never
+ * advertises a MAVROS control topic.
  */
 
 #include "astra_tower_mission/ego_task_utils.h"
 #include "astra_tower_mission/tower_route.h"
 
+#include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <std_msgs/UInt32.h>
@@ -96,18 +99,20 @@ class Stage2EgoMissionNode {
   Stage2EgoMissionNode()
       : node_(), private_node_("~"), tf_listener_(tf_buffer_) {
     loadConfig();
-    buildGoals();
     setupRos();
+    if (scenario_ != "tower") {
+      buildValidationGoals();
+    }
     openReport();
     state_entered_ = ros::Time::now();
     mission_started_ = state_entered_;
     publishState();
     timer_ = node_.createTimer(ros::Duration(1.0 / loop_rate_),
                                &Stage2EgoMissionNode::timerCallback, this);
-    ROS_WARN("[STAGE2_TASK] scenario=%s control=%s goals=%zu; no MAVROS "
-             "control publisher is created",
+    ROS_WARN("[STAGE2_TASK] scenario=%s control=%s initial_goals=%zu "
+             "tower_candidates=%zu; no MAVROS control publisher is created",
              scenario_.c_str(), enable_control_ ? "true" : "false",
-             goals_.size());
+             goals_.size(), tower_candidates_.size());
   }
 
  private:
@@ -116,7 +121,7 @@ class Stage2EgoMissionNode {
     private_node_.param<std::string>("scenario", scenario_, "dry_run");
     private_node_.param<std::string>("planning_frame", planning_frame_,
                                      "camera_init");
-    private_node_.param("manual_target_height", manual_target_height_, 4.0);
+    private_node_.param("manual_target_height", manual_target_height_, 16.0);
     private_node_.param("height_match_tolerance", height_match_tolerance_,
                         1e-6);
     private_node_.param("loop_rate", loop_rate_, 20.0);
@@ -143,6 +148,18 @@ class Stage2EgoMissionNode {
                                      "/ego_mavros_bridge/state");
     private_node_.param<std::string>("topics/goal", goal_topic_,
                                      "/move_base_simple/goal");
+    private_node_.param<std::string>("outputs/global_reference",
+                                     global_reference_output_,
+                                     "global_reference");
+    private_node_.param<std::string>("outputs/selected_tower_center",
+                                     selected_tower_center_output_,
+                                     "selected_tower_center");
+    private_node_.param<std::string>("outputs/selected_tower_name",
+                                     selected_tower_name_output_,
+                                     "selected_tower_name");
+    private_node_.param<std::string>("outputs/face_tower",
+                                     tower_yaw_mode_output_,
+                                     "face_tower");
     private_node_.param<std::string>("services/tracking", tracking_service_,
                                      "/ego_mavros_bridge/enable_tracking");
     private_node_.param<std::string>("services/return_home", return_service_,
@@ -151,15 +168,15 @@ class Stage2EgoMissionNode {
                                      "/ego_mavros_bridge/land");
 
     private_node_.param<std::string>("tower/name", route_.tower_name,
-                                     "radio_tower_0");
+                                     "radio_tower");
     private_node_.param<std::string>("tower/frame_id", route_.frame_id,
                                      "map");
-    private_node_.param("tower/center/x", route_.center_x, 24.4614);
-    private_node_.param("tower/center/y", route_.center_y, 39.3288);
+    private_node_.param("tower/center/x", route_.center_x, -17.4209);
+    private_node_.param("tower/center/y", route_.center_y, 22.29);
     private_node_.param("tower/collision_radius",
                         route_.tower_collision_radius, 6.41);
     private_node_.param("mission/radius", route_.radius, 10.0);
-    private_node_.param("mission/height", route_.height, 4.0);
+    private_node_.param("mission/height", route_.height, 16.0);
     private_node_.param("mission/waypoint_count", route_.waypoint_count, 8);
     double start_angle_degrees = -90.0;
     double yaw_offset_degrees = 0.0;
@@ -176,9 +193,62 @@ class Stage2EgoMissionNode {
       throw std::runtime_error("invalid mission direction");
     }
     private_node_.param("mission/minimum_height", route_.minimum_height, 2.0);
-    private_node_.param("mission/maximum_height", route_.maximum_height, 6.0);
+    private_node_.param("mission/maximum_height", route_.maximum_height, 30.0);
     private_node_.param("mission/minimum_safety_distance",
                         route_.minimum_safety_distance, 2.0);
+
+    std::vector<std::string> tower_names;
+    std::vector<double> tower_center_x;
+    std::vector<double> tower_center_y;
+    std::vector<double> tower_collision_radii;
+    std::string tower_frame = route_.frame_id;
+    private_node_.param<std::string>("tower_candidates/frame_id", tower_frame,
+                                     tower_frame);
+    const bool have_candidate_names =
+        private_node_.getParam("tower_candidates/names", tower_names);
+    const bool have_candidate_x =
+        private_node_.getParam("tower_candidates/center_x", tower_center_x);
+    const bool have_candidate_y =
+        private_node_.getParam("tower_candidates/center_y", tower_center_y);
+    const bool have_candidate_radii = private_node_.getParam(
+        "tower_candidates/collision_radius", tower_collision_radii);
+    if (have_candidate_names || have_candidate_x || have_candidate_y ||
+        have_candidate_radii) {
+      const std::size_t candidate_count = tower_names.size();
+      if (!have_candidate_names || !have_candidate_x || !have_candidate_y ||
+          !have_candidate_radii || candidate_count == 0U ||
+          tower_center_x.size() != candidate_count ||
+          tower_center_y.size() != candidate_count ||
+          tower_collision_radii.size() != candidate_count ||
+          tower_frame.empty()) {
+        throw std::runtime_error("invalid tower_candidates arrays");
+      }
+      tower_candidates_.reserve(candidate_count);
+      for (std::size_t index = 0; index < candidate_count; ++index) {
+        tower_candidates_.push_back(
+            {tower_names[index], tower_frame, tower_center_x[index],
+             tower_center_y[index], tower_collision_radii[index]});
+      }
+    } else {
+      tower_candidates_.push_back(
+          {route_.tower_name, route_.frame_id, route_.center_x,
+           route_.center_y, route_.tower_collision_radius});
+    }
+
+    for (const auto& candidate : tower_candidates_) {
+      RouteConfig candidate_route = route_;
+      candidate_route.tower_name = candidate.name;
+      candidate_route.frame_id = candidate.frame_id;
+      candidate_route.center_x = candidate.center_x;
+      candidate_route.center_y = candidate.center_y;
+      candidate_route.tower_collision_radius = candidate.collision_radius;
+      std::string route_reason;
+      if (!validateRouteConfig(candidate_route, &route_reason)) {
+        throw std::runtime_error("invalid tower candidate " +
+                                 candidate.name + ": " + route_reason);
+      }
+    }
+    route_.frame_id = tower_candidates_.front().frame_id;
 
     private_node_.param("validation/single/x", single_x_, 3.0);
     private_node_.param("validation/single/y", single_y_, 0.0);
@@ -201,7 +271,11 @@ class Stage2EgoMissionNode {
         report_period_ > 0.0;
     if (!scenario_valid || !numeric_valid || planning_frame_.empty() ||
         odom_topic_.empty() || command_topic_.empty() ||
-        bridge_state_topic_.empty() || goal_topic_.empty()) {
+        bridge_state_topic_.empty() || goal_topic_.empty() ||
+        global_reference_output_.empty() ||
+        selected_tower_center_output_.empty() ||
+        selected_tower_name_output_.empty() ||
+        tower_yaw_mode_output_.empty()) {
       throw std::runtime_error("invalid Stage 2 task configuration");
     }
     if (enable_control_ && scenario_ == "dry_run") {
@@ -222,24 +296,7 @@ class Stage2EgoMissionNode {
     return goal;
   }
 
-  void buildGoals() {
-    std::string route_reason;
-    if (!validateRouteConfig(route_, &route_reason)) {
-      throw std::runtime_error("invalid route: " + route_reason);
-    }
-    if (scenario_ == "dry_run" || scenario_ == "single" ||
-        scenario_ == "dual") {
-      goals_.push_back(makeGoal(single_x_, single_y_, 0.0));
-      if (scenario_ == "dual") {
-        goals_.push_back(makeGoal(second_x_, second_y_, 0.0));
-      }
-    } else {
-      for (const auto& waypoint : generateTowerWaypoints(route_)) {
-        goals_.push_back(
-            makeGoal(waypoint.x, waypoint.y, waypoint.yaw));
-      }
-      goals_ = appendClosureGoal(goals_);
-    }
+  void validateGoalHeights() const {
     std::string reason;
     if (!validateFixedHeightGoals(goals_, manual_target_height_,
                                   height_match_tolerance_, &reason) ||
@@ -249,6 +306,93 @@ class Stage2EgoMissionNode {
           reason.empty() ? "mission height and manual_target_height differ"
                          : reason);
     }
+  }
+
+  void buildValidationGoals() {
+    goals_.push_back(makeGoal(single_x_, single_y_, 0.0));
+    if (scenario_ == "dual") {
+      goals_.push_back(makeGoal(second_x_, second_y_, 0.0));
+    }
+    validateGoalHeights();
+  }
+
+  bool buildNearestTowerReference(const ros::Time& now,
+                                  std::string* reason) {
+    geometry_msgs::PoseStamped vehicle = odomPose(odom_);
+    geometry_msgs::PoseStamped vehicle_in_tower_frame;
+    try {
+      if (vehicle.header.frame_id == route_.frame_id) {
+        vehicle_in_tower_frame = vehicle;
+      } else {
+        const auto transform = tf_buffer_.lookupTransform(
+            route_.frame_id, vehicle.header.frame_id, vehicle.header.stamp,
+            ros::Duration(0.05));
+        tf2::doTransform(vehicle, vehicle_in_tower_frame, transform);
+      }
+    } catch (const tf2::TransformException& exception) {
+      *reason = exception.what();
+      return false;
+    }
+
+    const int nearest_index = nearestTowerIndex(
+        tower_candidates_, vehicle_in_tower_frame.pose.position.x,
+        vehicle_in_tower_frame.pose.position.y);
+    if (nearest_index < 0) {
+      *reason = "no valid nearest tower candidate";
+      return false;
+    }
+    const auto& selected =
+        tower_candidates_.at(static_cast<std::size_t>(nearest_index));
+    route_.tower_name = selected.name;
+    route_.frame_id = selected.frame_id;
+    route_.center_x = selected.center_x;
+    route_.center_y = selected.center_y;
+    route_.tower_collision_radius = selected.collision_radius;
+
+    goals_.clear();
+    for (const auto& waypoint : generateTowerWaypoints(route_)) {
+      goals_.push_back(makeGoal(waypoint.x, waypoint.y, waypoint.yaw));
+    }
+    goals_ = appendClosureGoal(goals_);
+    validateGoalHeights();
+
+    global_reference_.header.frame_id = route_.frame_id;
+    global_reference_.header.stamp = now;
+    global_reference_.poses = goals_;
+    for (auto& pose : global_reference_.poses) {
+      pose.header = global_reference_.header;
+    }
+    global_reference_pub_.publish(global_reference_);
+
+    geometry_msgs::PointStamped center;
+    center.header = global_reference_.header;
+    center.point.x = route_.center_x;
+    center.point.y = route_.center_y;
+    center.point.z = route_.height;
+    selected_tower_center_pub_.publish(center);
+    std_msgs::String selected_name;
+    selected_tower_name_ = route_.tower_name;
+    selected_name.data = selected_tower_name_;
+    selected_tower_name_pub_.publish(selected_name);
+    setTowerYawMode(false);
+    have_global_reference_ = true;
+    ROS_WARN("[STAGE2_TASK] nearest tower=%s center=(%.3f, %.3f), "
+             "global reference=%zu points at %.2f m; EGO owns local replanning",
+             route_.tower_name.c_str(), route_.center_x, route_.center_y,
+             goals_.size(), route_.height);
+    reason->clear();
+    return true;
+  }
+
+  void setTowerYawMode(bool face_tower) {
+    if (tower_yaw_active_ == face_tower && tower_yaw_mode_published_) {
+      return;
+    }
+    tower_yaw_active_ = face_tower;
+    tower_yaw_mode_published_ = true;
+    std_msgs::Bool mode;
+    mode.data = face_tower;
+    tower_yaw_mode_pub_.publish(mode);
   }
 
   void setupRos() {
@@ -277,6 +421,15 @@ class Stage2EgoMissionNode {
         "current_target", 1, true);
     actual_path_pub_ =
         private_node_.advertise<nav_msgs::Path>("actual_path", 1, true);
+    global_reference_pub_ = private_node_.advertise<nav_msgs::Path>(
+        global_reference_output_, 1, true);
+    selected_tower_center_pub_ =
+        private_node_.advertise<geometry_msgs::PointStamped>(
+            selected_tower_center_output_, 1, true);
+    selected_tower_name_pub_ = private_node_.advertise<std_msgs::String>(
+        selected_tower_name_output_, 1, true);
+    tower_yaw_mode_pub_ = private_node_.advertise<std_msgs::Bool>(
+        tower_yaw_mode_output_, 1, true);
 
     tracking_client_ =
         node_.serviceClient<std_srvs::SetBool>(tracking_service_);
@@ -297,7 +450,7 @@ class Stage2EgoMissionNode {
                "target_z,actual_x,actual_y,actual_z,ref_x,ref_y,ref_z,"
                "ref_vx,ref_vy,ref_vz,ref_ax,ref_ay,ref_az,ref_yaw,"
                "ref_yaw_rate,goal_error,tracking_error,max_tracking_error,"
-               "bridge_state\n";
+               "bridge_state,selected_tower,yaw_policy\n";
   }
 
   void odomCallback(const nav_msgs::Odometry::ConstPtr& message) {
@@ -414,6 +567,7 @@ class Stage2EgoMissionNode {
       return;
     }
     failure_reason_ = reason;
+    setTowerYawMode(false);
     if (!enable_control_) {
       finish(false, reason);
       return;
@@ -423,6 +577,7 @@ class Stage2EgoMissionNode {
   }
 
   void finish(bool success, const std::string& reason) {
+    setTowerYawMode(false);
     std_msgs::String result;
     result.data = success ? "SUCCESS: " + reason : "FAILURE: " + reason;
     result_pub_.publish(result);
@@ -461,6 +616,16 @@ class Stage2EgoMissionNode {
             (!enable_control_ && bridge_state_ == "DRY_RUN") ||
             (enable_control_ && bridge_state_ == "HOVER_READY");
         if (inputs_fresh && bridge_ready) {
+          if (scenario_ == "tower" && !have_global_reference_) {
+            std::string reason;
+            if (!buildNearestTowerReference(now, &reason)) {
+              ROS_WARN_THROTTLE(
+                  1.0,
+                  "[STAGE2_TASK] waiting to build nearest-tower reference: %s",
+                  reason.c_str());
+              break;
+            }
+          }
           transition(TaskState::kPublishGoal, "odom and bridge are ready");
         }
         break;
@@ -521,9 +686,13 @@ class Stage2EgoMissionNode {
                      ros::Duration(arrival_hold_duration_)) {
             ++goal_index_;
             if (goal_index_ < goals_.size()) {
+              if (scenario_ == "tower" && goal_index_ == 1U) {
+                setTowerYawMode(true);
+              }
               transition(TaskState::kPublishGoal,
                          "measured odometry reached current goal");
             } else {
+              setTowerYawMode(false);
               std_srvs::Trigger service;
               if (!return_client_.call(service) ||
                   !service.response.success) {
@@ -615,7 +784,9 @@ class Stage2EgoMissionNode {
               << ',' << command_.acceleration.z << ',' << command_.yaw
               << ',' << command_.yaw_dot << ',' << current_goal_error_ << ','
               << current_tracking_error_ << ',' << maximum_tracking_error_
-              << ',' << bridge_state_ << '\n';
+              << ',' << bridge_state_ << ',' << selected_tower_name_ << ','
+              << (tower_yaw_active_ ? "FACE_TOWER" : "VELOCITY_FORWARD")
+              << '\n';
       report_.flush();
       last_report_ = now;
     }
@@ -637,6 +808,10 @@ class Stage2EgoMissionNode {
   ros::Publisher tracking_error_pub_;
   ros::Publisher target_pub_;
   ros::Publisher actual_path_pub_;
+  ros::Publisher global_reference_pub_;
+  ros::Publisher selected_tower_center_pub_;
+  ros::Publisher selected_tower_name_pub_;
+  ros::Publisher tower_yaw_mode_pub_;
   ros::ServiceClient tracking_client_;
   ros::ServiceClient return_client_;
   ros::ServiceClient land_client_;
@@ -645,7 +820,7 @@ class Stage2EgoMissionNode {
   bool enable_control_{false};
   std::string scenario_;
   std::string planning_frame_;
-  double manual_target_height_{4.0};
+  double manual_target_height_{16.0};
   double height_match_tolerance_{1e-6};
   double loop_rate_{20.0};
   double input_timeout_{0.3};
@@ -668,10 +843,16 @@ class Stage2EgoMissionNode {
   std::string command_topic_;
   std::string bridge_state_topic_;
   std::string goal_topic_;
+  std::string global_reference_output_;
+  std::string selected_tower_center_output_;
+  std::string selected_tower_name_output_;
+  std::string tower_yaw_mode_output_;
   std::string tracking_service_;
   std::string return_service_;
   std::string land_service_;
+  std::string selected_tower_name_;
   RouteConfig route_;
+  std::vector<TowerCandidate> tower_candidates_;
   std::vector<geometry_msgs::PoseStamped> goals_;
 
   TaskState state_{TaskState::kWaitInputs};
@@ -681,10 +862,14 @@ class Stage2EgoMissionNode {
   bool have_command_{false};
   bool have_bridge_state_{false};
   bool arrival_active_{false};
+  bool have_global_reference_{false};
+  bool tower_yaw_active_{false};
+  bool tower_yaw_mode_published_{false};
   nav_msgs::Odometry odom_;
   quadrotor_msgs::PositionCommand command_;
   geometry_msgs::PoseStamped planning_goal_;
   nav_msgs::Path actual_path_;
+  nav_msgs::Path global_reference_;
   std::string bridge_state_;
   std::string failure_reason_;
   ros::Time state_entered_;

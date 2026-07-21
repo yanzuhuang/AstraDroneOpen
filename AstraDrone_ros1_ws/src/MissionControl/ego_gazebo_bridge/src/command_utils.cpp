@@ -117,6 +117,74 @@ double horizontalDistance(const geometry_msgs::PoseStamped& lhs,
   return std::hypot(dx, dy);
 }
 
+bool applyPointFacingYaw(const geometry_msgs::Point& target,
+                         double camera_yaw_offset,
+                         quadrotor_msgs::PositionCommand* command,
+                         std::string* reason) {
+  if (command == nullptr || reason == nullptr ||
+      !finite(target.x) || !finite(target.y) ||
+      !finite(camera_yaw_offset) || !isFinitePositionCommand(*command)) {
+    if (reason != nullptr) {
+      *reason = "invalid tower-facing yaw input";
+    }
+    return false;
+  }
+
+  const double dx = target.x - command->position.x;
+  const double dy = target.y - command->position.y;
+  const double radius_squared = dx * dx + dy * dy;
+  constexpr double kMinimumRadiusSquared = 1e-6;
+  if (!finite(radius_squared) || radius_squared < kMinimumRadiusSquared) {
+    *reason = "tower-facing yaw is undefined at the tower center";
+    return false;
+  }
+
+  const double bearing = std::atan2(dy, dx);
+  command->yaw =
+      std::atan2(std::sin(bearing - camera_yaw_offset),
+                 std::cos(bearing - camera_yaw_offset));
+  command->yaw_dot =
+      (dy * command->velocity.x - dx * command->velocity.y) /
+      radius_squared;
+  reason->clear();
+  return true;
+}
+
+bool applyVelocityFacingYaw(double minimum_horizontal_speed,
+                            quadrotor_msgs::PositionCommand* command,
+                            std::string* reason) {
+  if (command == nullptr || reason == nullptr ||
+      !finite(minimum_horizontal_speed) || minimum_horizontal_speed <= 0.0 ||
+      !isFinitePositionCommand(*command)) {
+    if (reason != nullptr) {
+      *reason = "invalid velocity-facing yaw input";
+    }
+    return false;
+  }
+
+  const double velocity_x = command->velocity.x;
+  const double velocity_y = command->velocity.y;
+  const double speed_squared =
+      velocity_x * velocity_x + velocity_y * velocity_y;
+  const double minimum_speed_squared =
+      minimum_horizontal_speed * minimum_horizontal_speed;
+  if (speed_squared < minimum_speed_squared) {
+    // Horizontal direction is undefined while nearly stationary. Preserve the
+    // last trajectory yaw instead of amplifying velocity/acceleration noise.
+    command->yaw_dot = 0.0;
+    reason->clear();
+    return true;
+  }
+
+  command->yaw = std::atan2(velocity_y, velocity_x);
+  command->yaw_dot =
+      (velocity_x * command->acceleration.y -
+       velocity_y * command->acceleration.x) /
+      speed_squared;
+  reason->clear();
+  return true;
+}
+
 geometry_msgs::PoseStamped commandToPose(
     const quadrotor_msgs::PositionCommand& command,
     const std::string& fallback_frame) {

@@ -12,6 +12,9 @@ request_interval: 2.0
 
 # Conservative indoor flight envelope, expressed relative to the captured home.
 takeoff_height: 1.0
+# Defaults to takeoff_height when omitted; set separately only when the planner
+# uses a different collision-aware return altitude.
+return_height: 1.0
 takeoff_tolerance: 0.15
 hover_duration: 1.0
 min_relative_height: 0.3
