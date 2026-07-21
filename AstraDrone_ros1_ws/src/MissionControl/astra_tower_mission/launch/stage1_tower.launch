@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config_file"
+       default="$(find astra_tower_mission)/config/stage1_tower.yaml"/>
+  <arg name="enable_control" default="false"/>
+  <arg name="run_mode" default="mission"/>
+  <arg name="waypoint_count" default="8"/>
+  <arg name="report_file" default="/tmp/astra_stage1_latest.csv"/>
+  <arg name="rviz" default="true"/>
+
+  <node pkg="astra_tower_mission" type="tower_mission_node"
+        name="tower_mission" output="screen" required="false">
+    <rosparam command="load" file="$(arg config_file)"/>
+    <!-- Launch overrides are intentionally loaded after YAML. -->
+    <param name="enable_control" value="$(arg enable_control)"/>
+    <param name="run_mode" value="$(arg run_mode)"/>
+    <param name="mission/waypoint_count" value="$(arg waypoint_count)"/>
+    <param name="record/report_file" value="$(arg report_file)"/>
+  </node>
+
+  <group if="$(arg rviz)">
+    <node pkg="rviz" type="rviz" name="stage1_rviz" output="screen"
+          args="-d $(find astra_tower_mission)/rviz/stage1_tower.rviz"/>
+  </group>
+</launch>

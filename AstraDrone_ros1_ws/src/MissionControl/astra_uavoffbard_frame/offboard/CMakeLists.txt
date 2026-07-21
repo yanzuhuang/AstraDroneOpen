@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 catkin_package(
+  INCLUDE_DIRS include
   CATKIN_DEPENDS geometry_msgs mavros_msgs roscpp rospy std_msgs xmlrpcpp
 )
 
@@ -53,6 +54,10 @@ endif()
 add_executable(pub_origin src/pub_origin.cpp)
 target_link_libraries(pub_origin
   ${catkin_LIBRARIES}
+)
+
+install(DIRECTORY include/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
 catkin_install_python(PROGRAMS

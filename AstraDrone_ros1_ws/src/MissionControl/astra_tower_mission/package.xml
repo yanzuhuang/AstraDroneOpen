@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>astra_tower_mission</name>
+  <version>0.1.0</version>
+  <description>Simulation-stage fixed-height tower inspection mission manager for PX4 OFFBOARD.</description>
+
+  <maintainer email="maintainer@example.com">AstraDroneOpen Maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>offboard</depend>
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>xmlrpcpp</depend>
+
+  <exec_depend>rviz</exec_depend>
+
+  <export/>
+</package>
