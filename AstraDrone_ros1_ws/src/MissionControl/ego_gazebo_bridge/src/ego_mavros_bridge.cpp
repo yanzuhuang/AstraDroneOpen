@@ -422,6 +422,11 @@ void EgoMavrosBridge::setupRosInterfaces() {
       "land", &EgoMavrosBridge::landService, this);
   return_home_service_ = private_node_handle_.advertiseService(
       "return_home", &EgoMavrosBridge::returnHomeService, this);
+  cancel_current_trajectory_service_ = private_node_handle_.advertiseService(
+      "cancel_current_trajectory",
+      &EgoMavrosBridge::cancelCurrentTrajectoryService, this);
+  resume_ego_service_ = private_node_handle_.advertiseService(
+      "resume_ego", &EgoMavrosBridge::resumeEgoService, this);
 
   const double period = 1.0 / std::max(20.0, config_.publish_rate);
   control_timer_ = node_handle_.createTimer(
@@ -812,12 +817,62 @@ bool EgoMavrosBridge::trackingService(
   tracking_requested_ = request.data;
   response.success = true;
   response.message = request.data ? "tracking requested" : "tracking disabled";
-  if (!request.data && state_ == BridgeState::kTrackEgo) {
+  if (!request.data && (state_ == BridgeState::kTrackEgo ||
+                        state_ == BridgeState::kHoverReady)) {
     return_in_progress_ = false;
-    hold_pose_ = mavros_pose_;
-    transitionTo(BridgeState::kHoverReady,
-                 "tracking disabled; holding current pose");
+    hold_pose_ = have_mavros_pose_ ? mavros_pose_ : output_setpoint_;
+    transitionTo(BridgeState::kHold,
+                 "tracking disabled; latched safety HOLD");
   }
+  return true;
+}
+
+bool EgoMavrosBridge::cancelCurrentTrajectoryService(
+    std_srvs::Trigger::Request&, std_srvs::Trigger::Response& response) {
+  if (!config_.enable_control) {
+    response.success = false;
+    response.message = "control is disabled (dry-run mode)";
+    return true;
+  }
+  if (state_ == BridgeState::kLanding || state_ == BridgeState::kDone ||
+      state_ == BridgeState::kError) {
+    response.success = false;
+    response.message = "cannot cancel trajectory in terminal state";
+    return true;
+  }
+  have_valid_goal_ = false;
+  have_planner_target_ = false;
+  tracking_requested_ = false;
+  return_in_progress_ = false;
+  hold_pose_ = have_mavros_pose_ ? mavros_pose_ : output_setpoint_;
+  startHold("current EGO trajectory cancelled by mission supervisor");
+  response.success = true;
+  response.message = "trajectory invalidated and HOLD requested";
+  return true;
+}
+
+bool EgoMavrosBridge::resumeEgoService(
+    std_srvs::Trigger::Request&, std_srvs::Trigger::Response& response) {
+  if (!config_.enable_control) {
+    response.success = false;
+    response.message = "control is disabled (dry-run mode)";
+    return true;
+  }
+  if (state_ != BridgeState::kHold && state_ != BridgeState::kHoverReady) {
+    response.success = false;
+    response.message = "resume requires HOLD or HOVER_READY";
+    return true;
+  }
+  tracking_requested_ = true;
+  if (state_ == BridgeState::kHold) {
+    // Resume only re-opens HOVER_READY. TRACK_EGO still requires a fresh,
+    // bounded PositionCommand and full preflight in the timer state machine;
+    // allowing this transition before the new goal callback avoids a
+    // cross-node service/topic scheduling race after CANCEL_CURRENT_TRAJECTORY.
+    transitionTo(BridgeState::kHoverReady, "explicit EGO resume requested");
+  }
+  response.success = true;
+  response.message = "EGO resume requested; preflight remains enforced";
   return true;
 }
 
@@ -883,6 +938,10 @@ bool EgoMavrosBridge::returnHomeService(
     response.success = false;
     response.message = reason;
     return true;
+  }
+  if (state_ == BridgeState::kHold) {
+    transitionTo(BridgeState::kHoverReady,
+                 "return-home request released safety HOLD; preflight remains enforced");
   }
   response.success = true;
   response.message = "home goal sent through EGO-Planner";
@@ -1180,6 +1239,13 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
     }
 
     case BridgeState::kDryRun:
+      if (!have_home_) {
+        std::string reason;
+        if (baseInputsFresh(now, &reason)) {
+          captureHomeIfSafe(&reason);
+        }
+      }
+      break;
     case BridgeState::kDone:
     case BridgeState::kError:
       break;

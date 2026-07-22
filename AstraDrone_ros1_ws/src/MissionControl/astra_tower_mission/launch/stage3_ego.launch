@@ -1,0 +1,49 @@
+<launch>
+  <arg name="enable_control" default="false"/>
+  <arg name="rviz" default="false"/>
+  <arg name="report_file" default="/tmp/astra_stage3_latest.csv"/>
+  <arg name="task_config" default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
+  <arg name="bridge_config" default="$(find ego_gazebo_bridge)/config/stage3_ego.yaml"/>
+  <arg name="filtered_cloud_topic" default="/stage3/cloud_registered_filtered"/>
+
+  <include file="$(find ego_gazebo_bridge)/launch/ego_gazebo_bridge.launch">
+    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="auto_track_on_command" value="false"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+    <arg name="bridge_config_file" value="$(arg bridge_config)"/>
+    <arg name="cloud_topic" value="/cloud_registered"/>
+    <arg name="bridge_cloud_topic" value="$(arg filtered_cloud_topic)"/>
+    <arg name="ego_cloud_topic" value="$(arg filtered_cloud_topic)"/>
+    <arg name="filter_ground_cloud" value="true"/>
+    <arg name="filtered_cloud_topic" value="$(arg filtered_cloud_topic)"/>
+    <arg name="minimum_obstacle_z" value="0.20"/>
+    <arg name="map_size_x" value="90.0"/>
+    <arg name="map_size_y" value="120.0"/>
+    <arg name="map_size_z" value="46.0"/>
+    <arg name="map_resolution" value="0.20"/>
+    <arg name="ground_height" value="-0.50"/>
+    <arg name="virtual_ceil_height" value="45.0"/>
+    <arg name="max_vel" value="0.30"/>
+    <arg name="max_acc" value="0.50"/>
+    <arg name="manual_target_height" value="30.0"/>
+    <arg name="use_goal_height" value="true"/>
+    <arg name="obstacles_inflation" value="0.40"/>
+  </include>
+
+  <node pkg="astra_tower_mission" type="planner_status_adapter_node"
+        name="planner_status_adapter" output="screen" required="true">
+    <param name="cloud_topic" value="$(arg filtered_cloud_topic)"/>
+    <param name="occupancy_topic" value="/grid_map/occupancy_inflate"/>
+    <param name="planning_frame" value="camera_init"/>
+    <param name="status_topic" value="/planner/status"/>
+    <param name="planning_timeout" value="10.0"/>
+    <param name="emergency_stop_timeout" value="6.0"/>
+  </node>
+
+  <node pkg="astra_tower_mission" type="stage3_ego_mission_node"
+        name="tower_mission" output="screen" required="true">
+    <rosparam command="load" file="$(arg task_config)"/>
+    <param name="enable_control" value="$(arg enable_control)"/>
+    <param name="report_file" value="$(arg report_file)"/>
+  </node>
+</launch>

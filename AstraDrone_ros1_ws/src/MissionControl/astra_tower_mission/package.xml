@@ -10,6 +10,7 @@
   <buildtool_depend>catkin</buildtool_depend>
 
   <depend>geometry_msgs</depend>
+  <depend>astra_custom_msgs</depend>
   <depend>mavros_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>offboard</depend>

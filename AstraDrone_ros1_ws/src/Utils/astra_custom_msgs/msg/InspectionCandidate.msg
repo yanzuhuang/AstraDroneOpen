@@ -1,0 +1,11 @@
+std_msgs/Header header
+string candidate_id
+uint32 sector_id
+uint32 layer_id
+geometry_msgs/Point target
+float32 yaw
+bool accepted
+string rejection_reason
+float32 clearance
+float32 score
+float32 unknown_ratio

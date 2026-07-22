@@ -15,6 +15,7 @@
   <arg name="mavros_frame" default="map"/>
   <arg name="odom_topic" default="/Odometry"/>
   <arg name="cloud_topic" default="/cloud_registered"/>
+  <arg name="bridge_cloud_topic" default="$(arg cloud_topic)"/>
   <arg name="ego_cloud_topic" default="$(arg cloud_topic)"/>
   <arg name="filter_ground_cloud" default="false"/>
   <arg name="filtered_cloud_topic" default="/stage2/cloud_registered_filtered"/>
@@ -126,7 +127,7 @@
     <param name="planning_frame" value="$(arg planning_frame)"/>
     <param name="mavros_frame" value="$(arg mavros_frame)"/>
     <param name="planner_odom_topic" value="$(arg odom_topic)"/>
-    <param name="cloud_topic" value="$(arg cloud_topic)"/>
+    <param name="cloud_topic" value="$(arg bridge_cloud_topic)"/>
   </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="ego_gazebo_bridge_rviz"

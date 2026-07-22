@@ -1,0 +1,98 @@
+# Stage 3: static-obstacle inspection sectors and bounded recovery.
+# This is a dry-run configuration. Set enable_control only after preflight and
+# point-cloud/TF/occupancy alignment evidence has been reviewed by the owner.
+enable_control: false
+planning_frame: camera_init
+
+tower:
+  name: radio_tower
+  frame_id: map
+  center: {x: -10.0551, y: 19.7104}
+  collision_radius: 6.41
+
+mission:
+  inspection_height: 30.0
+  recovery_height_max: 40.0
+  virtual_ceil_height: 45.0
+  radius: 14.0
+  sector_count: 8
+  layer_count: 1
+  start_angle_deg: -67.5
+  direction: counter_clockwise
+  minimum_height: 2.0
+  maximum_height: 45.0
+  minimum_safety_distance: 2.0
+  transit_height: 4.0
+  observation_radius_offset: 5.0
+  observation_angle_deg: -67.5
+  approach_segment_length: 6.0
+  sector_angle_half_width_deg: 12.0
+  sector_radius_half_width: 4.0
+  sector_height_half_width: 1.0
+  target_replacement_margin: 2.0
+
+candidate:
+  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0]
+  radius_offsets_m: [0.0, 2.0, 4.0]
+  height_offsets_m: [0.0, -1.0, 1.0]
+  minimum_clearance: 2.0
+  cloud_inflation: 0.4
+  corridor_sample_step: 0.5
+
+# Conservative known static geometry. FAST-LIO/EGO remains the obstacle
+# authority; these regions are only hard pre-filters for task candidates.
+static_obstacles:
+  names: [tower_crane]
+  x: [6.36]
+  y: [21.73]
+  z: [0.0]
+  radius: [3.0]
+  z_min: [0.0]
+  z_max: [45.0]
+
+recovery:
+  radial_step: 3.0
+  tangent_step: 4.0
+  maximum_radius: 24.0
+  recovery_height: 35.0
+  direction: counter_clockwise
+
+topics:
+  odom: /Odometry
+  command: /planning/pos_cmd
+  cloud: /stage3/cloud_registered_filtered
+  occupancy_inflate: /grid_map/occupancy_inflate
+  planner_status: /planner/status
+  bridge_state: /ego_mavros_bridge/state
+  goal: /move_base_simple/goal
+
+outputs:
+  state: /tower_mission/state
+  current_target: /tower_mission/current_target
+  current_sector: /tower_mission/current_sector
+  candidate_targets: /tower_mission/candidate_targets
+  progress: /tower_mission/progress
+
+services:
+  tracking: /ego_mavros_bridge/enable_tracking
+  cancel: /ego_mavros_bridge/cancel_current_trajectory
+  resume: /ego_mavros_bridge/resume_ego
+  return_home: /ego_mavros_bridge/return_home
+  land: /ego_mavros_bridge/land
+
+input_timeout: 0.7
+map_timeout: 0.7
+planning_timeout: 10.0
+goal_timeout: 180.0
+arrival_tolerance: 0.5
+arrival_velocity_threshold: 0.2
+arrival_yaw_tolerance: 0.26
+arrival_hold_duration: 1.0
+consecutive_plan_failure_limit: 3
+emergency_stop_timeout: 6.0
+failure_hold_duration: 2.0
+max_recovery_attempts: 2
+recovery_target_timeout: 60.0
+overall_timeout: 2400.0
+report_period: 0.2
+report_file: /tmp/astra_stage3_latest.csv

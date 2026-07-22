@@ -5,6 +5,7 @@ add_compile_options(-std=c++14 -Wall -Wextra -Wpedantic)
 
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
+  astra_custom_msgs
   mavros_msgs
   nav_msgs
   offboard
@@ -21,9 +22,10 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES tower_route motion_limiter ego_task_utils
+  LIBRARIES tower_route motion_limiter ego_task_utils stage3_planner
   CATKIN_DEPENDS
     geometry_msgs
+    astra_custom_msgs
     mavros_msgs
     nav_msgs
     offboard
@@ -55,6 +57,10 @@ add_library(ego_task_utils src/ego_task_utils.cpp)
 target_link_libraries(ego_task_utils ${catkin_LIBRARIES})
 add_dependencies(ego_task_utils ${catkin_EXPORTED_TARGETS})
 
+add_library(stage3_planner src/stage3_planner.cpp)
+target_link_libraries(stage3_planner tower_route ${catkin_LIBRARIES})
+add_dependencies(stage3_planner ${catkin_EXPORTED_TARGETS})
+
 add_executable(tower_mission_node src/tower_mission_node.cpp)
 target_link_libraries(tower_mission_node
   tower_route
@@ -71,8 +77,21 @@ target_link_libraries(stage2_ego_mission_node
 )
 add_dependencies(stage2_ego_mission_node ${catkin_EXPORTED_TARGETS})
 
-install(TARGETS tower_route motion_limiter ego_task_utils tower_mission_node
-  stage2_ego_mission_node
+add_executable(stage3_ego_mission_node src/stage3_ego_mission_node.cpp)
+target_link_libraries(stage3_ego_mission_node
+  stage3_planner
+  tower_route
+  ${catkin_LIBRARIES}
+)
+add_dependencies(stage3_ego_mission_node ${catkin_EXPORTED_TARGETS})
+
+add_executable(planner_status_adapter_node src/planner_status_adapter_node.cpp)
+target_link_libraries(planner_status_adapter_node ${catkin_LIBRARIES})
+add_dependencies(planner_status_adapter_node ${catkin_EXPORTED_TARGETS})
+
+install(TARGETS tower_route motion_limiter ego_task_utils stage3_planner
+  tower_mission_node stage2_ego_mission_node stage3_ego_mission_node
+  planner_status_adapter_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -98,6 +117,15 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET ego_task_utils_test)
     target_link_libraries(ego_task_utils_test
       ego_task_utils
+      ${catkin_LIBRARIES}
+    )
+  endif()
+
+  catkin_add_gtest(stage3_planner_test test/stage3_planner_test.cpp)
+  if(TARGET stage3_planner_test)
+    target_link_libraries(stage3_planner_test
+      stage3_planner
+      tower_route
       ${catkin_LIBRARIES}
     )
   endif()

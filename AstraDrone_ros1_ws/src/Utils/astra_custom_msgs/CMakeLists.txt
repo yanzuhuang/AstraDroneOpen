@@ -20,6 +20,9 @@ add_message_files(
   States.msg
   MarkerMeasurement.msg
   MarkerMeasurementArray.msg
+  PlannerStatus.msg
+  InspectionCandidate.msg
+  InspectionCandidateArray.msg
 )
 
 # 服务声明

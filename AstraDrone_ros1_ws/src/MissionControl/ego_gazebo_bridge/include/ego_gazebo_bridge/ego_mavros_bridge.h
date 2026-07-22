@@ -148,6 +148,10 @@ class EgoMavrosBridge {
                    std_srvs::Trigger::Response& response);
   bool returnHomeService(std_srvs::Trigger::Request& request,
                          std_srvs::Trigger::Response& response);
+  bool cancelCurrentTrajectoryService(std_srvs::Trigger::Request& request,
+                                      std_srvs::Trigger::Response& response);
+  bool resumeEgoService(std_srvs::Trigger::Request& request,
+                        std_srvs::Trigger::Response& response);
 
   void controlTimerCallback(const ros::TimerEvent& event);
   void transitionTo(BridgeState next_state, const std::string& reason);
@@ -207,6 +211,8 @@ class EgoMavrosBridge {
   ros::ServiceServer tracking_service_;
   ros::ServiceServer land_service_;
   ros::ServiceServer return_home_service_;
+  ros::ServiceServer cancel_current_trajectory_service_;
+  ros::ServiceServer resume_ego_service_;
   ros::Timer control_timer_;
 
   BridgeState state_{BridgeState::kWaitFcu};

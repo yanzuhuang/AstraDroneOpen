@@ -1,0 +1,23 @@
+# Machine-readable status exported by the EGO adapter/supervisor.
+std_msgs/Header header
+
+string planner_state
+string target_id
+uint32 trajectory_id
+bool last_plan_success
+uint32 consecutive_plan_failures
+bool goal_in_collision
+bool current_position_in_collision
+bool emergency_stop_active
+float32 emergency_stop_duration
+string failure_reason
+time status_timestamp
+
+string NONE=NONE
+string MAP_STALE=MAP_STALE
+string GOAL_IN_OCCUPANCY=GOAL_IN_OCCUPANCY
+string CURRENT_POSITION_IN_OCCUPANCY=CURRENT_POSITION_IN_OCCUPANCY
+string NO_FEASIBLE_TRAJECTORY=NO_FEASIBLE_TRAJECTORY
+string REPLAN_FAILED=REPLAN_FAILED
+string EMERGENCY_STOP_TIMEOUT=EMERGENCY_STOP_TIMEOUT
+string TRAJECTORY_EXPIRED=TRAJECTORY_EXPIRED
