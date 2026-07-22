@@ -5,13 +5,13 @@ auto_track_on_command: true
 publish_rate: 50.0
 prestream_duration: 3.0
 request_interval: 2.0
-takeoff_height: 8.0
-return_height: 8.0
+takeoff_height: 4.0
+return_height: 4.0
 takeoff_tolerance: 0.25
 hover_duration: 2.0
 
 min_relative_height: 0.3
-max_relative_height: 10.0
+max_relative_height: 32.0
 max_horizontal_radius: 60.0
 
 command_timeout: 0.60

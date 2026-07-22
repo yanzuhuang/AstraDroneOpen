@@ -23,13 +23,13 @@ scripts/run_sh/stage2_ego.sh --scenario dry-run --gui --rviz --attach
 scripts/run_sh/stage2_ego.sh --stop
 ```
 
-正式执行“起飞 → worksite单塔 8 m绕一圈 → EGO局部避障/重规划 → 返航 → 降落”的完整任务：
+正式执行“起飞/进场4 m → worksite单塔30 m、14 m半径绕一圈 → EGO局部避障/重规划 → 塔前下降4 m → 返航 → 降落”的完整任务：
 
 ```bash
 scripts/run_sh/stage2_ego.sh --control --scenario tower --waypoints 8 --gui --rviz --attach
 ```
 
-该入口中，EGO高度上限为10 m，绕塔参考高度为8 m；任务层发布闭合全局参考，EGO沿参考逐段生成局部轨迹。绕塔时机头朝塔心，进场和返程按 `PositionCommand` 水平速度前向。任务结束或异常时使用同一停止命令：
+该入口中，EGO高度上限为32 m，地图覆盖至32.5 m，绕塔参考高度为30 m、半径为14 m，8个圆周航点以塔心整体逆时针旋转22.5°并从-67.5°开始，任务层发布包含4/30/4 m高度变化的闭合全局参考，EGO沿参考逐段生成局部轨迹。`use_goal_height=true` 使EGO消费每个目标自身的 z；绕塔时机头朝塔心，进场和返程按 `PositionCommand` 水平速度前向。任务结束或异常时使用同一停止命令：
 
 ```bash
 scripts/run_sh/stage2_ego.sh --stop
@@ -43,15 +43,16 @@ scripts/run_sh/stage2_ego.sh --stop
 
 ## 0. 当前配置增量（尚未飞行验收）
 
-下文第1至第8节保留的是 `forest.world/radio_tower_0`、固定4 m阶段二验收历史，不能当作当前 `worksite.world` 8 m配置的飞行证据。当前工作树在不修改EGO vendor核心的前提下迁移为：
+下文第1至第8节保留的是 `forest.world/radio_tower_0` 的历史固定高度阶段二验收记录，不能当作当前 `worksite.world` 4/30/4 m配置的飞行证据。当前工作树已通过一个默认关闭、显式启用的最小 EGO vendor patch 支持目标 z：
 
-- EGO地图从-0.5 m覆盖至10.5 m，以10.0 m虚拟天花板和bridge高度上限形成一致门禁；绕塔参考高度为8.0 m；
+- EGO地图从-0.5 m覆盖至32.5 m，以32.0 m虚拟天花板和bridge高度上限形成一致门禁；绕塔参考高度为30.0 m、半径为14.0 m；
 - 任务层使用 `worksite.world` 运行时单塔 `radio_tower=(-10.0551,19.7104)`；
-- `/tower_mission/global_reference` 保存该塔的一圈闭合全局参考，任务层逐段给目标，EGO继续负责每段局部避障与重规划；
+- `/tower_mission/global_reference` 保存4 m入口、30 m闭环和4 m出口的全局参考，8个圆周点从-67.5°开始等间隔分布，任务层逐段给目标，EGO继续负责每段局部避障与重规划；
 - 进场第一段和返航由bridge按 `PositionCommand` 水平速度重算机头前向；进入圆周后，bridge根据 `/tower_mission/selected_tower_center` 重算并限速执行朝塔yaw，闭环完成前切回速度前向；
-- 起飞、任务和返航高度均为8.0 m；EGO `manual_target_height`、任务高度和bridge返航判据严格一致。
+- 起飞、进场和返航高度为4.0 m，绕塔高度为30.0 m；bridge高度上限为32.0 m。
+- 实测EGO在塔前水平进场末端会稳定在目标约0.43--0.48 m处，原0.40 m到达阈值造成约17 s等待；现在只对4 m塔前升降切换使用0.50 m阈值并保留1 s稳定保持，普通绕塔检查点仍为0.40 m。
 
-当前代码已通过三包构建、39个本轮目标单测、launch参数展开和阶段1无控制preview，但没有使用 `--control`。worksite的FAST-LIO点云、EGO局部轨迹、整圈净空和分段yaw仍必须从dry-run开始分级验证。
+当前代码已通过目标包构建、88项回归测试、launch参数展开和阶段1无控制preview。本次塔前切换修正使用现有CSV回放验证，尚未重新执行控制飞行。
 
 ## 1. 结论
 
@@ -230,11 +231,11 @@ scripts/run_sh/stage2_ego.sh --stop
 ## 8. 未解决风险与下一步边界
 
 1. `map -> camera_init` 仍是仿真单位假设；`body -> base_link` 和 sensor 外参没有形成真机标定链。
-2. EGO vendor 的 `manual_target_height` 仍覆盖目标 z。当前通过严格校验“所有EGO任务目标 z == 8 m == manual_target_height”，并将返航判据显式设为8 m来避免静默错误；通用多高度目标仍需适配层方案或批准 vendor patch。
-3. 当前已在外部bridge实现“圆周朝塔、其他段速度前向”的yaw策略，但只有数学单测、构建和无控制参数证据，尚未完成worksite 8 m飞行验收。
+2. EGO vendor 已增加最小 `fsm/use_goal_height` 开关，默认关闭以保持旧任务兼容；阶段二显式开启后消费4 m和30 m目标 z。该patch已做单元测试，但worksite多高度闭环仍待飞行验收。
+3. 当前已在外部bridge实现“圆周朝塔、其他段速度前向”的yaw策略，但只有数学单测、构建和无控制参数证据，尚未完成worksite 4/30/4 m飞行验收。
 4. 地面带过滤阈值可能隐藏低矮障碍；阶段三前必须结合障碍几何和地图策略复核。
 5. 正常返航后的 bridge 降落仍为 `AUTO.LAND`，尚未统一为项目长期要求的 OFFBOARD 受控降落。
 6. 本轮没有不可达目标、专门静态障碍最小净空、长期循环、干净 clone、install-space 或真机证据。
 7. 外部 PX4 仍是 dirty/detached 固定树；本轮只读使用，没有修改。
 
-因此，历史4 m阶段二“固定高度单机 Gazebo EGO 接入”验收通过；当前 `worksite.world` 8 m单塔与分段yaw增量仍待从dry-run开始重新验收。不得自动进入阶段三，不得把本轮称为静态避障验收、多高度巡检或真机验收。
+因此，历史4 m阶段二“固定高度单机 Gazebo EGO 接入”验收通过；当前 `worksite.world` 4/30/4 m单塔与分段yaw增量仍待从dry-run开始重新验收。不得自动进入阶段三，不得把本轮称为静态避障验收、多高度巡检或真机验收。

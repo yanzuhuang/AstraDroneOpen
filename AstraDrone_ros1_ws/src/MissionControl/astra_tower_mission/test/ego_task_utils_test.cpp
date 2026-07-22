@@ -26,6 +26,16 @@ TEST(EgoTaskGoals, RequiresConfiguredFixedHeight) {
                                         1e-6, &reason));
 }
 
+TEST(EgoTaskGoals, AcceptsBoundedMultiHeightRoute) {
+  std::string reason;
+  EXPECT_TRUE(validateGoalHeightBounds(
+      {goal(1.0, 2.0, 4.0), goal(1.0, 2.0, 30.0),
+       goal(2.0, 3.0, 30.0), goal(1.0, 2.0, 4.0)},
+      2.0, 32.0, &reason));
+  EXPECT_FALSE(validateGoalHeightBounds(
+      {goal(1.0, 2.0, 33.0)}, 2.0, 32.0, &reason));
+}
+
 TEST(EgoTaskGoals, AppendsFirstGoalToCloseMultiPointRoute) {
   std::vector<geometry_msgs::PoseStamped> goals(2);
   goals[0].pose.position.x = 1.0;
@@ -69,6 +79,17 @@ TEST(EgoTaskProgress, ComputesThreeDimensionalDistance) {
   EXPECT_DOUBLE_EQ(5.0,
                    posePositionDistance(goal(0.0, 0.0, 0.0),
                                         goal(3.0, 4.0, 0.0)));
+}
+
+TEST(EgoTaskProgress, RelaxesOnlyTowerTransitTransitions) {
+  EXPECT_DOUBLE_EQ(0.50,
+                   selectArrivalTolerance(true, 0U, 10U, 0.40, 0.50));
+  EXPECT_DOUBLE_EQ(0.40,
+                   selectArrivalTolerance(true, 1U, 10U, 0.40, 0.50));
+  EXPECT_DOUBLE_EQ(0.50,
+                   selectArrivalTolerance(true, 10U, 10U, 0.40, 0.50));
+  EXPECT_DOUBLE_EQ(0.40,
+                   selectArrivalTolerance(false, 0U, 0U, 0.40, 0.50));
 }
 
 }  // namespace

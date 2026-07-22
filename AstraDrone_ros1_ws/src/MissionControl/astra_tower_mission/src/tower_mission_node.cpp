@@ -50,8 +50,10 @@ enum class MissionState {
   kArmOffboard,
   kTakeoff,
   kInitialHover,
+  kClimbToOrbit,
   kMission,
   kCloseLoop,
+  kDescendFromOrbit,
   kReturnHome,
   kPrelandHover,
   kLanding,
@@ -67,8 +69,10 @@ const char* stateName(MissionState state) {
     case MissionState::kArmOffboard: return "ARM_OFFBOARD";
     case MissionState::kTakeoff: return "TAKEOFF";
     case MissionState::kInitialHover: return "INITIAL_HOVER";
+    case MissionState::kClimbToOrbit: return "CLIMB_TO_ORBIT";
     case MissionState::kMission: return "MISSION";
     case MissionState::kCloseLoop: return "CLOSE_LOOP";
+    case MissionState::kDescendFromOrbit: return "DESCEND_FROM_ORBIT";
     case MissionState::kReturnHome: return "RETURN_HOME";
     case MissionState::kPrelandHover: return "PRELAND_HOVER";
     case MissionState::kLanding: return "LANDING";
@@ -924,8 +928,10 @@ class TowerMissionNode {
     const bool airborne_phase =
         state_ == MissionState::kTakeoff ||
         state_ == MissionState::kInitialHover ||
+        state_ == MissionState::kClimbToOrbit ||
         state_ == MissionState::kMission ||
         state_ == MissionState::kCloseLoop ||
+        state_ == MissionState::kDescendFromOrbit ||
         state_ == MissionState::kReturnHome ||
         state_ == MissionState::kPrelandHover;
     if (airborne_phase && !current_state_.armed) {
@@ -942,6 +948,7 @@ class TowerMissionNode {
     if (!armed_time_.isZero() &&
         now - armed_time_ > ros::Duration(config_.overall_timeout) &&
         state_ != MissionState::kReturnHome &&
+        state_ != MissionState::kDescendFromOrbit &&
         state_ != MissionState::kPrelandHover &&
         state_ != MissionState::kLanding) {
       failAndReturn("overall task timeout");
@@ -960,11 +967,17 @@ class TowerMissionNode {
       case MissionState::kInitialHover:
         handleInitialHover(now, dt);
         break;
+      case MissionState::kClimbToOrbit:
+        handleClimbToOrbit(now, dt);
+        break;
       case MissionState::kMission:
         handleMission(now, dt);
         break;
       case MissionState::kCloseLoop:
         handleMission(now, dt);
+        break;
+      case MissionState::kDescendFromOrbit:
+        handleDescendFromOrbit(now, dt);
         break;
       case MissionState::kReturnHome:
         handleReturnHome(now, dt);
@@ -1103,15 +1116,12 @@ class TowerMissionNode {
           reference_.y - waypoints_.front().y);
       if (currentPositionError() <= config_.position_tolerance &&
           reference_entry_error <= 1e-6) {
-        circular_reference_ =
-            initializeCircularMotionReference(config_.route);
-        reference_ = circular_reference_.motion;
-        orbit_started_ = true;
-        setDynamicOrbitTarget(now);
-        transitionTo(MissionState::kMission,
-                     "circle entry reached; continuous strict arc started");
-        ROS_INFO("[CHECKPOINT_ENTRY] CP1/%zu reached; no checkpoint dwell",
-                 waypoints_.size());
+        const geometry_msgs::PoseStamped climb = makePose(
+            waypoints_.front().x, waypoints_.front().y,
+            config_.route.height, waypoints_.front().yaw, now);
+        setTarget(climb);
+        transitionTo(MissionState::kClimbToOrbit,
+                     "4 m circle entry reached; vertical climb started");
       } else if (now - state_entered_time_ >
                  ros::Duration(config_.waypoint_timeout)) {
         failAndReturn("circle-entry timeout");
@@ -1153,7 +1163,66 @@ class TowerMissionNode {
                "elapsed=%.2f s; checkpoints were pass-through",
                waypoints_.size(),
                (now - mission_started_time_).toSec());
-      startReturn("full fixed-height circular orbit completed");
+      startOrbitDescent(
+          "full 25 m circular orbit completed; tower-side descent started");
+    }
+  }
+
+  void handleClimbToOrbit(const ros::Time& now, double dt) {
+    if (!mission_started_time_.isZero() &&
+        now - mission_started_time_ > ros::Duration(config_.mission_timeout)) {
+      failAndReturn("mission timeout during tower-entry climb");
+      return;
+    }
+    advanceReference(dt);
+    publishPositionReference(now);
+    ROS_INFO_THROTTLE(
+        1.0,
+        "[CLIMB_TO_ORBIT] target_z=%.2f m pos_err=%.2f m yaw_err=%.1f deg",
+        config_.route.height, currentPositionError(),
+        radiansToDegrees(currentYawError()));
+    if (arrivalHeld(now, config_.position_tolerance, config_.yaw_tolerance,
+                    0.0)) {
+      circular_reference_ = initializeCircularMotionReference(config_.route);
+      reference_ = circular_reference_.motion;
+      orbit_started_ = true;
+      setDynamicOrbitTarget(now);
+      transitionTo(MissionState::kMission,
+                   "25 m circle entry reached; continuous strict arc started");
+      ROS_INFO("[CHECKPOINT_ENTRY] CP1/%zu reached; no checkpoint dwell",
+               waypoints_.size());
+      return;
+    }
+    if (now - state_entered_time_ > ros::Duration(config_.waypoint_timeout)) {
+      failAndReturn("tower-entry vertical climb timeout");
+    }
+  }
+
+  void startOrbitDescent(const std::string& reason) {
+    const ros::Time now = ros::Time::now();
+    const geometry_msgs::PoseStamped descent = makePose(
+        waypoints_.front().x, waypoints_.front().y,
+        home_pose_.pose.position.z + config_.return_height,
+        reference_.yaw, now);
+    setTarget(descent);
+    transitionTo(MissionState::kDescendFromOrbit, reason);
+  }
+
+  void handleDescendFromOrbit(const ros::Time& now, double dt) {
+    advanceReference(dt);
+    publishPositionReference(now);
+    ROS_INFO_THROTTLE(
+        1.0,
+        "[DESCEND_FROM_ORBIT] target_z=%.2f m pos_err=%.2f m",
+        home_pose_.pose.position.z + config_.return_height,
+        currentPositionError());
+    if (arrivalHeld(now, config_.position_tolerance, config_.yaw_tolerance,
+                    0.0)) {
+      startReturn("tower-side descent complete; 4 m return started");
+      return;
+    }
+    if (now - state_entered_time_ > ros::Duration(config_.waypoint_timeout)) {
+      failAndReturn("tower-side vertical descent timeout");
     }
   }
 
@@ -1512,6 +1581,8 @@ class TowerMissionNode {
 
   void setIngressTarget(const ros::Time& now) {
     geometry_msgs::PoseStamped ingress = waypointPose(waypoints_.front(), now);
+    ingress.pose.position.z =
+        home_pose_.pose.position.z + config_.takeoff_height;
     ingress.pose.orientation = yawQuaternion(ingressForwardYaw());
     setTarget(ingress);
   }

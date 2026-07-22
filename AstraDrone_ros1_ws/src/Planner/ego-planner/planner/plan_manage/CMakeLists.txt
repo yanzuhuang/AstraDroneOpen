@@ -67,4 +67,10 @@ add_executable(traj_server src/traj_server.cpp)
 target_link_libraries(traj_server ${catkin_LIBRARIES})
 add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(goal_height_test test/goal_height_test.cpp)
+  if(TARGET goal_height_test)
+    target_link_libraries(goal_height_test ${catkin_LIBRARIES})
+  endif()
+endif()
 

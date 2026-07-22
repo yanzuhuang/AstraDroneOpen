@@ -58,6 +58,7 @@ namespace ego_planner
     double planning_horizen_, planning_horizen_time_;
     double emergency_time_;
     double manual_target_height_;
+    bool use_goal_height_;
 
     /* planning data */
     bool trigger_, have_target_, have_odom_, have_new_target_;

@@ -37,6 +37,7 @@
   <arg name="flight_type"/>
   <arg name="planning_frame" default="world"/>
   <arg name="manual_target_height" default="1.0"/>
+  <arg name="use_goal_height" default="false"/>
   <arg name="obstacles_inflation" default="0.099"/>
   <arg name="map_resolution" default="0.1"/>
   <arg name="ground_height" default="-0.01"/>
@@ -58,6 +59,7 @@
     <param name="fsm/planning_horizen_time" value="3" type="double"/>
     <param name="fsm/emergency_time_" value="1.0" type="double"/>
     <param name="fsm/manual_target_height" value="$(arg manual_target_height)" type="double"/>
+    <param name="fsm/use_goal_height" value="$(arg use_goal_height)" type="bool"/>
     <param name="planning/frame_id" value="$(arg planning_frame)" type="string"/>
 
     <param name="fsm/waypoint_num" value="$(arg point_num)" type="int"/>

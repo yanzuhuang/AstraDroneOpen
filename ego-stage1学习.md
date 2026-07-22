@@ -1,4 +1,4 @@
-# AstraDroneOpen 阶段1学习：固定高度圆弧绕塔与八检查点
+# AstraDroneOpen 阶段1学习：4 m进场—25 m绕塔—4 m返程
 
 ## 最常用：在终端启动和关闭阶段1仿真
 
@@ -46,7 +46,7 @@ scripts/run_sh/stage1_tower.sh --preview --waypoints 8 --attach
 >
 > 本阶段不启动 EGO-Planner，不做避障、多层、螺旋、动态障碍或多机。本文中的“通过”只代表对应参数和 `forest.world` 的 Gazebo 验证，不代表真机可直接使用。
 >
-> 2026-07-22 后续修改：当前默认world已改为 `worksite.world`，目标为运行时 `radio_tower=(-10.0551,19.7104)`，保持8 m高度、10 m半径、严格圆周、8个不停留检查点和绕塔朝塔yaw。进场与返航均沿前进方向，现有 `forest.world` 数据只作为历史飞行证据。当前只完成构建、单测、模型几何复核和无控制preview，分级实飞前不得写成“worksite已通过”。
+> 2026-07-22 后续修改：当前默认world为 `worksite.world`，运行时目标为 `radio_tower=(-10.0551,19.7104)`。无人机起飞、进场和返程保持4 m，在南侧入口原地上升至25 m完成14 m半径、8个不停留检查点的严格圆周，回到南侧后原地下降至4 m再返航；绕塔机头朝塔心，进场/返程沿前进方向。现有 `forest.world` 数据只作为历史飞行证据；当前只完成构建、单测和无控制preview，分级实飞前不得写成“worksite已通过”。
 
 ## 1. 阶段目标和完整状态流程
 
@@ -58,7 +58,10 @@ WAIT_INPUTS（初始化与解锁前检查）
   -> ARM_OFFBOARD（进入 OFFBOARD 并解锁）
   -> TAKEOFF（起飞）
   -> INITIAL_HOVER（初始稳定悬停）
-  -> MISSION（前向进场，再沿严格圆周连续通过 8 个检查角）
+  -> MISSION（4 m前向进场）
+  -> CLIMB_TO_ORBIT（塔前原地上升至25 m）
+  -> MISSION（25 m严格圆周连续通过8个检查角）
+  -> DESCEND_FROM_ORBIT（回到塔前原地下降至4 m）
   -> RETURN_HOME（返回 home 上方）
   -> PRELAND_HOVER（降落前稳定）
   -> LANDING（OFFBOARD 受控下降并正常解锁）
@@ -267,7 +270,7 @@ scripts/run_sh/stage1_tower.sh --preview --waypoints 8 --attach
 预览模式不启动 PX4/Gazebo，不创建 MAVROS 控制发布者，也不会解锁。RViz 中检查：
 
 - Fixed Frame 是 `map`；
-- 路径在 `z=8 m`；
+- 绕塔路径在 `z=25 m`；进场/返程的水平段为 `z=4 m`，预览只显示绕塔圆周；
 - 路线从塔南侧开始并逆时针；
 - 8个检查点箭头朝塔；
 - Path 是平滑圆周而不是八边形，默认有181个 Pose 且首尾重合。
@@ -292,7 +295,7 @@ rostopic info /mavros/setpoint_position/local
 
 ### 8.3 当前改动的严格逐级控制验证（尚未执行）
 
-当前换到较近塔后，已有只读审计指出塔心约 12.8 m 外存在 Pine，而环线半径是 10 m。阶段1没有避障，所以仅看塔自身 3.59 m 径向余量不足以证明对树安全。必须先在 Gazebo/RViz 对 8 m 高度的塔 mesh、树干/树冠 collision、南侧进场和完整圆周做静态净空复核；未通过前只运行 `--preview`，不要运行下面的 `--control`。
+当前换到较近塔后，已有只读审计指出塔心约 12.8 m 外存在 Pine，而环线半径现为 14 m。阶段1没有避障，新环线可能与该树的水平包络重叠；必须先在 Gazebo/RViz 对25 m高度的塔 mesh、树干/树冠 collision、4 m南侧进场、垂直升降和完整圆周做静态净空复核；未通过前只运行 `--preview`，不要运行下面的 `--control`。
 
 每一级都应从干净的新 PX4/Gazebo 启动，等到 `DONE`、确认 `armed=false`，再安全停止后进行下一级：
 
@@ -443,11 +446,11 @@ rostopic echo -n 1 /mavros/extended_state
 |---|---|---:|---|---|---|---|---|
 | `tower/name` | `stage1_tower.yaml` | `radio_tower` | - | 日志和结果中的塔名 | 只改标签不会移动塔；必须与中心一起审查 | 与 world/测绘名称一致 | 否 |
 | `tower/frame_id` | `stage1_tower.yaml` | `map` | frame | 塔和路线坐标系 | 不能随意改；改后所有坐标/TF契约都变 | 当前只能 `map` | 否，但需架构审查 |
-| `tower/center/x` | `stage1_tower.yaml` | -17.4209 | m | 塔中心 x | 平移整条路线 | 必须来自审计/测绘 | 否 |
-| `tower/center/y` | `stage1_tower.yaml` | 22.29 | m | 塔中心 y | 平移整条路线 | 必须来自审计/测绘 | 否 |
-| `tower/collision_radius` | `stage1_tower.yaml` | 6.41 | m | 沿用旧4–5 m切片的包络，8 m尚待复核 | 调大更保守并可能拒绝半径；调小可能撞塔 | 8 m实测值或更保守值 | 否 |
-| `mission/radius` | `stage1_tower.yaml` | 10.0 | m | 无人机中心到塔中心半径 | 调大离塔远但路程长；调小更危险 | 当前 world 首测 10–15 | 否 |
-| `mission/height` | `stage1_tower.yaml` | 8.0 | m | 绝对 `map` 高度 | 调高可能遇到塔结构/地图上限；调低接近地面 | 当前默认8，换高度须重审 | 否 |
+| `tower/center/x` | `stage1_tower.yaml` | -10.0551 | m | worksite运行时塔中心 x | 平移整条路线 | 必须来自审计/测绘 | 否 |
+| `tower/center/y` | `stage1_tower.yaml` | 19.7104 | m | worksite运行时塔中心 y | 平移整条路线 | 必须来自审计/测绘 | 否 |
+| `tower/collision_radius` | `stage1_tower.yaml` | 6.41 | m | 塔碰撞保守包络，25 m切片尚待复核 | 调大更保守并可能拒绝半径；调小可能撞塔 | 25 m实测值或更保守值 | 否 |
+| `mission/radius` | `stage1_tower.yaml` | 14.0 | m | 无人机中心到塔中心半径 | 调大离塔远但路程长；调小更危险 | 当前值14，须结合障碍净空复核 | 否 |
+| `mission/height` | `stage1_tower.yaml` | 25.0 | m | 绝对 `map` 绕塔高度 | 调高可能遇到塔结构/地图上限；调低接近地面 | 当前默认25，换高度须重审 | 否 |
 | `mission/waypoint_count` | `stage1_tower.yaml` | 8 | 个 | 一圈的等角度检查点数 | 只影响检查事件和进度，不改变圆周几何或速度 | 正式任务8；1/4仅分级测试 | 否 |
 | `mission/start_angle_deg` | `stage1_tower.yaml` | -90.0 | deg | 第一点相对塔中心的方位 | 改变进场和闭环位置 | `[-180,180]` 易读，其他值会归一化 | 否 |
 | `mission/direction` | `stage1_tower.yaml` | `counter_clockwise` | - | 航点角度增减方向 | `clockwise` 顺时针；默认值逆时针 | 两者之一 | 否 |
@@ -461,16 +464,16 @@ rostopic echo -n 1 /mavros/extended_state
 | `mission/mission_timeout` | `stage1_tower.yaml` | 600.0 | s | 进场和完整圆周总上限 | 调大允许更慢轨迹；调小可能中途失败 | 480–900 | 否 |
 | `mission/overall_timeout` | `stage1_tower.yaml` | 1200.0 | s | 从等待到结束的总上限 | 调大容忍启动/服务慢；调小更快终止 | 900–1800 | 否 |
 | `mission/minimum_height` | `stage1_tower.yaml` | 2.0 | m | 航线高度下限 | 调高排除低飞；调低减少地面保护 | 按 world/法规/定位确定 | 否 |
-| `mission/maximum_height` | `stage1_tower.yaml` | 10.0 | m | 航线高度上限 | 调高允许高飞；调低更保守 | 当前仿真不建议超过10 | 否 |
+| `mission/maximum_height` | `stage1_tower.yaml` | 27.0 | m | 航线高度上限 | 调高允许高飞；调低更保守 | 当前任务25，保留2 m余量 | 否 |
 | `mission/minimum_safety_distance` | `stage1_tower.yaml` | 2.0 | m | 航线半径减塔包络后的最小余量 | 调大更保守；调小风险增加 | 首测至少2 | 否 |
 | `mission/maximum_home_distance` | `stage1_tower.yaml` | 60.0 | m | home到任何航点的包络 | 调大允许更远任务；调小会拒绝当前路线 | 略高于几何最大距离 | 否 |
-| `flight/takeoff_height` | `stage1_tower.yaml` | 8.0 | m | home上方起飞目标 | 调大起飞更高更久；调小需仍安全 | 当前默认8，须与任务高度协调 | 否 |
+| `flight/takeoff_height` | `stage1_tower.yaml` | 4.0 | m | home上方起飞和进场目标 | 调大起飞更高更久；调小需仍安全 | 当前默认4，须与任务高度协调 | 否 |
 | `flight/takeoff_tolerance` | `stage1_tower.yaml` | 0.25 | m | 起飞高度到达容差 | 同位置容差影响 | 0.2–0.5 | 否 |
 | `flight/takeoff_hold_time` | `stage1_tower.yaml` | 1.0 | s | 起飞到达连续保持 | 调大更稳、调小更快 | 1–3 | 否 |
 | `flight/takeoff_timeout` | `stage1_tower.yaml` | 60.0 | s | 起飞阶段超时 | 过小会误失败；过大延迟故障终止 | 45–120 | 否 |
 | `flight/initial_hover_duration` | `stage1_tower.yaml` | 3.0 | s | 入塔前稳定悬停 | 调大更稳但任务更久 | 2–10 | 否 |
 | `flight/initial_hover_timeout` | `stage1_tower.yaml` | 30.0 | s | 初始悬停阶段超时 | 应大于悬停时长并留误差收敛余量 | 20–60 | 否 |
-| `flight/return_height` | `stage1_tower.yaml` | 8.0 | m | home上方返航高度 | 与障碍和起飞高度协调 | 当前默认8，须审查返程净空 | 否 |
+| `flight/return_height` | `stage1_tower.yaml` | 4.0 | m | 塔前下降后及home上方返航高度 | 与障碍和起飞高度协调 | 当前默认4，须审查返程净空 | 否 |
 | `flight/return_hold_time` | `stage1_tower.yaml` | 2.0 | s | home上方连续保持 | 调大更稳但更久 | 1–5 | 否 |
 | `flight/return_timeout` | `stage1_tower.yaml` | 240.0 | s | 返航超时 | 需匹配最远点和速度 | 180–360 | 否 |
 | `flight/preland_hover_duration` | `stage1_tower.yaml` | 3.0 | s | 下降前稳定时间 | 调大更稳、调小更快 | 2–10 | 否 |

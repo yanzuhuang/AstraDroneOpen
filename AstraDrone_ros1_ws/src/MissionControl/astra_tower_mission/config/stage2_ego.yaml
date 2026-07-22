@@ -1,9 +1,8 @@
-# worksite 单塔任务外层：生成 8 m 闭合全局参考路径；
+# worksite 单塔任务外层：生成4 m进场、30 m绕塔、4 m返航参考路径；
 # EGO-Planner 负责沿全局参考逐段生成局部避障/重规划轨迹。
 enable_control: false
 scenario: dry_run
 planning_frame: camera_init
-manual_target_height: 8.0
 height_match_tolerance: 0.000001
 
 tower:
@@ -23,14 +22,15 @@ tower_candidates:
   collision_radius: [6.41]
 
 mission:
-  radius: 10.0
-  height: 8.0
+  radius: 14.0
+  transit_height: 4.0
+  height: 30.0
   waypoint_count: 8
-  start_angle_deg: -90.0
+  start_angle_deg: -67.5
   direction: counter_clockwise
   camera_yaw_offset_deg: 0.0
   minimum_height: 2.0
-  maximum_height: 10.0
+  maximum_height: 32.0
   minimum_safety_distance: 2.0
 
 # Empty-space validation goals are absolute map ENU coordinates near home.
@@ -44,6 +44,9 @@ goal_retry_period: 0.50
 planning_timeout: 10.0
 goal_timeout: 240.0
 arrival_tolerance: 0.40
+# EGO在水平进场末端的实际稳定误差约0.43--0.48 m；仅塔前升降切换放宽，
+# 普通绕塔检查点仍使用上面的0.40 m。
+transit_transition_tolerance: 0.50
 arrival_hold_duration: 1.0
 tracking_error_limit: 1.0
 failure_hold_duration: 3.0

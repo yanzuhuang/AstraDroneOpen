@@ -21,14 +21,16 @@
     <arg name="minimum_obstacle_z" value="0.20"/>
     <arg name="map_size_x" value="80.0"/>
     <arg name="map_size_y" value="110.0"/>
-    <!-- ground=-0.5, size=11.0 gives map coverage through 10.5 m. -->
-    <arg name="map_size_z" value="11.0"/>
+    <!-- ground=-0.5, size=33.0 gives map coverage through 32.5 m. -->
+    <arg name="map_size_z" value="33.0"/>
     <arg name="map_resolution" value="0.20"/>
     <arg name="ground_height" value="-0.50"/>
-    <arg name="virtual_ceil_height" value="10.0"/>
+    <arg name="virtual_ceil_height" value="32.0"/>
     <arg name="max_vel" value="0.30"/>
     <arg name="max_acc" value="0.50"/>
-    <arg name="manual_target_height" value="8.0"/>
+    <!-- Fallback remains valid, while this mission explicitly consumes each goal z. -->
+    <arg name="manual_target_height" value="4.0"/>
+    <arg name="use_goal_height" value="true"/>
     <arg name="obstacles_inflation" value="0.40"/>
   </include>
 

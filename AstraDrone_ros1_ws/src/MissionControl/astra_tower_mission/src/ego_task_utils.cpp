@@ -35,6 +35,29 @@ bool validateFixedHeightGoals(
   return true;
 }
 
+bool validateGoalHeightBounds(
+    const std::vector<geometry_msgs::PoseStamped>& goals,
+    double minimum_height, double maximum_height, std::string* reason) {
+  if (reason == nullptr || goals.empty() ||
+      !std::isfinite(minimum_height) || !std::isfinite(maximum_height) ||
+      minimum_height > maximum_height) {
+    return false;
+  }
+  for (const auto& goal : goals) {
+    if (goal.header.frame_id.empty() ||
+        !std::isfinite(goal.pose.position.x) ||
+        !std::isfinite(goal.pose.position.y) ||
+        !std::isfinite(goal.pose.position.z) ||
+        goal.pose.position.z < minimum_height ||
+        goal.pose.position.z > maximum_height) {
+      *reason = "every EGO task goal must be finite and inside height bounds";
+      return false;
+    }
+  }
+  reason->clear();
+  return true;
+}
+
 std::vector<geometry_msgs::PoseStamped> appendClosureGoal(
     const std::vector<geometry_msgs::PoseStamped>& unique_goals) {
   std::vector<geometry_msgs::PoseStamped> closed = unique_goals;
@@ -78,6 +101,17 @@ bool isNewTrajectory(std::uint32_t baseline_id, std::uint32_t command_id,
                      const ros::Time& command_stamp) {
   return !goal_stamp.isZero() && command_stamp >= goal_stamp &&
          command_id != baseline_id;
+}
+
+double selectArrivalTolerance(bool tower_scenario, std::size_t goal_index,
+                              std::size_t descent_goal_index,
+                              double nominal_tolerance,
+                              double transit_transition_tolerance) {
+  const bool transit_transition =
+      tower_scenario &&
+      (goal_index == 0U || goal_index == descent_goal_index);
+  return transit_transition ? transit_transition_tolerance
+                            : nominal_tolerance;
 }
 
 }  // namespace astra_tower_mission

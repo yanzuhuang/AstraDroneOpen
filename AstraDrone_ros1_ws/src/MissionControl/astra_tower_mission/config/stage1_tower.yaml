@@ -1,4 +1,4 @@
-# 阶段1：固定高度圆周飞行，不使用 EGO，也不具备避障能力。
+# 阶段1：4 m进场、塔前升至25 m绕塔、塔前降至4 m返航；不使用EGO。
 # 坐标均为 MAVROS 本地 ENU `map` 绝对坐标，worksite.world 仿真出生点为 (0, 0)。
 # Gazebo Classic 加载该 world 时采用 <state> 中的 radio_tower 位姿。
 
@@ -11,8 +11,8 @@ tower:
   collision_radius: 6.41             # 塔的保守碰撞包络半径（m）
 
 mission:
-  radius: 10.0                       # 绕塔圆轨迹半径（m）
-  height: 8.0                        # 绕塔阶段目标高度（m）
+  radius: 14.0                       # 绕塔圆轨迹半径（m）
+  height: 25.0                       # 绕塔阶段目标高度（m）
   waypoint_count: 8                  # 圆周检查点数量，仅检查通过、不停留
   start_angle_deg: -90.0             # 圆周起点相对塔心的角度（deg，-90°为南侧）
   direction: counter_clockwise       # 绕塔方向：counter_clockwise / clockwise
@@ -26,18 +26,18 @@ mission:
   mission_timeout: 600.0             # 绕塔阶段总超时（s）
   overall_timeout: 1200.0            # 从启动到结束的全任务超时（s）
   minimum_height: 2.0                # 允许的最低任务高度（m）
-  maximum_height: 10.0               # 允许的最高任务高度（m）
+  maximum_height: 27.0               # 允许的最高任务高度（m）
   minimum_safety_distance: 2.0       # 轨迹到塔碰撞包络的最小净距（m）
   maximum_home_distance: 60.0        # 任务点距 home 的最大水平距离（m）
 
 flight:
-  takeoff_height: 8.0                # 起飞目标高度（m）
+  takeoff_height: 4.0                # 起飞和进场目标高度（m）
   takeoff_tolerance: 0.25            # 到达起飞高度的容差（m）
   takeoff_hold_time: 1.0             # 起飞点稳定保持时间（s）
   takeoff_timeout: 60.0              # 起飞阶段超时（s）
   initial_hover_duration: 3.0        # 起飞后初始悬停时间（s）
   initial_hover_timeout: 30.0        # 初始悬停阶段超时（s）
-  return_height: 8.0                 # 返航飞行高度（m）
+  return_height: 4.0                 # 塔前下降后的返航高度（m）
   return_hold_time: 2.0              # home 上方稳定保持时间（s）
   return_timeout: 240.0              # 返航阶段超时（s）
   preland_hover_duration: 3.0        # 降落前悬停时间（s）

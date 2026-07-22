@@ -1,5 +1,6 @@
 
 #include <plan_manage/ego_replan_fsm.h>
+#include <plan_manage/goal_height.h>
 
 namespace ego_planner
 {
@@ -22,6 +23,7 @@ namespace ego_planner
     nh.param("fsm/planning_horizen_time", planning_horizen_time_, -1.0);
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
     nh.param("fsm/manual_target_height", manual_target_height_, 1.0);
+    nh.param("fsm/use_goal_height", use_goal_height_, false);
 
     if (target_type_ != TARGET_TYPE::MANUAL_TARGET &&
         target_type_ != TARGET_TYPE::PRESET_TARGET)
@@ -36,6 +38,8 @@ namespace ego_planner
       ROS_WARN("Invalid fsm/manual_target_height=%.3f; using 1.0 m.", manual_target_height_);
       manual_target_height_ = 1.0;
     }
+    ROS_INFO("Manual waypoint height source: %s.",
+             use_goal_height_ ? "incoming goal z" : "fsm/manual_target_height");
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
     if (waypoint_num_ < 0 || waypoint_num_ > 50)
@@ -160,9 +164,12 @@ namespace ego_planner
       return;
 
     const auto &goal = msg->poses[0].pose.position;
-    if (!std::isfinite(goal.x) || !std::isfinite(goal.y))
+    double target_height = 0.0;
+    if (!std::isfinite(goal.x) || !std::isfinite(goal.y) ||
+        !resolveManualGoalHeight(goal.z, manual_target_height_,
+                                 use_goal_height_, &target_height))
     {
-      ROS_ERROR("Ignoring waypoint with NaN/Inf coordinates.");
+      ROS_ERROR("Ignoring waypoint with invalid coordinates or target height.");
       return;
     }
 
@@ -171,7 +178,7 @@ namespace ego_planner
     init_pt_ = odom_pos_;
 
     bool success = false;
-    end_pt_ << goal.x, goal.y, manual_target_height_;
+    end_pt_ << goal.x, goal.y, target_height;
     success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);

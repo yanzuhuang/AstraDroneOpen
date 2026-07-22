@@ -69,6 +69,8 @@
   <exec_depend>path_searching</exec_depend>
   <exec_depend>bspline_opt</exec_depend>
   <exec_depend>traj_utils</exec_depend>
+
+  <test_depend>gtest</test_depend>
   
 
 

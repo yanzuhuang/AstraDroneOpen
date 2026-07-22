@@ -121,7 +121,7 @@ class Stage2EgoMissionNode {
     private_node_.param<std::string>("scenario", scenario_, "dry_run");
     private_node_.param<std::string>("planning_frame", planning_frame_,
                                      "camera_init");
-    private_node_.param("manual_target_height", manual_target_height_, 8.0);
+    private_node_.param("mission/transit_height", transit_height_, 4.0);
     private_node_.param("height_match_tolerance", height_match_tolerance_,
                         1e-6);
     private_node_.param("loop_rate", loop_rate_, 20.0);
@@ -130,6 +130,8 @@ class Stage2EgoMissionNode {
     private_node_.param("planning_timeout", planning_timeout_, 8.0);
     private_node_.param("goal_timeout", goal_timeout_, 180.0);
     private_node_.param("arrival_tolerance", arrival_tolerance_, 0.4);
+    private_node_.param("transit_transition_tolerance",
+                        transit_transition_tolerance_, 0.5);
     private_node_.param("arrival_hold_duration", arrival_hold_duration_, 1.0);
     private_node_.param("tracking_error_limit", tracking_error_limit_, 1.0);
     private_node_.param("failure_hold_duration", failure_hold_duration_, 3.0);
@@ -175,10 +177,10 @@ class Stage2EgoMissionNode {
     private_node_.param("tower/center/y", route_.center_y, 19.7104);
     private_node_.param("tower/collision_radius",
                         route_.tower_collision_radius, 6.41);
-    private_node_.param("mission/radius", route_.radius, 10.0);
-    private_node_.param("mission/height", route_.height, 8.0);
+    private_node_.param("mission/radius", route_.radius, 14.0);
+    private_node_.param("mission/height", route_.height, 30.0);
     private_node_.param("mission/waypoint_count", route_.waypoint_count, 8);
-    double start_angle_degrees = -90.0;
+    double start_angle_degrees = -67.5;
     double yaw_offset_degrees = 0.0;
     std::string direction = "counter_clockwise";
     private_node_.param("mission/start_angle_deg", start_angle_degrees,
@@ -193,7 +195,7 @@ class Stage2EgoMissionNode {
       throw std::runtime_error("invalid mission direction");
     }
     private_node_.param("mission/minimum_height", route_.minimum_height, 2.0);
-    private_node_.param("mission/maximum_height", route_.maximum_height, 10.0);
+    private_node_.param("mission/maximum_height", route_.maximum_height, 32.0);
     private_node_.param("mission/minimum_safety_distance",
                         route_.minimum_safety_distance, 2.0);
 
@@ -260,12 +262,17 @@ class Stage2EgoMissionNode {
                                 scenario_ == "dual" ||
                                 scenario_ == "tower";
     const bool numeric_valid =
-        std::isfinite(manual_target_height_) &&
+        std::isfinite(transit_height_) &&
+        transit_height_ >= route_.minimum_height &&
+        transit_height_ <= route_.maximum_height &&
         std::isfinite(height_match_tolerance_) &&
         height_match_tolerance_ >= 0.0 && loop_rate_ >= 10.0 &&
         input_timeout_ > 0.0 && goal_retry_period_ > 0.0 &&
         planning_timeout_ > goal_retry_period_ && goal_timeout_ > 0.0 &&
-        arrival_tolerance_ > 0.0 && arrival_hold_duration_ >= 0.0 &&
+        arrival_tolerance_ > 0.0 &&
+        transit_transition_tolerance_ >= arrival_tolerance_ &&
+        transit_transition_tolerance_ <= tracking_error_limit_ &&
+        arrival_hold_duration_ >= 0.0 &&
         tracking_error_limit_ > 0.0 && failure_hold_duration_ > 0.0 &&
         return_timeout_ > 0.0 && overall_timeout_ > return_timeout_ &&
         report_period_ > 0.0;
@@ -286,32 +293,30 @@ class Stage2EgoMissionNode {
     }
   }
 
-  geometry_msgs::PoseStamped makeGoal(double x, double y, double yaw) const {
+  geometry_msgs::PoseStamped makeGoal(double x, double y, double z,
+                                      double yaw) const {
     geometry_msgs::PoseStamped goal;
     goal.header.frame_id = route_.frame_id;
     goal.pose.position.x = x;
     goal.pose.position.y = y;
-    goal.pose.position.z = manual_target_height_;
+    goal.pose.position.z = z;
     goal.pose.orientation = yawQuaternion(yaw);
     return goal;
   }
 
   void validateGoalHeights() const {
     std::string reason;
-    if (!validateFixedHeightGoals(goals_, manual_target_height_,
-                                  height_match_tolerance_, &reason) ||
-        std::abs(route_.height - manual_target_height_) >
-            height_match_tolerance_) {
-      throw std::runtime_error(
-          reason.empty() ? "mission height and manual_target_height differ"
-                         : reason);
+    if (!validateGoalHeightBounds(goals_, route_.minimum_height,
+                                  route_.maximum_height, &reason)) {
+      throw std::runtime_error(reason.empty() ? "invalid goal height bounds"
+                                              : reason);
     }
   }
 
   void buildValidationGoals() {
-    goals_.push_back(makeGoal(single_x_, single_y_, 0.0));
+    goals_.push_back(makeGoal(single_x_, single_y_, transit_height_, 0.0));
     if (scenario_ == "dual") {
-      goals_.push_back(makeGoal(second_x_, second_y_, 0.0));
+      goals_.push_back(makeGoal(second_x_, second_y_, transit_height_, 0.0));
     }
     validateGoalHeights();
   }
@@ -349,11 +354,29 @@ class Stage2EgoMissionNode {
     route_.center_y = selected.center_y;
     route_.tower_collision_radius = selected.collision_radius;
 
-    goals_.clear();
-    for (const auto& waypoint : generateTowerWaypoints(route_)) {
-      goals_.push_back(makeGoal(waypoint.x, waypoint.y, waypoint.yaw));
+    const auto orbit_waypoints = generateTowerWaypoints(route_);
+    if (orbit_waypoints.empty()) {
+      *reason = "tower route generation returned no waypoint";
+      return false;
     }
-    goals_ = appendClosureGoal(goals_);
+
+    goals_.clear();
+    const auto& entry = orbit_waypoints.front();
+    const double ingress_yaw = std::atan2(
+        entry.y - vehicle_in_tower_frame.pose.position.y,
+        entry.x - vehicle_in_tower_frame.pose.position.x);
+    goals_.push_back(makeGoal(entry.x, entry.y, transit_height_, ingress_yaw));
+    goals_.push_back(makeGoal(entry.x, entry.y, route_.height, entry.yaw));
+    orbit_first_goal_index_ = 1U;
+    for (std::size_t index = 1U; index < orbit_waypoints.size(); ++index) {
+      const auto& waypoint = orbit_waypoints[index];
+      goals_.push_back(
+          makeGoal(waypoint.x, waypoint.y, route_.height, waypoint.yaw));
+    }
+    goals_.push_back(makeGoal(entry.x, entry.y, route_.height, entry.yaw));
+    orbit_last_goal_index_ = goals_.size() - 1U;
+    goals_.push_back(makeGoal(entry.x, entry.y, transit_height_, entry.yaw));
+    descent_goal_index_ = goals_.size() - 1U;
     validateGoalHeights();
 
     global_reference_.header.frame_id = route_.frame_id;
@@ -377,9 +400,10 @@ class Stage2EgoMissionNode {
     setTowerYawMode(false);
     have_global_reference_ = true;
     ROS_WARN("[STAGE2_TASK] nearest tower=%s center=(%.3f, %.3f), "
-             "global reference=%zu points at %.2f m; EGO owns local replanning",
+             "global reference=%zu goals: ingress %.2f m, orbit %.2f m, "
+             "descent %.2f m; EGO owns local replanning",
              route_.tower_name.c_str(), route_.center_x, route_.center_y,
-             goals_.size(), route_.height);
+             goals_.size(), transit_height_, route_.height, transit_height_);
     reason->clear();
     return true;
   }
@@ -522,9 +546,9 @@ class Stage2EgoMissionNode {
       *reason = exception.what();
       return false;
     }
-    if (std::abs(planning_goal_.pose.position.z - manual_target_height_) >
+    if (std::abs(planning_goal_.pose.position.z - goal.pose.position.z) >
         height_match_tolerance_) {
-      *reason = "TF changed the fixed-height goal contract";
+      *reason = "TF changed the per-goal height contract";
       return false;
     }
     reason->clear();
@@ -540,6 +564,10 @@ class Stage2EgoMissionNode {
   }
 
   void beginGoal(const ros::Time& now) {
+    if (scenario_ == "tower") {
+      setTowerYawMode(goal_index_ >= orbit_first_goal_index_ &&
+                      goal_index_ <= orbit_last_goal_index_);
+    }
     std::string reason;
     if (!transformCurrentGoal(now, &reason)) {
       fail("goal TF failure: " + reason);
@@ -678,7 +706,10 @@ class Stage2EgoMissionNode {
           fail("task tracking error limit exceeded");
           break;
         }
-        if (current_goal_error_ <= arrival_tolerance_) {
+        const double current_arrival_tolerance = selectArrivalTolerance(
+            scenario_ == "tower", goal_index_, descent_goal_index_,
+            arrival_tolerance_, transit_transition_tolerance_);
+        if (current_goal_error_ <= current_arrival_tolerance) {
           if (!arrival_active_) {
             arrival_active_ = true;
             arrival_since_ = now;
@@ -686,9 +717,6 @@ class Stage2EgoMissionNode {
                      ros::Duration(arrival_hold_duration_)) {
             ++goal_index_;
             if (goal_index_ < goals_.size()) {
-              if (scenario_ == "tower" && goal_index_ == 1U) {
-                setTowerYawMode(true);
-              }
               transition(TaskState::kPublishGoal,
                          "measured odometry reached current goal");
             } else {
@@ -820,7 +848,7 @@ class Stage2EgoMissionNode {
   bool enable_control_{false};
   std::string scenario_;
   std::string planning_frame_;
-  double manual_target_height_{8.0};
+  double transit_height_{4.0};
   double height_match_tolerance_{1e-6};
   double loop_rate_{20.0};
   double input_timeout_{0.3};
@@ -828,6 +856,7 @@ class Stage2EgoMissionNode {
   double planning_timeout_{8.0};
   double goal_timeout_{180.0};
   double arrival_tolerance_{0.4};
+  double transit_transition_tolerance_{0.5};
   double arrival_hold_duration_{1.0};
   double tracking_error_limit_{1.0};
   double failure_hold_duration_{3.0};
@@ -857,6 +886,9 @@ class Stage2EgoMissionNode {
 
   TaskState state_{TaskState::kWaitInputs};
   std::size_t goal_index_{0};
+  std::size_t orbit_first_goal_index_{0};
+  std::size_t orbit_last_goal_index_{0};
+  std::size_t descent_goal_index_{0};
   std::uint32_t trajectory_baseline_{0};
   bool have_odom_{false};
   bool have_command_{false};
