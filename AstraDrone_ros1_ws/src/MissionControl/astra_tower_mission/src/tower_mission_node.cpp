@@ -1161,12 +1161,16 @@ class TowerMissionNode {
     const ros::Time now = ros::Time::now();
     const geometry_msgs::PoseStamped return_pose = makePose(
         home_pose_.pose.position.x, home_pose_.pose.position.y,
-        home_pose_.pose.position.z + config_.return_height, home_yaw_, now);
+        home_pose_.pose.position.z + config_.return_height,
+        forwardYawTo(home_pose_.pose.position.x, home_pose_.pose.position.y),
+        now);
     setTarget(return_pose);
     transitionTo(MissionState::kReturnHome, reason);
   }
 
   void handleReturnHome(const ros::Time& now, double dt) {
+    updateForwardTargetYaw(home_pose_.pose.position.x,
+                           home_pose_.pose.position.y, now);
     advanceReference(dt);
     publishPositionReference(now);
     ROS_INFO_THROTTLE(1.0,
@@ -1478,13 +1482,13 @@ class TowerMissionNode {
     arrival_since_ = ros::Time(0);
   }
 
-  double ingressForwardYaw() const {
+  double forwardYawTo(double target_x, double target_y) const {
     const double from_x = have_pose_ ? current_pose_.pose.position.x
                                      : reference_.x;
     const double from_y = have_pose_ ? current_pose_.pose.position.y
                                      : reference_.y;
-    const double dx = waypoints_.front().x - from_x;
-    const double dy = waypoints_.front().y - from_y;
+    const double dx = target_x - from_x;
+    const double dy = target_y - from_y;
     if (std::hypot(dx, dy) > 1e-6) {
       return std::atan2(dy, dx);
     }
@@ -1494,6 +1498,18 @@ class TowerMissionNode {
     return reference_.yaw;
   }
 
+  double ingressForwardYaw() const {
+    return forwardYawTo(waypoints_.front().x, waypoints_.front().y);
+  }
+
+  void updateForwardTargetYaw(double target_x, double target_y,
+                              const ros::Time& now) {
+    target_.yaw = forwardYawTo(target_x, target_y);
+    target_pose_.header.stamp = now;
+    target_pose_.pose.orientation = yawQuaternion(target_.yaw);
+    current_target_pub_.publish(target_pose_);
+  }
+
   void setIngressTarget(const ros::Time& now) {
     geometry_msgs::PoseStamped ingress = waypointPose(waypoints_.front(), now);
     ingress.pose.orientation = yawQuaternion(ingressForwardYaw());
@@ -1501,10 +1517,7 @@ class TowerMissionNode {
   }
 
   void updateIngressTargetYaw(const ros::Time& now) {
-    target_.yaw = ingressForwardYaw();
-    target_pose_.header.stamp = now;
-    target_pose_.pose.orientation = yawQuaternion(target_.yaw);
-    current_target_pub_.publish(target_pose_);
+    updateForwardTargetYaw(waypoints_.front().x, waypoints_.front().y, now);
   }
 
   void setDynamicOrbitTarget(const ros::Time& now) {

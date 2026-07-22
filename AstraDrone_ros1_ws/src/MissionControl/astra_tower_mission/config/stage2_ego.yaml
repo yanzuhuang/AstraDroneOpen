@@ -1,36 +1,36 @@
-# EGO绕塔任务外层：按起始里程计位置选择最近铁塔，生成闭合全局参考路径；
-# EGO-Planner继续负责各参考段的局部避障和重规划。当前16 m配置尚需重新飞行验收。
+# worksite 单塔任务外层：生成 8 m 闭合全局参考路径；
+# EGO-Planner 负责沿全局参考逐段生成局部避障/重规划轨迹。
 enable_control: false
 scenario: dry_run
 planning_frame: camera_init
-manual_target_height: 16.0
+manual_target_height: 8.0
 height_match_tolerance: 0.000001
 
 tower:
-  # 保留单塔字段作为兼容回退；正常forest.world任务使用下面的候选列表。
+  # Gazebo Classic 加载 worksite.world 时采用 <state> 中的模型位姿。
   name: radio_tower
   frame_id: map
   center:
-    x: -17.4209
-    y: 22.29
+    x: -10.0551
+    y: 19.7104
   collision_radius: 6.41
 
 tower_candidates:
   frame_id: map
-  names: [radio_tower, radio_tower_0]
-  center_x: [-17.4209, 24.4614]
-  center_y: [22.29, 39.3288]
-  collision_radius: [6.41, 6.41]
+  names: [radio_tower]
+  center_x: [-10.0551]
+  center_y: [19.7104]
+  collision_radius: [6.41]
 
 mission:
   radius: 10.0
-  height: 16.0
+  height: 8.0
   waypoint_count: 8
   start_angle_deg: -90.0
   direction: counter_clockwise
   camera_yaw_offset_deg: 0.0
   minimum_height: 2.0
-  maximum_height: 30.0
+  maximum_height: 10.0
   minimum_safety_distance: 2.0
 
 # Empty-space validation goals are absolute map ENU coordinates near home.

@@ -13,8 +13,8 @@ RouteConfig validConfig() {
   RouteConfig config;
   config.tower_name = "radio_tower";
   config.frame_id = "map";
-  config.center_x = -17.4209;
-  config.center_y = 22.29;
+  config.center_x = -10.0551;
+  config.center_y = 19.7104;
   config.radius = 10.0;
   config.height = 8.0;
   config.waypoint_count = 8;

@@ -6,14 +6,15 @@ script_path="$(readlink -f "${BASH_SOURCE[0]}")"
 script_dir="$(dirname "$script_path")"
 repo_root="$(readlink -f "$script_dir/../..")"
 session_name="stage2_ego"
-default_world="$repo_root/simulation/astra_gazebo_worlds/forest.world"
+default_world="$repo_root/simulation/astra_gazebo_worlds/worksite.world"
 
 usage() {
     cat <<'EOF'
 用法：
   stage2_ego.sh [--scenario dry-run] [--attach]
   stage2_ego.sh --control --scenario single|dual|tower
-                [--waypoints N] [--gui] [--rviz] [--report FILE] [--attach]
+                [--waypoints N] [--gui] [--rviz] [--world FILE]
+                [--report FILE] [--attach]
   stage2_ego.sh --stop
 
 默认 dry-run：启动 PX4/Gazebo、FAST-LIO、EGO、traj_server 和任务管理器，
@@ -21,6 +22,7 @@ usage() {
 
 飞行验证必须显式同时给出 --control 和 single/dual/tower；顺序应为
 dry-run -> 故障注入 -> single -> dual -> tower。
+默认世界为 worksite.world。
 EOF
 }
 

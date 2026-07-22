@@ -6,7 +6,7 @@ script_path="$(readlink -f "${BASH_SOURCE[0]}")"
 script_dir="$(dirname "$script_path")"
 repo_root="$(readlink -f "$script_dir/../..")"
 session_name="stage1_tower"
-default_world="$repo_root/simulation/astra_gazebo_worlds/forest.world"
+default_world="$repo_root/simulation/astra_gazebo_worlds/worksite.world"
 
 usage() {
     cat <<'EOF'
@@ -27,7 +27,7 @@ usage() {
   --waypoints N   本轮均匀检查点数；正式任务8，逐级测试可用1、4
   --headless      Gazebo 无 GUI，同时不启动 RViz
   --no-rviz       不启动 RViz
-  --world FILE    指定 world；默认 forest.world
+  --world FILE    指定 world；默认 worksite.world
   --report FILE   CSV 证据文件；默认写 /tmp/astra_stage1_evidence/
   --restart       只重启本脚本自己的 stage1_tower tmux 会话
   --attach        启动后进入 tmux 查看日志

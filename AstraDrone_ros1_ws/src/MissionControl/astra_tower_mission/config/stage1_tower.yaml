@@ -1,12 +1,13 @@
 # 阶段1：固定高度圆周飞行，不使用 EGO，也不具备避障能力。
-# 坐标均为 MAVROS 本地 ENU `map` 绝对坐标，仿真出生点为世界坐标 (0, 0)。
+# 坐标均为 MAVROS 本地 ENU `map` 绝对坐标，worksite.world 仿真出生点为 (0, 0)。
+# Gazebo Classic 加载该 world 时采用 <state> 中的 radio_tower 位姿。
 
 tower:
   name: radio_tower                  # 目标塔名称，仅用于标识和日志
   frame_id: map                      # 塔中心及任务轨迹所属坐标系
   center:
-    x: -17.4209                      # 塔中心 X 坐标（m）
-    y: 22.29                         # 塔中心 Y 坐标（m）
+    x: -10.0551                      # worksite 运行时塔中心 X 坐标（m）
+    y: 19.7104                       # worksite 运行时塔中心 Y 坐标（m）
   collision_radius: 6.41             # 塔的保守碰撞包络半径（m）
 
 mission:

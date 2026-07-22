@@ -28,7 +28,7 @@ tmux send-keys "roscore &" C-m
 
 tmux select-pane -t 1
 tmux send-keys "sleep 3s" C-m
-tmux send-keys "roslaunch $HOME/AstraDroneOpen/simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch world:=$HOME/AstraDroneOpen/simulation/astra_gazebo_worlds/forest.world" C-m
+tmux send-keys "roslaunch $HOME/AstraDroneOpen/simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch world:=$HOME/AstraDroneOpen/simulation/astra_gazebo_worlds/worksite.world" C-m
 
 tmux select-pane -t 2
 tmux send-keys "sleep 6s" C-m

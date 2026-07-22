@@ -121,7 +121,7 @@ class Stage2EgoMissionNode {
     private_node_.param<std::string>("scenario", scenario_, "dry_run");
     private_node_.param<std::string>("planning_frame", planning_frame_,
                                      "camera_init");
-    private_node_.param("manual_target_height", manual_target_height_, 16.0);
+    private_node_.param("manual_target_height", manual_target_height_, 8.0);
     private_node_.param("height_match_tolerance", height_match_tolerance_,
                         1e-6);
     private_node_.param("loop_rate", loop_rate_, 20.0);
@@ -171,12 +171,12 @@ class Stage2EgoMissionNode {
                                      "radio_tower");
     private_node_.param<std::string>("tower/frame_id", route_.frame_id,
                                      "map");
-    private_node_.param("tower/center/x", route_.center_x, -17.4209);
-    private_node_.param("tower/center/y", route_.center_y, 22.29);
+    private_node_.param("tower/center/x", route_.center_x, -10.0551);
+    private_node_.param("tower/center/y", route_.center_y, 19.7104);
     private_node_.param("tower/collision_radius",
                         route_.tower_collision_radius, 6.41);
     private_node_.param("mission/radius", route_.radius, 10.0);
-    private_node_.param("mission/height", route_.height, 16.0);
+    private_node_.param("mission/height", route_.height, 8.0);
     private_node_.param("mission/waypoint_count", route_.waypoint_count, 8);
     double start_angle_degrees = -90.0;
     double yaw_offset_degrees = 0.0;
@@ -193,7 +193,7 @@ class Stage2EgoMissionNode {
       throw std::runtime_error("invalid mission direction");
     }
     private_node_.param("mission/minimum_height", route_.minimum_height, 2.0);
-    private_node_.param("mission/maximum_height", route_.maximum_height, 30.0);
+    private_node_.param("mission/maximum_height", route_.maximum_height, 10.0);
     private_node_.param("mission/minimum_safety_distance",
                         route_.minimum_safety_distance, 2.0);
 
@@ -820,7 +820,7 @@ class Stage2EgoMissionNode {
   bool enable_control_{false};
   std::string scenario_;
   std::string planning_frame_;
-  double manual_target_height_{16.0};
+  double manual_target_height_{8.0};
   double height_match_tolerance_{1e-6};
   double loop_rate_{20.0};
   double input_timeout_{0.3};

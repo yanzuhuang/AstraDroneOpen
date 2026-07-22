@@ -41,10 +41,10 @@ TEST(EgoTaskGoals, AppendsFirstGoalToCloseMultiPointRoute) {
 
 TEST(EgoTaskGoals, SelectsNearestValidTower) {
   const std::vector<TowerCandidate> candidates{
-      {"far", "map", 24.4614, 39.3288, 6.41},
-      {"near", "map", -17.4209, 22.29, 6.41}};
+      {"far", "map", 10.7773, 22.4598, 6.41},
+      {"radio_tower", "map", -10.0551, 19.7104, 6.41}};
   EXPECT_EQ(1, nearestTowerIndex(candidates, 0.0, 0.0));
-  EXPECT_EQ(0, nearestTowerIndex(candidates, 23.0, 38.0));
+  EXPECT_EQ(0, nearestTowerIndex(candidates, 10.0, 22.0));
 }
 
 TEST(EgoTaskGoals, IgnoresInvalidTowerAndRejectsInvalidVehiclePose) {
