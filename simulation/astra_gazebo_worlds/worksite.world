@@ -616,10 +616,10 @@
       <pose>-18.3559 -29.7161 0 0 -0 0</pose>
     </model>
     <state world_name='default'>
-      <sim_time>10491 568000000</sim_time>
-      <real_time>240 232676087</real_time>
-      <wall_time>1784690547 111512605</wall_time>
-      <iterations>239691</iterations>
+      <sim_time>10614 796000000</sim_time>
+      <real_time>44 715486095</real_time>
+      <wall_time>1784706168 624963267</wall_time>
+      <iterations>44613</iterations>
       <model name='Oak_tree'>
         <pose>-10.7567 -7.4354 0 0 -0 0</pose>
         <scale>1 1 1</scale>
@@ -721,13 +721,13 @@
         </link>
       </model>
       <model name='person_walking'>
-        <pose>3.19122 14.9693 0.049999 2e-06 -0 0.005567</pose>
+        <pose>2.97214 12.1274 0.05 -1e-06 -0 0.011668</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>3.19122 14.9693 0.049999 2e-06 -0 0.005567</pose>
+          <pose>2.97214 12.1274 0.05 -1e-06 -0 0.011668</pose>
           <velocity>0 0 0 0 -0 0</velocity>
-          <acceleration>-0.926958 -1.98158 -2.88165 2.06756 -1.01761 0.102842</acceleration>
-          <wrench>-74.1566 -158.526 -230.532 0 -0 0</wrench>
+          <acceleration>-1.09759 -3.50849 2.40987 0.496854 -1.54034 -2.96207</acceleration>
+          <wrench>-87.8071 -280.679 192.789 0 -0 0</wrench>
         </link>
       </model>
       <model name='radio_tower'>
@@ -781,10 +781,10 @@
         </link>
       </model>
       <model name='tower_crane'>
-        <pose>10.7773 22.4598 0 0 0 -0.39847</pose>
+        <pose>6.36257 21.7297 0 0 0 -0.479608</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>10.7773 22.4598 0 0 0 -0.39847</pose>
+          <pose>6.36257 21.7297 0 0 0 -0.479608</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -806,7 +806,7 @@
     </state>
     <gui fullscreen='0'>
       <camera name='user_camera'>
-        <pose>48.1317 -22.7167 38.3091 0 0.612055 2.88964</pose>
+        <pose>1.43351 -6.91816 8.7375 0 0.060055 1.43765</pose>
         <view_controller>orbit</view_controller>
         <projection_type>perspective</projection_type>
       </camera>
