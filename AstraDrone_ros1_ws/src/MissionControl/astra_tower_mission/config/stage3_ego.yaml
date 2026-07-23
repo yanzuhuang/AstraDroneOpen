@@ -32,7 +32,10 @@ mission:
   approach_segment_length: 6.0
   sector_angle_half_width_deg: 12.0
   sector_radius_half_width: 4.0
-  sector_height_half_width: 1.0
+  # Sector 1 is occluded by the 35.0283 m crane boom at the nominal layer.
+  # Keep the same angular sector id and use 38 m only when all 29..31 m
+  # candidates fail their hard endpoint clearance checks.
+  sector_height_half_width: 8.0
   target_replacement_margin: 2.0
 
 entry_gate:
@@ -57,7 +60,7 @@ entry_gate:
 candidate:
   angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0]
   radius_offsets_m: [0.0, 2.0, 4.0]
-  height_offsets_m: [0.0, -1.0, 1.0]
+  height_offsets_m: [0.0, -1.0, 1.0, 8.0]
   minimum_clearance: 2.0
   cloud_inflation: 0.4
   corridor_sample_step: 0.5
@@ -118,6 +121,26 @@ input_timeout: 0.7
 map_timeout: 0.7
 planning_timeout: 10.0
 goal_timeout: 180.0
+# EGO return and PX4 AUTO.LAND are separate phases. The landing deadline starts
+# when the bridge reports LANDING; it must not inherit time already spent on
+# the long EGO return trajectory.
+return_timeout: 300.0
+landing_timeout: 90.0
+return_egress:
+  # Never send a long chord from the inspection ring directly to home. First
+  # climb/withdraw radially, follow a tower-exterior arc, then hand the short
+  # home-side radial segment to the bridge's normal EGO return.
+  orbit_radius: 24.0
+  transit_height: 38.0
+  maximum_angle_step_deg: 30.0
+  obstacle_inflation: 2.0
+  corridor_sample_step: 0.5
+  minimum_goal_separation: 0.5
+  target_timeout: 90.0
+  # Finite retries tolerate isolated FCU/time-sync or estimator spikes during
+  # the long multi-segment egress; exhaustion still forces a safe landing.
+  maximum_retries: 4
+  home_xy_tolerance: 1.5
 arrival_tolerance: 0.5
 arrival_velocity_threshold: 0.2
 arrival_yaw_tolerance: 0.26

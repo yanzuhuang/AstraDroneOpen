@@ -11,6 +11,11 @@ cloud_timeout: 0.7
 planner_odom_timeout: 0.7
 command_timeout: 0.60
 land_after_loss: 8.0
+# Long 38 m crane-clearance egress measured 0.649 m maximum and 0.343 m P95
+# FAST-LIO-to-MAVROS tracking offset. Keep a bounded stage3-only margin below
+# the independent 1.0 m sustained trajectory tracking protection and the
+# task's 2.0 m hard endpoint clearance.
+alignment_position_tolerance: 0.75
 alignment_yaw_error_duration: 1.0
 virtual_ceil_height: 45.0
 planning_frame: camera_init

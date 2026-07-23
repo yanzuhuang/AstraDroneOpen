@@ -163,6 +163,39 @@ if [[ "$stop" == true ]]; then
         echo "阶段三会话未运行。"
         exit 0
     fi
+
+    # A large compressed bag can need tens of seconds to flush its final chunk
+    # and index after SIGINT. Stop the recorder first and do not destroy the
+    # tmux session while that evidence is still being finalized.
+    recorder_running=false
+    while IFS= read -r window; do
+        if [[ "$window" == "recorder" ]]; then
+            recorder_running=true
+            break
+        fi
+    done < <(tmux list-windows -t "$session_name" -F '#{window_name}')
+    if [[ "$recorder_running" == true ]]; then
+        echo "正在优雅停止 stage3 recorder 并等待 bag 索引写入……"
+        tmux send-keys -t "$session_name:recorder" C-c 2>/dev/null || true
+        for _ in {1..120}; do
+            recorder_running=false
+            while IFS= read -r window; do
+                if [[ "$window" == "recorder" ]]; then
+                    recorder_running=true
+                    break
+                fi
+            done < <(tmux list-windows -t "$session_name" -F '#{window_name}' \
+                2>/dev/null || true)
+            [[ "$recorder_running" == false ]] && break
+            sleep 1
+        done
+        if [[ "$recorder_running" == true ]]; then
+            echo "stage3 recorder 在 120 秒内未完成；为保护 bag，未强制结束会话。" >&2
+            exit 1
+        fi
+        echo "stage3 recorder 已完成，bag 索引已写入。"
+    fi
+
     while IFS= read -r window; do
         tmux send-keys -t "$session_name:$window" C-c 2>/dev/null || true
     done < <(tmux list-windows -t "$session_name" -F '#{window_name}')

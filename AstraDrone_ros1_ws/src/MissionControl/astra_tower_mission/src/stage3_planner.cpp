@@ -611,4 +611,165 @@ RecoveryAssessment assessRecoveryTargets(
   return result;
 }
 
+bool returnOrLandingTimedOut(bool landing_active,
+                             double return_elapsed,
+                             double landing_elapsed,
+                             double return_timeout,
+                             double landing_timeout) {
+  return landing_active ? landing_elapsed >= landing_timeout
+                        : return_elapsed >= return_timeout;
+}
+
+std::vector<CandidatePoint> buildSafeReturnEgressGoals(
+    const RouteConfig& route, const geometry_msgs::Point& current,
+    const geometry_msgs::Point& home, const CandidatePoint& return_gate,
+    const std::vector<StaticObstacle>& obstacles,
+    const ReturnEgressConfig& config) {
+  if (!std::isfinite(config.orbit_radius) ||
+      !std::isfinite(config.transit_height) ||
+      !std::isfinite(config.maximum_angle_step_rad) ||
+      config.orbit_radius <= route.tower_collision_radius ||
+      config.transit_height < route.minimum_height ||
+      config.transit_height > route.maximum_height ||
+      config.maximum_angle_step_rad <= 0.0 ||
+      config.maximum_angle_step_rad > kPi ||
+      config.obstacle_inflation < 0.0 ||
+      config.corridor_sample_step <= 0.0 ||
+      config.minimum_goal_separation <= 0.0) {
+    return {};
+  }
+
+  const double current_angle =
+      std::atan2(current.y - route.center_y, current.x - route.center_x);
+  const double home_angle =
+      std::atan2(return_gate.y - route.center_y,
+                 return_gate.x - route.center_x);
+  const double ccw_delta = std::fmod(
+      home_angle - current_angle + 2.0 * kPi, 2.0 * kPi);
+  const double cw_delta = ccw_delta > 0.0 ? ccw_delta - 2.0 * kPi : 0.0;
+
+  const auto make_route = [&](double angular_delta,
+                              const char* direction) {
+    std::vector<CandidatePoint> goals;
+    CandidatePoint radial;
+    radial.id = std::string("RETURN_EGRESS_") + direction + "_RADIAL";
+    radial.sector_id = -1;
+    radial.x = route.center_x +
+               config.orbit_radius * std::cos(current_angle);
+    radial.y = route.center_y +
+               config.orbit_radius * std::sin(current_angle);
+    radial.z = config.transit_height;
+    radial.yaw = current_angle;
+    radial.require_arrival_yaw = false;
+    radial.face_tower = false;
+    if (distance3d(current.x, current.y, current.z,
+                   radial.x, radial.y, radial.z) >
+        config.minimum_goal_separation) {
+      goals.push_back(radial);
+    }
+
+    const int arc_segments = std::max(
+        1, static_cast<int>(std::ceil(
+               std::abs(angular_delta) / config.maximum_angle_step_rad)));
+    for (int index = 1; index <= arc_segments; ++index) {
+      const double ratio = static_cast<double>(index) / arc_segments;
+      const double angle = current_angle + ratio * angular_delta;
+      CandidatePoint goal;
+      std::ostringstream id;
+      if (index == arc_segments) {
+        id << "RETURN_GATE_" << direction;
+      } else {
+        id << "RETURN_EGRESS_" << direction << "_ARC_" << index;
+      }
+      goal.id = id.str();
+      goal.sector_id = -1;
+      goal.x = route.center_x + config.orbit_radius * std::cos(angle);
+      goal.y = route.center_y + config.orbit_radius * std::sin(angle);
+      goal.z = config.transit_height;
+      goal.yaw = angle;
+      goal.require_arrival_yaw = false;
+      goal.face_tower = false;
+      goals.push_back(goal);
+    }
+    // Keep the final horizontal leg above the known crane, then let the
+    // bridge publish only a vertical home goal. This avoids coupling a long
+    // horizontal crossing with the descent from transit height.
+    CandidatePoint overhead;
+    overhead.id = "RETURN_HOME_OVERHEAD";
+    overhead.sector_id = -1;
+    overhead.x = home.x;
+    overhead.y = home.y;
+    overhead.z = config.transit_height;
+    overhead.yaw = home_angle;
+    overhead.require_arrival_yaw = false;
+    overhead.face_tower = false;
+    goals.push_back(overhead);
+    return goals;
+  };
+
+  const auto route_is_safe =
+      [&](const std::vector<CandidatePoint>& goals) {
+        geometry_msgs::Point from = current;
+        for (const CandidatePoint& goal : goals) {
+          geometry_msgs::Point to;
+          to.x = goal.x;
+          to.y = goal.y;
+          to.z = goal.z;
+          if (!lineCorridorSafe(from, to, {}, obstacles,
+                                config.obstacle_inflation,
+                                config.corridor_sample_step)) {
+            return false;
+          }
+          from = to;
+        }
+        // The conservative crane OBB intentionally overlaps the known-safe
+        // launch pad at low altitude. The last task goal is directly above
+        // home; the bridge/EGO vertical descent and live occupancy checks own
+        // the final segment, as they do during the validated normal return.
+        return true;
+      };
+
+  const auto route_length =
+      [&](const std::vector<CandidatePoint>& goals) {
+        geometry_msgs::Point from = current;
+        double length = 0.0;
+        for (const CandidatePoint& goal : goals) {
+          length += distance3d(from.x, from.y, from.z,
+                               goal.x, goal.y, goal.z);
+          from.x = goal.x;
+          from.y = goal.y;
+          from.z = goal.z;
+        }
+        length += distance3d(from.x, from.y, from.z,
+                             home.x, home.y, home.z);
+        return length;
+      };
+
+  const std::vector<CandidatePoint> ccw = make_route(ccw_delta, "CCW");
+  const std::vector<CandidatePoint> cw = make_route(cw_delta, "CW");
+  const bool ccw_safe = route_is_safe(ccw);
+  const bool cw_safe = route_is_safe(cw);
+  if (!ccw_safe && !cw_safe) return {};
+  if (ccw_safe && (!cw_safe || route_length(ccw) <= route_length(cw))) {
+    return ccw;
+  }
+  return cw;
+}
+
+bool returnLandingNearHome(const geometry_msgs::Point& landed_position,
+                           const geometry_msgs::Point& home_position,
+                           double horizontal_tolerance) {
+  if (!std::isfinite(landed_position.x) ||
+      !std::isfinite(landed_position.y) ||
+      !std::isfinite(home_position.x) ||
+      !std::isfinite(home_position.y) ||
+      !std::isfinite(horizontal_tolerance) ||
+      horizontal_tolerance <= 0.0) {
+    return false;
+  }
+  return std::hypot(landed_position.x - home_position.x,
+                    landed_position.y - home_position.y) <=
+         horizontal_tolerance;
+}
+
 }  // namespace astra_tower_mission

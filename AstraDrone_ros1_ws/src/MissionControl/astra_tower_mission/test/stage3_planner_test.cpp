@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace astra_tower_mission {
@@ -374,6 +375,175 @@ TEST(Stage3Planner, RollingEntryGoalsMoveAndClimbTogether) {
   EXPECT_DOUBLE_EQ(goals.back().z, gate.z);
   EXPECT_FALSE(goals.front().require_arrival_yaw);
   EXPECT_TRUE(goals.back().require_arrival_yaw);
+}
+
+TEST(Stage3Planner, LandingGetsADeadlineIndependentFromEgoReturn) {
+  EXPECT_FALSE(returnOrLandingTimedOut(false, 299.0, 0.0, 300.0, 90.0));
+  EXPECT_TRUE(returnOrLandingTimedOut(false, 300.0, 0.0, 300.0, 90.0));
+
+  // A long return may consume nearly all of its own deadline. Once the bridge
+  // enters LANDING, only time spent in LANDING is relevant.
+  EXPECT_FALSE(returnOrLandingTimedOut(true, 305.0, 5.0, 300.0, 90.0));
+  EXPECT_FALSE(returnOrLandingTimedOut(true, 380.0, 89.0, 300.0, 90.0));
+  EXPECT_TRUE(returnOrLandingTimedOut(true, 390.0, 90.0, 300.0, 90.0));
+}
+
+TEST(Stage3Planner, FourSectorReturnUsesTowerExteriorArc) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.tower_collision_radius = 6.41;
+  route.minimum_height = 2.0;
+  route.maximum_height = 45.0;
+
+  StaticObstacle tower;
+  tower.id = "radio_tower";
+  tower.x = route.center_x;
+  tower.y = route.center_y;
+  tower.radius = route.tower_collision_radius;
+  tower.z_min = route.minimum_height;
+  tower.z_max = route.maximum_height;
+
+  StaticObstacle crane;
+  crane.id = "tower_crane";
+  crane.x = 2.7535;
+  crane.y = 14.7908;
+  crane.z_min = 0.0;
+  crane.z_max = 35.0283;
+  crane.half_extent_x = 3.2732;
+  crane.half_extent_y = 19.5424;
+  crane.yaw = -0.479608;
+
+  geometry_msgs::Point current;
+  current.x = route.center_x + 14.0 * std::cos(157.5 * kPi / 180.0);
+  current.y = route.center_y + 14.0 * std::sin(157.5 * kPi / 180.0);
+  current.z = 30.0;
+  geometry_msgs::Point home;
+  home.x = 0.0;
+  home.y = 0.0;
+  home.z = 4.0;
+  CandidatePoint return_gate;
+  const double gate_angle = -37.5 * kPi / 180.0;
+  return_gate.x = route.center_x + 20.0 * std::cos(gate_angle);
+  return_gate.y = route.center_y + 20.0 * std::sin(gate_angle);
+  return_gate.z = 30.0;
+
+  EXPECT_FALSE(lineCorridorSafe(current, home, {}, {crane, tower},
+                                2.0, 0.5));
+
+  ReturnEgressConfig config;
+  const auto goals = buildSafeReturnEgressGoals(
+      route, current, home, return_gate, {crane, tower}, config);
+  ASSERT_GT(goals.size(), 2U);
+  EXPECT_TRUE(std::any_of(
+      goals.begin(), goals.end(), [](const CandidatePoint& goal) {
+        return goal.id.find("RETURN_GATE") != std::string::npos;
+      }));
+  EXPECT_EQ(goals.back().id, "RETURN_HOME_OVERHEAD");
+  geometry_msgs::Point from = current;
+  for (const auto& goal : goals) {
+    geometry_msgs::Point to;
+    to.x = goal.x;
+    to.y = goal.y;
+    to.z = goal.z;
+    EXPECT_TRUE(lineCorridorSafe(from, to, {}, {crane, tower},
+                                 config.obstacle_inflation,
+                                 config.corridor_sample_step));
+    from = to;
+  }
+  EXPECT_DOUBLE_EQ(goals.back().x, home.x);
+  EXPECT_DOUBLE_EQ(goals.back().y, home.y);
+  EXPECT_DOUBLE_EQ(goals.back().z, config.transit_height);
+}
+
+TEST(Stage3Planner, ReturnDoneRequiresHomeProximity) {
+  geometry_msgs::Point home;
+  geometry_msgs::Point landed = home;
+  landed.x = 0.8;
+  landed.y = -0.5;
+  EXPECT_TRUE(returnLandingNearHome(landed, home, 1.5));
+  landed.x = -10.68;
+  landed.y = 16.67;
+  EXPECT_FALSE(returnLandingNearHome(landed, home, 1.5));
+}
+
+TEST(Stage3Planner, ReturnEgressSkipsCloseRadialGoalAfterRebuild) {
+  RouteConfig route;
+  route.center_x = 0.0;
+  route.center_y = 0.0;
+  route.tower_collision_radius = 2.0;
+  route.minimum_height = 1.0;
+  route.maximum_height = 20.0;
+  geometry_msgs::Point current;
+  current.x = 12.0;
+  current.z = 10.0;
+  geometry_msgs::Point home;
+  home.x = 0.0;
+  home.y = -20.0;
+  home.z = 4.0;
+  CandidatePoint gate;
+  gate.x = 0.0;
+  gate.y = -12.0;
+  gate.z = 10.0;
+  ReturnEgressConfig config;
+  config.orbit_radius = 12.0;
+  config.transit_height = 10.0;
+  config.minimum_goal_separation = 0.5;
+  const auto goals =
+      buildSafeReturnEgressGoals(route, current, home, gate, {}, config);
+  ASSERT_FALSE(goals.empty());
+  EXPECT_EQ(goals.front().id.find("_RADIAL"), std::string::npos);
+}
+
+TEST(Stage3Planner, CraneOccludedSectorUsesSameSectorAtSafeOverflightHeight) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 14.0;
+  route.height = 30.0;
+  route.start_angle_rad = -67.5 * kPi / 180.0;
+  route.direction = OrbitDirection::kCounterClockwise;
+  route.minimum_height = 2.0;
+  route.maximum_height = 45.0;
+  route.tower_collision_radius = 6.41;
+
+  const std::vector<CandidateOffset> offsets = {
+      {0.0, 0.0, 0.0}, {0.0, 0.0, -1.0},
+      {0.0, 0.0, 1.0}, {0.0, 0.0, 8.0},
+  };
+  auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 8.0, offsets);
+  ASSERT_EQ(sectors.size(), 8U);
+  Sector& crane_sector = sectors[1];
+  ASSERT_EQ(crane_sector.sector_id, 1);
+
+  StaticObstacle crane;
+  crane.id = "tower_crane";
+  crane.x = 2.7535;
+  crane.y = 14.7908;
+  crane.z_min = 0.0;
+  crane.z_max = 35.0283;
+  crane.half_extent_x = 3.2732;
+  crane.half_extent_y = 19.5424;
+  crane.yaw = -0.479608;
+  CandidateFilterConfig config;
+  geometry_msgs::Point current;
+  current.x = route.center_x;
+  current.y = route.center_y - route.radius;
+  current.z = route.height;
+  for (auto& point : crane_sector.candidates) {
+    evaluateCandidate(&point, crane_sector, current, {}, {crane}, true,
+                      config);
+  }
+  EXPECT_FALSE(crane_sector.candidates[0].accepted);
+  EXPECT_EQ(crane_sector.candidates[0].rejection_reason,
+            "KNOWN_OBSTACLE_CLEARANCE");
+  EXPECT_TRUE(crane_sector.candidates[3].accepted);
+  EXPECT_DOUBLE_EQ(crane_sector.candidates[3].z, 38.0);
+  const int selected = chooseBestCandidate(crane_sector, nullptr, 2.0);
+  ASSERT_GE(selected, 0);
+  EXPECT_DOUBLE_EQ(crane_sector.candidates[selected].z, 38.0);
+  EXPECT_EQ(crane_sector.candidates[selected].sector_id, 1);
 }
 
 }  // namespace

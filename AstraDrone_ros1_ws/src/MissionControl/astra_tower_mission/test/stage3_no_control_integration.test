@@ -22,6 +22,8 @@
     <param name="entry_gate/maximum_radius" value="16.0"/>
     <param name="entry_gate/maximum_segment_length" value="6.0"/>
     <param name="recovery/recovery_height" value="7.0"/>
+    <param name="return_egress/orbit_radius" value="12.0"/>
+    <param name="return_egress/transit_height" value="7.0"/>
     <param name="failure_hold_duration" value="0.2"/>
     <param name="arrival_hold_duration" value="0.1"/>
     <param name="input_timeout" value="1.0"/>

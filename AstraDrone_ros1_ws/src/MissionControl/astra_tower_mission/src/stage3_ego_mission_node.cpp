@@ -46,6 +46,7 @@ enum class MissionState {
   kHolding,
   kRelocating,
   kRecovering,
+  kReturnEgress,
   kReturnHome,
   kFailureLanding,
   kDone,
@@ -62,6 +63,7 @@ const char* missionStateName(MissionState state) {
     case MissionState::kHolding: return "HOLDING";
     case MissionState::kRelocating: return "RELOCATING";
     case MissionState::kRecovering: return "RECOVERING";
+    case MissionState::kReturnEgress: return "RETURN_EGRESS";
     case MissionState::kReturnHome: return "RETURN_HOME";
     case MissionState::kFailureLanding: return "FAILURE_LANDING";
     case MissionState::kDone: return "DONE";
@@ -70,7 +72,7 @@ const char* missionStateName(MissionState state) {
   return "UNKNOWN";
 }
 
-enum class GoalKind { kEntryGate, kSector, kRecovery };
+enum class GoalKind { kEntryGate, kSector, kRecovery, kReturnEgress };
 
 double yawFromQuaternion(const geometry_msgs::Quaternion& q) {
   return std::atan2(2.0 * (q.w * q.z + q.x * q.y),
@@ -118,6 +120,29 @@ class Stage3EgoMissionNode {
     private_node_.param("map_timeout", map_timeout_, 0.7);
     private_node_.param("planning_timeout", planning_timeout_, 10.0);
     private_node_.param("goal_timeout", goal_timeout_, 180.0);
+    private_node_.param("return_timeout", return_timeout_, 300.0);
+    private_node_.param("landing_timeout", landing_timeout_, 90.0);
+    private_node_.param("return_egress/target_timeout",
+                        return_egress_target_timeout_, 90.0);
+    private_node_.param("return_egress/home_xy_tolerance",
+                        return_home_xy_tolerance_, 1.5);
+    private_node_.param("return_egress/orbit_radius",
+                        return_egress_config_.orbit_radius, 24.0);
+    private_node_.param("return_egress/transit_height",
+                        return_egress_config_.transit_height, 38.0);
+    double return_egress_angle_step_deg = 30.0;
+    private_node_.param("return_egress/maximum_angle_step_deg",
+                        return_egress_angle_step_deg, 30.0);
+    return_egress_config_.maximum_angle_step_rad =
+        return_egress_angle_step_deg * kPi / 180.0;
+    private_node_.param("return_egress/obstacle_inflation",
+                        return_egress_config_.obstacle_inflation, 2.0);
+    private_node_.param("return_egress/corridor_sample_step",
+                        return_egress_config_.corridor_sample_step, 0.5);
+    private_node_.param("return_egress/minimum_goal_separation",
+                        return_egress_config_.minimum_goal_separation, 0.5);
+    private_node_.param("return_egress/maximum_retries",
+                        max_return_egress_retries_, 2);
     private_node_.param("arrival_tolerance", arrival_tolerance_, 0.5);
     private_node_.param("arrival_velocity_threshold", arrival_velocity_threshold_, 0.2);
     private_node_.param("arrival_yaw_tolerance", arrival_yaw_tolerance_, 0.26);
@@ -304,6 +329,22 @@ class Stage3EgoMissionNode {
         entry_gate_config_.minimum_radius <= route_.tower_collision_radius ||
         entry_gate_config_.maximum_radius < entry_gate_config_.minimum_radius ||
         entry_gate_segment_length_ <= 0.0 ||
+        return_timeout_ <= 0.0 || landing_timeout_ <= 0.0 ||
+        return_egress_target_timeout_ <= 0.0 ||
+        return_home_xy_tolerance_ <= 0.0 ||
+        return_egress_config_.orbit_radius <=
+            route_.tower_collision_radius +
+                return_egress_config_.obstacle_inflation ||
+        return_egress_config_.transit_height < route_.minimum_height ||
+        return_egress_config_.transit_height > virtual_ceil_height_ ||
+        return_egress_config_.maximum_angle_step_rad <= 0.0 ||
+        return_egress_config_.maximum_angle_step_rad > kPi ||
+        return_egress_config_.obstacle_inflation < 0.0 ||
+        return_egress_config_.corridor_sample_step <= 0.0 ||
+        return_egress_config_.minimum_goal_separation <= 0.0 ||
+        max_return_egress_retries_ < 0 ||
+        overall_timeout_ <= return_timeout_ ||
+        overall_timeout_ <= landing_timeout_ ||
         recovery_height_ < route_.minimum_height ||
         recovery_height_ > recovery_height_max_) {
       throw std::runtime_error("invalid stage3 height or recovery envelope");
@@ -501,6 +542,9 @@ class Stage3EgoMissionNode {
   }
 
   void bridgeStateCallback(const std_msgs::String::ConstPtr& msg) {
+    if (!have_bridge_state_ || bridge_state_ != msg->data) {
+      bridge_state_entered_ = ros::Time::now();
+    }
     bridge_state_ = msg->data; have_bridge_state_ = true;
     bridge_state_received_ = ros::Time::now();
   }
@@ -869,6 +913,29 @@ class Stage3EgoMissionNode {
     return recovery_targets_.reentry;
   }
 
+  bool buildReturnEgress() {
+    if (!have_odom_ || !have_home_position_ || entry_gate_index_ < 0 ||
+        entry_gate_index_ >=
+            static_cast<int>(entry_gate_candidates_.size())) {
+      return false;
+    }
+    return_egress_goals_ = buildSafeReturnEgressGoals(
+        route_, pointOf(odom_), home_position_,
+        entry_gate_candidates_[entry_gate_index_], obstacles_,
+        return_egress_config_);
+    return_egress_index_ = 0;
+    have_sent_goal_ = false;
+    arrival_since_ = ros::Time(0);
+    if (return_egress_goals_.empty()) return false;
+    ROS_WARN("[STAGE3_TASK] safe return egress selected: %s, goals=%zu, "
+             "orbit_radius=%.2f, transit_height=%.2f",
+             return_egress_goals_.back().id.c_str(),
+             return_egress_goals_.size(),
+             return_egress_config_.orbit_radius,
+             return_egress_config_.transit_height);
+    return true;
+  }
+
   void publishGoal(const CandidatePoint& target, GoalKind kind) {
     active_target_ = target; active_goal_kind_ = kind;
     geometry_msgs::PoseStamped goal = makeGoal(target);
@@ -900,6 +967,16 @@ class Stage3EgoMissionNode {
                         speed <= arrival_velocity_threshold_ && yaw_aligned;
     (void)now;
     return stable;
+  }
+
+  bool returnEgressGoalReached() const {
+    if (!have_odom_) return false;
+    const auto& p = odom_.pose.pose.position;
+    return std::sqrt(
+               (p.x - active_target_.x) * (p.x - active_target_.x) +
+               (p.y - active_target_.y) * (p.y - active_target_.y) +
+               (p.z - active_target_.z) * (p.z - active_target_.z)) <=
+           arrival_tolerance_;
   }
 
   void transition(MissionState next, const std::string& reason) {
@@ -943,7 +1020,8 @@ class Stage3EgoMissionNode {
         state_ == MissionState::kTargetLocked ||
         state_ == MissionState::kNavigate ||
         state_ == MissionState::kRelocating ||
-        state_ == MissionState::kRecovering;
+        state_ == MissionState::kRecovering ||
+        state_ == MissionState::kReturnEgress;
     if (enable_control_ && active_mission_state &&
         have_bridge_state_ && fresh(now, bridge_state_received_, 2.0) &&
         bridge_state_ == "HOLD") {
@@ -953,6 +1031,8 @@ class Stage3EgoMissionNode {
       // ENTRY_GATE relocation / R1-R2 recovery chain.
       if (state_ == MissionState::kApproach) {
         entry_gate_failure_pending_ = true;
+      } else if (state_ == MissionState::kReturnEgress) {
+        return_egress_failure_pending_ = true;
       }
       requestHold(std::string("bridge entered HOLD during ") +
                   missionStateName(state_));
@@ -1056,6 +1136,16 @@ class Stage3EgoMissionNode {
           } else {
             requestReturnOrLand("ENTRY_GATE recovery exhausted");
           }
+        } else if (return_egress_failure_pending_) {
+          return_egress_failure_pending_ = false;
+          ++return_egress_retries_;
+          if (return_egress_retries_ <= max_return_egress_retries_ &&
+              mapFresh(now) && buildReturnEgress()) {
+            transition(MissionState::kReturnEgress,
+                       "fresh map rebuilt safe return egress after HOLD");
+          } else {
+            failTerminal("safe return egress recovery exhausted");
+          }
         } else if (failure_reason_ == astra_custom_msgs::PlannerStatus::GOAL_IN_OCCUPANCY) {
           have_sent_goal_ = false;
           transition(MissionState::kRelocating,
@@ -1083,10 +1173,68 @@ class Stage3EgoMissionNode {
       } else if (now - goal_sent_ > ros::Duration(recovery_target_timeout_)) {
         requestHold("recovery target timeout");
       }
+    } else if (state_ == MissionState::kReturnEgress) {
+      if (return_egress_index_ >= return_egress_goals_.size()) {
+        requestBridgeReturnOrLand("safe return gate reached");
+      } else if (!have_sent_goal_) {
+        publishGoal(return_egress_goals_[return_egress_index_],
+                    GoalKind::kReturnEgress);
+      } else {
+        std::string failure;
+        // Egress goals are transit points. Advance as soon as their position
+        // envelope is reached so a completed traj_server command cannot
+        // expire while the task waits for an inspection-style zero-speed hold.
+        if (returnEgressGoalReached()) {
+          ++return_egress_index_;
+          have_sent_goal_ = false;
+          arrival_since_ = ros::Time(0);
+          if (return_egress_index_ >= return_egress_goals_.size()) {
+            requestBridgeReturnOrLand("safe return gate reached");
+          }
+        } else if (plannerFailure(now, &failure)) {
+          return_egress_failure_pending_ = true;
+          requestHold("return egress planner failure: " + failure);
+        } else {
+          if (now - goal_sent_ >
+              ros::Duration(return_egress_target_timeout_)) {
+            return_egress_failure_pending_ = true;
+            requestHold("return egress target timeout");
+          }
+        }
+      }
     } else if (state_ == MissionState::kReturnHome) {
-      if (bridge_state_ == "DONE") transition(MissionState::kDone, "return and landing completed");
-      else if (bridge_state_ == "ERROR" || now - state_entered_ > ros::Duration(goal_timeout_))
+      if (bridge_state_ == "DONE") {
+        if (have_odom_ &&
+            returnLandingNearHome(pointOf(odom_), home_position_,
+                                  return_home_xy_tolerance_)) {
+          transition(MissionState::kDone,
+                     "return and home-proximate landing completed");
+        } else {
+          transition(MissionState::kError,
+                     "bridge DONE away from captured home");
+        }
+      } else if (bridge_state_ == "ERROR") {
         failTerminal("return/landing failed");
+      } else if (bridge_state_ == "HOLD") {
+        failTerminal("bridge entered HOLD during final home return");
+      } else {
+        const bool landing_active = bridge_state_ == "LANDING";
+        const double return_elapsed = (now - state_entered_).toSec();
+        const double landing_elapsed =
+            landing_active ? (now - bridge_state_entered_).toSec() : 0.0;
+        std::string failure;
+        if (!landing_active && plannerFailure(now, &failure)) {
+          failTerminal("final home return planner failure: " + failure);
+          publishTelemetry(now);
+          return;
+        }
+        if (returnOrLandingTimedOut(
+                landing_active, return_elapsed, landing_elapsed,
+                return_timeout_, landing_timeout_)) {
+          failTerminal(landing_active ? "landing completion timeout"
+                                      : "EGO return timeout");
+        }
+      }
     } else if (state_ == MissionState::kFailureLanding) {
       if (bridge_state_ == "DONE" || bridge_state_ == "ERROR")
         transition(MissionState::kError, failure_reason_ + "; terminal landing state");
@@ -1095,6 +1243,27 @@ class Stage3EgoMissionNode {
   }
 
   void requestReturnOrLand(const std::string& reason) {
+    failure_reason_ = reason;
+    if (!enable_control_) { transition(MissionState::kError, reason); return; }
+    if (have_odom_ && have_home_position_ &&
+        !returnLandingNearHome(pointOf(odom_), home_position_,
+                               return_home_xy_tolerance_)) {
+      return_egress_retries_ = 0;
+      if (buildReturnEgress()) {
+        transition(MissionState::kReturnEgress,
+                   reason + "; safe tower-exterior egress started");
+        return;
+      }
+      ROS_ERROR("[STAGE3_TASK] no statically safe return egress; landing at "
+                "current hold point instead of publishing a tower-crossing "
+                "home goal");
+      failTerminal(reason + "; no statically safe return egress");
+      return;
+    }
+    requestBridgeReturnOrLand(reason);
+  }
+
+  void requestBridgeReturnOrLand(const std::string& reason) {
     failure_reason_ = reason;
     if (!enable_control_) { transition(MissionState::kError, reason); return; }
     std_srvs::Trigger service;
@@ -1144,10 +1313,13 @@ class Stage3EgoMissionNode {
       progress_topic_, face_tower_topic_, tower_center_topic_, tracking_service_, cancel_service_, resume_service_, return_service_, land_service_;
   bool enable_control_{false};
   double loop_rate_{20.0}, input_timeout_{0.7}, map_timeout_{0.7}, planning_timeout_{10.0}, goal_timeout_{180.0};
+  double return_timeout_{300.0}, landing_timeout_{90.0};
+  double return_egress_target_timeout_{90.0}, return_home_xy_tolerance_{1.5};
   double arrival_tolerance_{0.5}, arrival_velocity_threshold_{0.2}, arrival_yaw_tolerance_{0.26}, arrival_hold_duration_{1.0};
   double tracking_error_limit_{1.2}, no_progress_window_{12.0}, no_progress_epsilon_{0.15}, emergency_stop_timeout_{6.0};
   double failure_hold_duration_{2.0}, recovery_target_timeout_{60.0}, overall_timeout_{2400.0}, report_period_{0.2};
-  int consecutive_plan_failure_limit_{3}, max_recovery_attempts_{2}, sector_count_{8}, sector_limit_{1}, layer_count_{1};
+  int consecutive_plan_failure_limit_{3}, max_recovery_attempts_{2}, max_return_egress_retries_{2},
+      sector_count_{8}, sector_limit_{1}, layer_count_{1};
   double inspection_height_{30.0}, recovery_height_max_{40.0}, virtual_ceil_height_{45.0}, transit_height_{4.0};
   double observation_radius_offset_{5.0}, observation_angle_deg_{-67.5}, approach_segment_length_{6.0};
   double sector_angle_half_width_deg_{12.0}, sector_radius_half_width_{4.0}, sector_height_half_width_{1.0};
@@ -1157,16 +1329,20 @@ class Stage3EgoMissionNode {
   RouteConfig route_;
   CandidateFilterConfig filter_config_;
   RecoveryConfig recovery_config_;
+  ReturnEgressConfig return_egress_config_;
   std::vector<CandidateOffset> offsets_;
   std::vector<double> entry_gate_angle_offsets_, entry_gate_radius_offsets_;
   EntryGateConfig entry_gate_config_;
   std::vector<StaticObstacle> obstacles_;
   std::vector<Sector> sectors_;
   std::vector<CandidatePoint> approach_goals_;
+  std::vector<CandidatePoint> return_egress_goals_;
   std::vector<CandidatePoint> entry_gate_candidates_;
   RecoveryTargets recovery_targets_;
   std::vector<geometry_msgs::Point> cloud_points_, occupancy_points_;
-  std::size_t current_sector_{0}, approach_index_{0}, recovery_step_{0}, visited_sector_count_{0};
+  std::size_t current_sector_{0}, approach_index_{0}, recovery_step_{0},
+      return_egress_index_{0}, visited_sector_count_{0};
+  int return_egress_retries_{0};
   int entry_gate_index_{-1};
   CandidatePoint active_target_;
   GoalKind active_goal_kind_{GoalKind::kEntryGate};
@@ -1177,10 +1353,12 @@ class Stage3EgoMissionNode {
   astra_custom_msgs::PlannerStatus planner_status_;
   bool have_odom_{false}, have_command_{false}, have_cloud_{false}, have_occupancy_{false}, have_planner_status_{false},
       have_bridge_state_{false}, have_sent_goal_{false};
-  bool have_home_position_{false}, entry_gate_failure_pending_{false};
+  bool have_home_position_{false}, entry_gate_failure_pending_{false},
+      return_egress_failure_pending_{false};
   geometry_msgs::Point home_position_;
   ros::Time odom_received_, command_received_, cloud_received_, occupancy_received_, planner_status_received_, bridge_state_received_;
-  ros::Time state_entered_, mission_started_, goal_sent_, arrival_since_, last_report_;
+  ros::Time state_entered_, mission_started_, goal_sent_, arrival_since_,
+      last_report_, bridge_state_entered_;
   std::uint32_t trajectory_baseline_{0};
   std::ofstream report_;
 };

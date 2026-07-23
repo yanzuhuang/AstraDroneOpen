@@ -139,6 +139,15 @@ struct RecoveryAssessment {
   double score{-1.0e9};
 };
 
+struct ReturnEgressConfig {
+  double orbit_radius{24.0};
+  double transit_height{38.0};
+  double maximum_angle_step_rad{kPi / 6.0};
+  double obstacle_inflation{2.0};
+  double corridor_sample_step{0.5};
+  double minimum_goal_separation{0.5};
+};
+
 std::vector<Sector> buildInspectionSectors(const RouteConfig& route,
                                             int sector_count,
                                             int layer_count,
@@ -203,6 +212,24 @@ RecoveryAssessment assessRecoveryTargets(
     const std::vector<StaticObstacle>& obstacles,
     double inflation,
     double sample_step);
+
+bool returnOrLandingTimedOut(bool landing_active,
+                             double return_elapsed,
+                             double landing_elapsed,
+                             double return_timeout,
+                             double landing_timeout);
+
+std::vector<CandidatePoint> buildSafeReturnEgressGoals(
+    const RouteConfig& route,
+    const geometry_msgs::Point& current,
+    const geometry_msgs::Point& home,
+    const CandidatePoint& return_gate,
+    const std::vector<StaticObstacle>& obstacles,
+    const ReturnEgressConfig& config);
+
+bool returnLandingNearHome(const geometry_msgs::Point& landed_position,
+                           const geometry_msgs::Point& home_position,
+                           double horizontal_tolerance);
 
 bool pointInObstacle(const geometry_msgs::Point& point,
                      const StaticObstacle& obstacle,
