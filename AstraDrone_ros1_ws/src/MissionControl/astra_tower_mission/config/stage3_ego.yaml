@@ -16,6 +16,10 @@ mission:
   virtual_ceil_height: 45.0
   radius: 14.0
   sector_count: 8
+  # Production policy is eight sectors.  Staged validation overrides this to
+  # one sector in the no-control/integration launch; never use that override
+  # as evidence for a complete orbit.
+  sector_limit: 8
   layer_count: 1
   start_angle_deg: -67.5
   direction: counter_clockwise
@@ -31,6 +35,25 @@ mission:
   sector_height_half_width: 1.0
   target_replacement_margin: 2.0
 
+entry_gate:
+  # Candidate offsets are relative to mission/radius and start_angle_deg.
+  # Every accepted gate is at inspection_height; no low-altitude XY gate or
+  # fixed-X/Y vertical climb is generated.
+  # Wider angular coverage is required because the crane boom crosses the
+  # original -87.5..-47.5 degree gate fan at inspection height.
+  angle_offsets_deg: [-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
+  radius_offsets_m: [2.0, 4.0, 6.0]
+  minimum_radius: 16.0
+  maximum_radius: 24.0
+  maximum_horizontal_distance: 60.0
+  minimum_clearance: 2.0
+  cloud_inflation: 0.4
+  corridor_sample_step: 0.5
+  clearance_weight: 0.1
+  distance_weight: 1.0
+  blocked_corridor_penalty: 5.0
+  maximum_segment_length: 6.0
+
 candidate:
   angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0]
   radius_offsets_m: [0.0, 2.0, 4.0]
@@ -38,23 +61,32 @@ candidate:
   minimum_clearance: 2.0
   cloud_inflation: 0.4
   corridor_sample_step: 0.5
+  blocked_corridor_penalty: 5.0
 
 # Conservative known static geometry. FAST-LIO/EGO remains the obstacle
 # authority; these regions are only hard pre-filters for task candidates.
+# Gazebo's <state> places tower_crane at (6.36257, 21.7297), yaw=-0.479608.
+# Its inch-scaled DAE local bounds are x=[-3.27311,3.27311],
+# y=[-27.363674,11.720921], z=[0,35.0282].  The OBB center below is the
+# transformed center of those asymmetric local bounds, not the model origin.
 static_obstacles:
   names: [tower_crane]
-  x: [6.36]
-  y: [21.73]
+  x: [2.7535]
+  y: [14.7908]
   z: [0.0]
-  radius: [3.0]
+  radius: [0.0]
   z_min: [0.0]
-  z_max: [45.0]
+  z_max: [35.0283]
+  half_extent_x: [3.2732]
+  half_extent_y: [19.5424]
+  yaw: [-0.479608]
 
 recovery:
   radial_step: 3.0
   tangent_step: 4.0
   maximum_radius: 24.0
-  recovery_height: 35.0
+  # Clears the crane mesh top (35.0283 m) by more than minimum_clearance.
+  recovery_height: 38.0
   direction: counter_clockwise
 
 topics:
@@ -72,6 +104,8 @@ outputs:
   current_sector: /tower_mission/current_sector
   candidate_targets: /tower_mission/candidate_targets
   progress: /tower_mission/progress
+  face_tower: /tower_mission/face_tower
+  selected_tower_center: /tower_mission/selected_tower_center
 
 services:
   tracking: /ego_mavros_bridge/enable_tracking

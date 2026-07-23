@@ -1,5 +1,6 @@
 #include "bspline_opt/uniform_bspline.h"
 #include "nav_msgs/Odometry.h"
+#include "geometry_msgs/PoseStamped.h"
 #include "ego_planner/Bspline.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "std_msgs/Empty.h"
@@ -21,6 +22,27 @@ vector<UniformBspline> traj_;
 double traj_duration_;
 ros::Time start_time_;
 int traj_id_;
+bool cancellation_gate_ = false;
+bool have_cancelled_traj_id_ = false;
+int cancelled_traj_id_ = 0;
+ros::Time post_cancel_goal_time_;
+
+void cancelCallback(const std_msgs::EmptyConstPtr &)
+{
+  cancellation_gate_ = true;
+  have_cancelled_traj_id_ = receive_traj_;
+  cancelled_traj_id_ = traj_id_;
+  post_cancel_goal_time_ = ros::Time(0);
+  receive_traj_ = false;
+  traj_.clear();
+  ROS_WARN("[Traj server]: active trajectory cancelled; PositionCommand publication stopped.");
+}
+
+void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg)
+{
+  if (cancellation_gate_)
+    post_cancel_goal_time_ = msg->header.stamp;
+}
 
 // yaw control
 double last_yaw_, last_yaw_dot_;
@@ -29,6 +51,20 @@ std::string command_frame_id_;
 
 void bsplineCallback(ego_planner::BsplineConstPtr msg)
 {
+  if (cancellation_gate_)
+  {
+    const bool old_id = have_cancelled_traj_id_ &&
+                        static_cast<int>(msg->traj_id) == cancelled_traj_id_;
+    const bool predates_goal = post_cancel_goal_time_.isZero() ||
+                               msg->start_time < post_cancel_goal_time_;
+    if (old_id || predates_goal)
+    {
+      ROS_WARN("[Traj server]: rejected pre-cancel B-spline trajectory %u.",
+               static_cast<unsigned int>(msg->traj_id));
+      return;
+    }
+    cancellation_gate_ = false;
+  }
   // parse pos traj
 
   Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
@@ -249,6 +285,8 @@ int main(int argc, char **argv)
   ros::NodeHandle nh("~");
 
   ros::Subscriber bspline_sub = node.subscribe("planning/bspline", 10, bsplineCallback);
+  ros::Subscriber cancel_sub = node.subscribe("planning/cancel", 1, cancelCallback);
+  ros::Subscriber goal_sub = node.subscribe("planning/goal", 1, goalCallback);
 
   pos_cmd_pub = node.advertise<quadrotor_msgs::PositionCommand>("/position_cmd", 50);
 

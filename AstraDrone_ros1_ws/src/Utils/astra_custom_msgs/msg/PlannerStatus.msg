@@ -1,4 +1,4 @@
-# Machine-readable status exported by the EGO adapter/supervisor.
+# Machine-readable status exported directly by the EGO outer FSM.
 std_msgs/Header header
 
 string planner_state

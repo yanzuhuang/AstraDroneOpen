@@ -32,6 +32,11 @@ struct StaticObstacle {
   double radius{0.0};
   double z_min{-1.0e9};
   double z_max{1.0e9};
+  // Positive half extents select a yaw-oriented 3-D box.  Otherwise the
+  // legacy vertical cylinder defined by radius/z_min/z_max is used.
+  double half_extent_x{0.0};
+  double half_extent_y{0.0};
+  double yaw{0.0};
 };
 
 struct CandidateOffset {
@@ -48,11 +53,33 @@ struct CandidatePoint {
   double y{0.0};
   double z{0.0};
   double yaw{0.0};
+  bool require_arrival_yaw{true};
+  bool face_tower{true};
   bool accepted{false};
+  bool straight_corridor_blocked{false};
   std::string rejection_reason;
+  std::string risk_reason;
   double clearance{0.0};
   double score{-1.0e9};
   double unknown_ratio{0.0};
+};
+
+// ENTRY_GATE is a first-class task waypoint at inspection height.  It is
+// deliberately kept outside the sector vector so sector ids and coverage
+// accounting remain the original eight-sector contract.
+struct EntryGateConfig {
+  double inspection_height{30.0};
+  double minimum_height{2.0};
+  double maximum_height{45.0};
+  double minimum_clearance{2.0};
+  double cloud_inflation{0.4};
+  double corridor_sample_step{0.5};
+  double minimum_radius{16.0};
+  double maximum_radius{24.0};
+  double maximum_horizontal_distance{60.0};
+  double clearance_weight{0.1};
+  double distance_weight{1.0};
+  double blocked_corridor_penalty{5.0};
 };
 
 struct Sector {
@@ -89,6 +116,7 @@ struct CandidateFilterConfig {
   double score_distance_weight{0.25};
   double score_continuity_weight{0.5};
   double score_unknown_weight{1.0};
+  double blocked_corridor_penalty{5.0};
 };
 
 struct RecoveryConfig {
@@ -103,6 +131,12 @@ struct RecoveryTargets {
   CandidatePoint r1;
   CandidatePoint r2;
   CandidatePoint reentry;
+};
+
+struct RecoveryAssessment {
+  bool endpoints_safe{false};
+  int blocked_corridors{0};
+  double score{-1.0e9};
 };
 
 std::vector<Sector> buildInspectionSectors(const RouteConfig& route,
@@ -126,10 +160,49 @@ int chooseBestCandidate(const Sector& sector,
                         const CandidatePoint* locked_target,
                         double replacement_margin);
 
+std::vector<CandidatePoint> buildEntryGateCandidates(
+    const RouteConfig& route,
+    const std::vector<double>& angle_offsets_deg,
+    const std::vector<double>& radius_offsets_m,
+    double inspection_height);
+
+bool evaluateEntryGateCandidate(
+    CandidatePoint* candidate,
+    const RouteConfig& route,
+    const geometry_msgs::Point& current_position,
+    const geometry_msgs::Point& home_position,
+    const std::vector<geometry_msgs::Point>& map_points,
+    const std::vector<StaticObstacle>& obstacles,
+    bool map_fresh,
+    const EntryGateConfig& config);
+
+int chooseBestEntryGateCandidate(const std::vector<CandidatePoint>& candidates);
+
+std::vector<CandidatePoint> buildRollingApproachGoals(
+    const geometry_msgs::Point& start,
+    const CandidatePoint& entry_gate,
+    double maximum_segment_length);
+
+void rotateSectorsToNearest(const geometry_msgs::Point& current,
+                            std::vector<Sector>* sectors);
+
+int nearestSectorIndexWithAcceptedCandidate(
+    const geometry_msgs::Point& current,
+    const std::vector<Sector>& sectors);
+
 RecoveryTargets makeRecoveryTargets(const RouteConfig& route,
                                     const geometry_msgs::Point& current,
                                     const Sector& sector,
-                                    const RecoveryConfig& config);
+                                    const RecoveryConfig& config,
+                                    const CandidatePoint* locked_target = nullptr);
+
+RecoveryAssessment assessRecoveryTargets(
+    const geometry_msgs::Point& current,
+    const RecoveryTargets& targets,
+    const std::vector<geometry_msgs::Point>& cloud_points,
+    const std::vector<StaticObstacle>& obstacles,
+    double inflation,
+    double sample_step);
 
 bool pointInObstacle(const geometry_msgs::Point& point,
                      const StaticObstacle& obstacle,

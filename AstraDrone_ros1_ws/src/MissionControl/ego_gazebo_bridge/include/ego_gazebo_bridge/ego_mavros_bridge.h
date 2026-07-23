@@ -3,6 +3,7 @@
 
 #include "ego_gazebo_bridge/command_utils.h"
 #include "ego_gazebo_bridge/control_authority.h"
+#include "ego_gazebo_bridge/recovery_control.h"
 
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -16,6 +17,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Float64.h>
 #include <std_srvs/SetBool.h>
@@ -80,6 +82,7 @@ struct BridgeConfig {
   double tracking_error_duration{1.0};
   double alignment_position_tolerance{0.25};
   double alignment_yaw_tolerance{0.2617993878};
+  double alignment_yaw_error_duration{1.0};
   double return_tolerance{0.25};
   double return_hold_duration{1.0};
   double tower_camera_yaw_offset{0.0};
@@ -99,6 +102,7 @@ struct BridgeConfig {
   std::string set_mode_service{"/mavros/set_mode"};
   std::string input_goal_topic{"/move_base_simple/goal"};
   std::string planner_goal_topic{"/planning/goal"};
+  std::string planning_cancel_topic{"/planning/cancel"};
   std::string tower_center_topic{"/tower_mission/selected_tower_center"};
   std::string tower_yaw_mode_topic{"/tower_mission/face_tower"};
   std::vector<std::string> position_control_topics{
@@ -160,9 +164,12 @@ class EgoMavrosBridge {
                        const ros::Time& now);
   void publishTrajectorySetpoint(const ros::Time& now);
   void publishHold(const ros::Time& now);
+  void latchHoldAtCurrentPose();
 
   bool baseInputsFresh(const ros::Time& now, std::string* reason) const;
   bool commandFresh(const ros::Time& now) const;
+  bool plannerAlignmentErrors(double* position_error, double* yaw_error,
+                              std::string* reason) const;
   bool plannerAlignmentValid(std::string* reason) const;
   bool flightPreflightValid(const ros::Time& now, std::string* reason);
   bool fullPreflightValid(const ros::Time& now, std::string* reason);
@@ -206,6 +213,7 @@ class EgoMavrosBridge {
   ros::Publisher state_publisher_;
   ros::Publisher tracking_error_publisher_;
   ros::Publisher goal_publisher_;
+  ros::Publisher planning_cancel_publisher_;
   ros::ServiceClient arming_client_;
   ros::ServiceClient set_mode_client_;
   ros::ServiceServer tracking_service_;
@@ -243,9 +251,12 @@ class EgoMavrosBridge {
   bool return_inside_tolerance_{false};
   bool takeoff_inside_tolerance_{false};
   bool tracking_error_active_{false};
+  bool alignment_yaw_error_active_{false};
   bool have_tower_center_{false};
   bool tower_yaw_mode_{false};
   bool have_effective_yaw_{false};
+  bool supervised_hold_{false};
+  TrajectoryGate trajectory_gate_;
 
   ros::Time last_fcu_state_time_;
   ros::Time last_extended_state_time_;
@@ -264,6 +275,7 @@ class EgoMavrosBridge {
   ros::Time return_inside_since_;
   ros::Time takeoff_inside_since_;
   ros::Time tracking_error_since_;
+  ros::Time alignment_yaw_error_since_;
   ros::Time last_effective_yaw_time_;
   double maximum_tracking_error_{0.0};
   double effective_yaw_{0.0};

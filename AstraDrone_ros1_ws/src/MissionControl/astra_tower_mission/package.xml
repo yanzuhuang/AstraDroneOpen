@@ -16,6 +16,7 @@
   <depend>offboard</depend>
   <depend>quadrotor_msgs</depend>
   <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>tf2</depend>
@@ -25,6 +26,8 @@
   <depend>xmlrpcpp</depend>
 
   <exec_depend>rviz</exec_depend>
+  <test_depend>rostest</test_depend>
+  <test_depend>rospy</test_depend>
 
   <export/>
 </package>

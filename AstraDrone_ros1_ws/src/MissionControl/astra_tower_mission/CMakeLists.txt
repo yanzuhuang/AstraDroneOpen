@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   offboard
   quadrotor_msgs
   roscpp
+  sensor_msgs
   std_msgs
   std_srvs
   tf2
@@ -31,6 +32,7 @@ catkin_package(
     offboard
     quadrotor_msgs
     roscpp
+    sensor_msgs
     std_msgs
     std_srvs
     tf2
@@ -89,9 +91,13 @@ add_executable(planner_status_adapter_node src/planner_status_adapter_node.cpp)
 target_link_libraries(planner_status_adapter_node ${catkin_LIBRARIES})
 add_dependencies(planner_status_adapter_node ${catkin_EXPORTED_TARGETS})
 
+add_executable(occupancy_stamp_adapter_node src/occupancy_stamp_adapter_node.cpp)
+target_link_libraries(occupancy_stamp_adapter_node ${catkin_LIBRARIES})
+add_dependencies(occupancy_stamp_adapter_node ${catkin_EXPORTED_TARGETS})
+
 install(TARGETS tower_route motion_limiter ego_task_utils stage3_planner
   tower_mission_node stage2_ego_mission_node stage3_ego_mission_node
-  planner_status_adapter_node
+  planner_status_adapter_node occupancy_stamp_adapter_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -104,6 +110,7 @@ install(DIRECTORY config launch rviz
 )
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
   catkin_add_gtest(tower_route_test test/tower_route_test.cpp)
   if(TARGET tower_route_test)
     target_link_libraries(tower_route_test
@@ -129,4 +136,6 @@ if(CATKIN_ENABLE_TESTING)
       ${catkin_LIBRARIES}
     )
   endif()
+
+  add_rostest(test/stage3_no_control_integration.test)
 endif()

@@ -51,6 +51,7 @@ tracking_error_duration: 1.0
 # FAST-LIO odometry and MAVROS local pose must describe the same vehicle pose.
 alignment_position_tolerance: 0.25
 alignment_yaw_tolerance: 0.2617993878  # 15 degrees
+alignment_yaw_error_duration: 1.0
 
 return_tolerance: 0.25
 return_hold_duration: 1.0

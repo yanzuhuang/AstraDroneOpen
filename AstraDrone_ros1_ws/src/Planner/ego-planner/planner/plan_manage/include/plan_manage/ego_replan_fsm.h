@@ -4,11 +4,13 @@
 #include <Eigen/Eigen>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
 #include <ros/ros.h>
 #include <std_msgs/Empty.h>
+#include <astra_custom_msgs/PlannerStatus.h>
 #include <vector>
 #include <visualization_msgs/Marker.h>
 
@@ -17,6 +19,7 @@
 #include <ego_planner/Bspline.h>
 #include <ego_planner/DataDisp.h>
 #include <plan_manage/planner_manager.h>
+#include <plan_manage/planning_status_tracker.h>
 #include <traj_utils/planning_visualization.h>
 
 using std::vector;
@@ -77,9 +80,15 @@ namespace ego_planner
 
     /* ROS utils */
     ros::NodeHandle node_;
-    ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_;
-    ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_;
+    ros::Timer exec_timer_, safety_timer_, status_timer_;
+    ros::Subscriber waypoint_sub_, odom_sub_, cancel_sub_;
+    ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, status_pub_;
+    std::string status_topic_, cancel_topic_, status_frame_id_;
+    std::string target_id_;
+    std::uint32_t target_sequence_{0};
+    PlanningStatusTracker status_tracker_;
+    ros::Time emergency_since_;
+    ros::Time cancel_time_;
 
     /* helper functions */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
@@ -99,6 +108,10 @@ namespace ego_planner
     void checkCollisionCallback(const ros::TimerEvent &e);
     void waypointCallback(const nav_msgs::PathConstPtr &msg);
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
+    void cancelCallback(const std_msgs::EmptyConstPtr &msg);
+    void statusCallback(const ros::TimerEvent &e);
+    void recordPlanningResult(bool success, const std::string &failure_reason);
+    const char *stateName() const;
 
     bool checkCollision();
 

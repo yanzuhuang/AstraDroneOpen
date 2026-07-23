@@ -24,6 +24,9 @@ namespace ego_planner
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
     nh.param("fsm/manual_target_height", manual_target_height_, 1.0);
     nh.param("fsm/use_goal_height", use_goal_height_, false);
+    nh.param<std::string>("fsm/status_topic", status_topic_, "/planner/status");
+    nh.param<std::string>("fsm/cancel_topic", cancel_topic_, "/planning/cancel");
+    nh.param<std::string>("fsm/status_frame_id", status_frame_id_, "camera_init");
 
     if (target_type_ != TARGET_TYPE::MANUAL_TARGET &&
         target_type_ != TARGET_TYPE::PRESET_TARGET)
@@ -77,11 +80,14 @@ namespace ego_planner
     /* callback */
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::checkCollisionCallback, this);
+    status_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::statusCallback, this);
 
     odom_sub_ = nh.subscribe("/odom_world", 1, &EGOReplanFSM::odometryCallback, this);
+    cancel_sub_ = nh.subscribe(cancel_topic_, 1, &EGOReplanFSM::cancelCallback, this);
 
     bspline_pub_ = nh.advertise<ego_planner::Bspline>("/planning/bspline", 10);
     data_disp_pub_ = nh.advertise<ego_planner::DataDisp>("/planning/data_display", 100);
+    status_pub_ = nh.advertise<astra_custom_msgs::PlannerStatus>(status_topic_, 10, true);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
       waypoint_sub_ = nh.subscribe("/waypoint_generator/waypoints", 1, &EGOReplanFSM::waypointCallback, this);
@@ -107,6 +113,7 @@ namespace ego_planner
     }
     end_pt_ = wps.back();
     bool success = planner_manager_->planGlobalTrajWaypoints(odom_pos_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), wps, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    recordPlanningResult(success, astra_custom_msgs::PlannerStatus::NO_FEASIBLE_TRAJECTORY);
 
     for (size_t i = 0; i < (size_t)waypoint_num_; i++)
     {
@@ -149,6 +156,12 @@ namespace ego_planner
 
   void EGOReplanFSM::waypointCallback(const nav_msgs::PathConstPtr &msg)
   {
+    if (!cancel_time_.isZero() &&
+        (msg->header.stamp.isZero() || msg->header.stamp <= cancel_time_))
+    {
+      ROS_WARN("Ignoring waypoint generated before the latest trajectory cancellation.");
+      return;
+    }
     if (!have_odom_)
     {
       ROS_WARN("Ignoring waypoint until valid odometry is available.");
@@ -174,12 +187,15 @@ namespace ego_planner
     }
 
     cout << "Triggered!" << endl;
+    target_id_ = "goal_" + std::to_string(++target_sequence_);
+    status_tracker_.reset(astra_custom_msgs::PlannerStatus::NONE);
     trigger_ = true;
     init_pt_ = odom_pos_;
 
     bool success = false;
     end_pt_ << goal.x, goal.y, target_height;
     success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    recordPlanningResult(success, astra_custom_msgs::PlannerStatus::NO_FEASIBLE_TRAJECTORY);
 
     visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
 
@@ -247,6 +263,67 @@ namespace ego_planner
     have_odom_ = true;
   }
 
+  const char *EGOReplanFSM::stateName() const
+  {
+    static const char *names[] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ",
+                                  "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP"};
+    return names[static_cast<int>(exec_state_)];
+  }
+
+  void EGOReplanFSM::recordPlanningResult(bool success,
+                                          const std::string &failure_reason)
+  {
+    status_tracker_.recordAttempt(
+        success, failure_reason,
+        static_cast<std::uint32_t>(
+            std::max(0, planner_manager_->local_data_.traj_id_)));
+  }
+
+  void EGOReplanFSM::cancelCallback(const std_msgs::EmptyConstPtr &)
+  {
+    cancel_time_ = ros::Time::now();
+    have_target_ = false;
+    have_new_target_ = false;
+    flag_escape_emergency_ = false;
+    status_tracker_.reset(astra_custom_msgs::PlannerStatus::NONE);
+    emergency_since_ = ros::Time(0);
+    changeFSMExecState(WAIT_TARGET, "CANCEL");
+    ROS_WARN("EGO FSM trajectory cancelled; waiting for a new target.");
+  }
+
+  void EGOReplanFSM::statusCallback(const ros::TimerEvent &)
+  {
+    const ros::Time now = ros::Time::now();
+    astra_custom_msgs::PlannerStatus status;
+    status.header.stamp = now;
+    status.header.frame_id = status_frame_id_;
+    status.planner_state = stateName();
+    status.target_id = target_id_;
+    status.trajectory_id = status_tracker_.trajectoryId();
+    status.last_plan_success = status_tracker_.lastSuccess();
+    status.consecutive_plan_failures = status_tracker_.consecutiveFailures();
+    const bool have_map = planner_manager_ != nullptr &&
+                          planner_manager_->grid_map_ != nullptr;
+    status.goal_in_collision = have_map && have_target_ &&
+        planner_manager_->grid_map_->getInflateOccupancy(end_pt_);
+    status.current_position_in_collision = have_map && have_odom_ &&
+        planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
+    status.emergency_stop_active = exec_state_ == EMERGENCY_STOP;
+    status.emergency_stop_duration = status.emergency_stop_active &&
+        !emergency_since_.isZero()
+        ? static_cast<float>((now - emergency_since_).toSec())
+        : 0.0F;
+    status.failure_reason = status_tracker_.failureReason().empty()
+                                ? astra_custom_msgs::PlannerStatus::NONE
+                                : status_tracker_.failureReason();
+    if (status.current_position_in_collision)
+      status.failure_reason = astra_custom_msgs::PlannerStatus::CURRENT_POSITION_IN_OCCUPANCY;
+    else if (status.goal_in_collision)
+      status.failure_reason = astra_custom_msgs::PlannerStatus::GOAL_IN_OCCUPANCY;
+    status.status_timestamp = now;
+    status_pub_.publish(status);
+  }
+
   void EGOReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call)
   {
 
@@ -258,6 +335,10 @@ namespace ego_planner
     static string state_str[7] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP"};
     int pre_s = int(exec_state_);
     exec_state_ = new_state;
+    if (new_state == EMERGENCY_STOP && emergency_since_.isZero())
+      emergency_since_ = ros::Time::now();
+    else if (new_state != EMERGENCY_STOP)
+      emergency_since_ = ros::Time(0);
     cout << "[" + pos_call + "]: from " + state_str[pre_s] + " to " + state_str[int(new_state)] << endl;
   }
 
@@ -478,6 +559,8 @@ namespace ego_planner
           if (t - t_cur < emergency_time_) // 0.8s of emergency time
           {
             ROS_WARN("Suddenly discovered obstacles. emergency stop! time=%f", t - t_cur);
+            status_tracker_.setEventReason(
+                astra_custom_msgs::PlannerStatus::REPLAN_FAILED);
             changeFSMExecState(EMERGENCY_STOP, "SAFETY");
           }
           else
@@ -500,6 +583,12 @@ namespace ego_planner
     bool plan_success =
         planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_, (have_new_target_ || flag_use_poly_init), flag_randomPolyTraj);
     have_new_target_ = false;
+
+    recordPlanningResult(
+        plan_success,
+        exec_state_ == GEN_NEW_TRAJ
+            ? astra_custom_msgs::PlannerStatus::NO_FEASIBLE_TRAJECTORY
+            : astra_custom_msgs::PlannerStatus::REPLAN_FAILED);
 
     cout << "final_plan_success=" << plan_success << endl;
 

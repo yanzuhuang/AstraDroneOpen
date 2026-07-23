@@ -51,6 +51,7 @@
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>roscpp</build_depend>
   <build_depend>std_msgs</build_depend>
+  <build_depend>astra_custom_msgs</build_depend>
   <build_depend>message_runtime</build_depend>
   
   <build_depend>plan_env</build_depend>
@@ -60,9 +61,11 @@
 
   <build_export_depend>roscpp</build_export_depend>
   <build_export_depend>std_msgs</build_export_depend>
+  <build_export_depend>astra_custom_msgs</build_export_depend>
 
   <exec_depend>roscpp</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>astra_custom_msgs</exec_depend>
   <exec_depend>message_runtime</exec_depend>
 
   <exec_depend>plan_env</exec_depend>

@@ -10,6 +10,7 @@ find_package(Eigen3 REQUIRED)
 find_package(PCL 1.7 REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
+  astra_custom_msgs
   roscpp
   std_msgs
   geometry_msgs
@@ -40,7 +41,7 @@ generate_messages(
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES ego_planner
- CATKIN_DEPENDS plan_env path_searching bspline_opt traj_utils message_runtime
+ CATKIN_DEPENDS astra_custom_msgs plan_env path_searching bspline_opt traj_utils message_runtime
 #  DEPENDS system_lib
 )
 
@@ -61,16 +62,20 @@ add_executable(ego_planner_node
 target_link_libraries(ego_planner_node 
   ${catkin_LIBRARIES}
   )
-add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(traj_server src/traj_server.cpp)
 target_link_libraries(traj_server ${catkin_LIBRARIES})
-add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
+add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(goal_height_test test/goal_height_test.cpp)
   if(TARGET goal_height_test)
     target_link_libraries(goal_height_test ${catkin_LIBRARIES})
   endif()
+  catkin_add_gtest(planning_status_tracker_test
+    test/planning_status_tracker_test.cpp)
+  if(TARGET planning_status_tracker_test)
+    target_link_libraries(planning_status_tracker_test ${catkin_LIBRARIES})
+  endif()
 endif()
-

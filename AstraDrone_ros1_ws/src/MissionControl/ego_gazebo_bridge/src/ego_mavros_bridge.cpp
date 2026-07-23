@@ -223,6 +223,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("alignment_yaw_tolerance",
                              config_.alignment_yaw_tolerance,
                              config_.alignment_yaw_tolerance);
+  private_node_handle_.param("alignment_yaw_error_duration",
+                             config_.alignment_yaw_error_duration,
+                             config_.alignment_yaw_error_duration);
   private_node_handle_.param("return_tolerance", config_.return_tolerance,
                              config_.return_tolerance);
   private_node_handle_.param("return_hold_duration",
@@ -275,6 +278,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("planner_goal_topic",
                              config_.planner_goal_topic,
                              config_.planner_goal_topic);
+  private_node_handle_.param("planning_cancel_topic",
+                             config_.planning_cancel_topic,
+                             config_.planning_cancel_topic);
   private_node_handle_.param("tower_center_topic",
                              config_.tower_center_topic,
                              config_.tower_center_topic);
@@ -316,6 +322,7 @@ bool EgoMavrosBridge::validateConfig() const {
       config_.tracking_error_duration > 0.0 &&
       config_.alignment_position_tolerance > 0.0 &&
       config_.alignment_yaw_tolerance > 0.0 &&
+      config_.alignment_yaw_error_duration > 0.0 &&
       config_.return_tolerance > 0.0 &&
       config_.return_hold_duration >= 0.0 &&
       std::isfinite(config_.tower_camera_yaw_offset) &&
@@ -338,6 +345,7 @@ bool EgoMavrosBridge::validateConfig() const {
       !config_.set_mode_service.empty() &&
       !config_.input_goal_topic.empty() &&
       !config_.planner_goal_topic.empty() &&
+      !config_.planning_cancel_topic.empty() &&
       config_.input_goal_topic != config_.planner_goal_topic &&
       (!config_.tower_yaw_override_enabled ||
        (!config_.tower_center_topic.empty() &&
@@ -411,6 +419,8 @@ void EgoMavrosBridge::setupRosInterfaces() {
           "tracking_error", 10);
   goal_publisher_ = node_handle_.advertise<geometry_msgs::PoseStamped>(
       config_.planner_goal_topic, 1, false);
+  planning_cancel_publisher_ = node_handle_.advertise<std_msgs::Empty>(
+      config_.planning_cancel_topic, 1, false);
 
   arming_client_ = node_handle_.serviceClient<mavros_msgs::CommandBool>(
       config_.arming_service);
@@ -554,13 +564,16 @@ void EgoMavrosBridge::towerYawModeCallback(
     return;
   }
   tower_yaw_mode_ = message->data;
+  // The desired yaw policy can change discontinuously. Seed the next limiter
+  // step from the measured vehicle yaw, never from the new policy target.
+  have_effective_yaw_ = false;
+  last_effective_yaw_time_ = ros::Time(0);
   ROS_INFO("[BRIDGE] Yaw policy changed to %s.",
            tower_yaw_mode_ ? "FACE_SELECTED_TOWER" : "VELOCITY_FORWARD");
 }
 
 void EgoMavrosBridge::commandCallback(
     const quadrotor_msgs::PositionCommand::ConstPtr& message) {
-  have_planner_target_ = false;
   if (message->trajectory_flag !=
       quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY) {
     ROS_WARN_THROTTLE(
@@ -601,6 +614,19 @@ void EgoMavrosBridge::commandCallback(
         command_age, config_.command_timeout, now.toSec(),
         message->header.stamp.toSec());
     return;
+  }
+  if (trajectory_gate_.active()) {
+    if (!trajectory_gate_.allows(message->trajectory_id,
+                                 message->header.stamp,
+                                 have_valid_goal_)) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[BRIDGE] Cancelled/old trajectory %u ignored while waiting for a new goal generation.",
+          static_cast<unsigned int>(message->trajectory_id));
+      return;
+    }
+    ROS_INFO("[BRIDGE] New post-cancel trajectory %u accepted.",
+             static_cast<unsigned int>(message->trajectory_id));
   }
 
   quadrotor_msgs::PositionCommand effective_command = *message;
@@ -646,22 +672,28 @@ void EgoMavrosBridge::commandCallback(
     }
   }
 
-  double next_effective_yaw = effective_command.yaw;
-  double next_effective_yaw_rate = effective_command.yaw_dot;
-  if (have_effective_yaw_ && !last_effective_yaw_time_.isZero()) {
-    const double yaw_dt = (now - last_effective_yaw_time_).toSec();
-    if (yaw_dt > 0.0 && yaw_dt <= config_.command_timeout) {
-      const double desired_change =
-          angularDistance(effective_yaw_, effective_command.yaw);
-      const double maximum_change = config_.max_yaw_rate * yaw_dt;
-      const double limited_change =
-          std::max(-maximum_change,
-                   std::min(maximum_change, desired_change));
-      next_effective_yaw = std::atan2(
-          std::sin(effective_yaw_ + limited_change),
-          std::cos(effective_yaw_ + limited_change));
-      next_effective_yaw_rate = limited_change / yaw_dt;
-    }
+  const bool yaw_history_fresh =
+      have_effective_yaw_ && !last_effective_yaw_time_.isZero() &&
+      now > last_effective_yaw_time_ &&
+      now - last_effective_yaw_time_ <=
+          ros::Duration(config_.command_timeout);
+  const double yaw_reference =
+      yaw_history_fresh
+          ? effective_yaw_
+          : (have_mavros_pose_
+                 ? yawFromQuaternion(mavros_pose_.pose.orientation)
+                 : effective_command.yaw);
+  const double yaw_dt =
+      yaw_history_fresh
+          ? (now - last_effective_yaw_time_).toSec()
+          : 1.0 / config_.publish_rate;
+  double next_effective_yaw = yaw_reference;
+  double next_effective_yaw_rate = 0.0;
+  if (!limitYawCommand(yaw_reference, effective_command.yaw,
+                       config_.max_yaw_rate, yaw_dt,
+                       &next_effective_yaw, &next_effective_yaw_rate)) {
+    ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Yaw rate limiter rejected invalid input.");
+    return;
   }
   effective_command.yaw = next_effective_yaw;
   effective_command.yaw_dot = next_effective_yaw_rate;
@@ -719,6 +751,7 @@ void EgoMavrosBridge::commandCallback(
   effective_yaw_ = effective_command.yaw;
   have_effective_yaw_ = true;
   last_effective_yaw_time_ = now;
+  trajectory_gate_.accept(message->trajectory_id);
   debug_setpoint_publisher_.publish(planner_target_mavros_);
 
   if (config_.auto_track_on_command &&
@@ -790,6 +823,7 @@ void EgoMavrosBridge::goalCallback(
   }
   validated_goal_mavros_ = mavros_goal;
   have_valid_goal_ = true;
+  trajectory_gate_.noteGoal(now);
   planning_goal.header.stamp = now;
   goal_publisher_.publish(planning_goal);
   ROS_INFO(
@@ -818,11 +852,17 @@ bool EgoMavrosBridge::trackingService(
   response.success = true;
   response.message = request.data ? "tracking requested" : "tracking disabled";
   if (!request.data && (state_ == BridgeState::kTrackEgo ||
-                        state_ == BridgeState::kHoverReady)) {
+                        state_ == BridgeState::kHoverReady ||
+                        state_ == BridgeState::kHold)) {
+    supervised_hold_ = true;
     return_in_progress_ = false;
-    hold_pose_ = have_mavros_pose_ ? mavros_pose_ : output_setpoint_;
-    transitionTo(BridgeState::kHold,
-                 "tracking disabled; latched safety HOLD");
+    latchHoldAtCurrentPose();
+    if (state_ != BridgeState::kHold) {
+      transitionTo(BridgeState::kHold,
+                   "tracking disabled; latched safety HOLD");
+    } else {
+      publishState();
+    }
   }
   return true;
 }
@@ -844,7 +884,9 @@ bool EgoMavrosBridge::cancelCurrentTrajectoryService(
   have_planner_target_ = false;
   tracking_requested_ = false;
   return_in_progress_ = false;
-  hold_pose_ = have_mavros_pose_ ? mavros_pose_ : output_setpoint_;
+  supervised_hold_ = true;
+  trajectory_gate_.cancel();
+  planning_cancel_publisher_.publish(std_msgs::Empty());
   startHold("current EGO trajectory cancelled by mission supervisor");
   response.success = true;
   response.message = "trajectory invalidated and HOLD requested";
@@ -864,6 +906,9 @@ bool EgoMavrosBridge::resumeEgoService(
     return true;
   }
   tracking_requested_ = true;
+  // A mission-supervised recovery HOLD stays latched until the supervisor
+  // explicitly requests return_home or land.  Resuming EGO is not permission
+  // to turn an alignment/command failure into an automatic landing.
   if (state_ == BridgeState::kHold) {
     // Resume only re-opens HOVER_READY. TRACK_EGO still requires a fresh,
     // bounded PositionCommand and full preflight in the timer state machine;
@@ -912,6 +957,7 @@ bool EgoMavrosBridge::landService(std_srvs::Trigger::Request&,
     return true;
   }
   tower_yaw_mode_ = false;
+  supervised_hold_ = false;
   land_requested_ = true;
   response.success = true;
   response.message = "AUTO.LAND requested";
@@ -939,6 +985,7 @@ bool EgoMavrosBridge::returnHomeService(
     response.message = reason;
     return true;
   }
+  supervised_hold_ = false;
   if (state_ == BridgeState::kHold) {
     transitionTo(BridgeState::kHoverReady,
                  "return-home request released safety HOLD; preflight remains enforced");
@@ -993,7 +1040,7 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
   }
 
   if (land_requested_ && state_ != BridgeState::kLanding) {
-    hold_pose_ = have_mavros_pose_ ? mavros_pose_ : output_setpoint_;
+    latchHoldAtCurrentPose();
     transitionTo(BridgeState::kLanding, "landing requested");
   }
 
@@ -1159,9 +1206,42 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
         startHold("planner command timeout");
         break;
       }
-      if (!plannerAlignmentValid(&reason)) {
+      double alignment_position_error = 0.0;
+      double alignment_yaw_error = 0.0;
+      if (!plannerAlignmentErrors(&alignment_position_error,
+                                  &alignment_yaw_error, &reason)) {
         startHold("planner/MAVROS alignment failure: " + reason);
         break;
+      }
+      if (alignment_position_error >
+          config_.alignment_position_tolerance) {
+        std::ostringstream stream;
+        stream << "planner/MAVROS alignment failure: alignment error position="
+               << alignment_position_error << " m, yaw="
+               << alignment_yaw_error << " rad";
+        startHold(stream.str());
+        break;
+      }
+      if (alignment_yaw_error > config_.alignment_yaw_tolerance) {
+        if (!alignment_yaw_error_active_) {
+          alignment_yaw_error_active_ = true;
+          alignment_yaw_error_since_ = now;
+          ROS_WARN("[BRIDGE] Transient planner/MAVROS yaw mismatch: %.6f rad; "
+                   "waiting %.2f s before HOLD.",
+                   alignment_yaw_error,
+                   config_.alignment_yaw_error_duration);
+        } else if (now - alignment_yaw_error_since_ >=
+                   ros::Duration(config_.alignment_yaw_error_duration)) {
+          std::ostringstream stream;
+          stream << "planner/MAVROS alignment failure: persistent yaw error="
+                 << alignment_yaw_error << " rad for "
+                 << (now - alignment_yaw_error_since_).toSec() << " s";
+          startHold(stream.str());
+          break;
+        }
+      } else {
+        alignment_yaw_error_active_ = false;
+        alignment_yaw_error_since_ = ros::Time(0);
       }
       if (fcu_state_.mode != "OFFBOARD") {
         requestMode("OFFBOARD", now);
@@ -1204,14 +1284,20 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
       // HOLD is a latched safety state. A transiently fresh sample must not
       // silently resume a failed trajectory; the mission supervisor requests
       // landing, and the bridge independently lands after the finite timeout.
-      if (now - state_entered_time_ >=
-                 ros::Duration(config_.land_after_loss)) {
+      if (shouldAutoLandFromHold(
+              supervised_hold_, (now - state_entered_time_).toSec(),
+              config_.land_after_loss)) {
         land_requested_ = true;
         transitionTo(BridgeState::kLanding,
                      "hold timeout: " + hold_reason_);
       } else if (fcu_state_.connected && fcu_state_.armed &&
                  fcu_state_.mode != "OFFBOARD") {
         requestMode("OFFBOARD", now);
+      }
+      if (supervised_hold_) {
+        ROS_INFO_THROTTLE(
+            2.0,
+            "[BRIDGE] Mission-supervised recovery HOLD remains latched; automatic loss landing is suppressed.");
       }
       break;
     }
@@ -1263,6 +1349,14 @@ void EgoMavrosBridge::transitionTo(BridgeState next_state,
   if (next_state == BridgeState::kTrackEgo) {
     tracking_error_active_ = false;
     tracking_error_since_ = ros::Time(0);
+    alignment_yaw_error_active_ = false;
+    alignment_yaw_error_since_ = ros::Time(0);
+  }
+  if (next_state == BridgeState::kHoverReady) {
+    // A new trajectory or yaw policy must always start from the measured
+    // vehicle heading. This also isolates cancelled trajectory generations.
+    have_effective_yaw_ = false;
+    last_effective_yaw_time_ = ros::Time(0);
   }
   if (next_state == BridgeState::kDone || next_state == BridgeState::kError) {
     ROS_WARN("[BRIDGE] Terminal maximum tracking error: %.3f m",
@@ -1321,7 +1415,7 @@ void EgoMavrosBridge::publishTrajectorySetpoint(const ros::Time& now) {
 void EgoMavrosBridge::publishHold(const ros::Time& now) {
   if (!isFinitePose(hold_pose_)) {
     if (have_mavros_pose_ && isFinitePose(mavros_pose_)) {
-      hold_pose_ = mavros_pose_;
+      latchHoldAtCurrentPose();
     } else {
       ROS_ERROR_THROTTLE(
           1.0, "[BRIDGE] Cannot publish HOLD without a valid vehicle pose.");
@@ -1329,6 +1423,17 @@ void EgoMavrosBridge::publishHold(const ros::Time& now) {
     }
   }
   publishSetpoint(hold_pose_, now);
+}
+
+void EgoMavrosBridge::latchHoldAtCurrentPose() {
+  const geometry_msgs::PoseStamped pose =
+      have_mavros_pose_ ? mavros_pose_ : output_setpoint_;
+  const HoldSetpointLatch latch = makeHoldSetpointLatch(pose);
+  hold_pose_ = latch.hold_pose;
+  hold_pose_.header.frame_id = config_.mavros_frame;
+  output_setpoint_ = latch.output_setpoint;
+  output_setpoint_.header.frame_id = config_.mavros_frame;
+  have_output_setpoint_ = latch.have_output_setpoint;
 }
 
 bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
@@ -1379,7 +1484,13 @@ bool EgoMavrosBridge::commandFresh(const ros::Time& now) const {
                            config_.timestamp_future_tolerance);
 }
 
-bool EgoMavrosBridge::plannerAlignmentValid(std::string* reason) const {
+bool EgoMavrosBridge::plannerAlignmentErrors(
+    double* position_error, double* yaw_error,
+    std::string* reason) const {
+  if (position_error == nullptr || yaw_error == nullptr ||
+      reason == nullptr) {
+    return false;
+  }
   if (!have_planner_odom_ || !have_mavros_pose_) {
     *reason = "planner or MAVROS pose is unavailable";
     return false;
@@ -1391,11 +1502,20 @@ bool EgoMavrosBridge::plannerAlignmentValid(std::string* reason) const {
     return false;
   }
 
-  const double position_error =
-      positionDistance(planner_pose_mavros, mavros_pose_);
-  const double yaw_error = std::abs(angularDistance(
+  *position_error = positionDistance(planner_pose_mavros, mavros_pose_);
+  *yaw_error = std::abs(angularDistance(
       yawFromQuaternion(planner_pose_mavros.pose.orientation),
       yawFromQuaternion(mavros_pose_.pose.orientation)));
+  reason->clear();
+  return true;
+}
+
+bool EgoMavrosBridge::plannerAlignmentValid(std::string* reason) const {
+  double position_error = 0.0;
+  double yaw_error = 0.0;
+  if (!plannerAlignmentErrors(&position_error, &yaw_error, reason)) {
+    return false;
+  }
   if (position_error > config_.alignment_position_tolerance ||
       yaw_error > config_.alignment_yaw_tolerance) {
     std::ostringstream stream;
@@ -1706,8 +1826,7 @@ void EgoMavrosBridge::startHold(const std::string& reason) {
       state_ == BridgeState::kError) {
     return;
   }
-  hold_pose_ = have_mavros_pose_ ? mavros_pose_ : output_setpoint_;
-  hold_pose_.header.frame_id = config_.mavros_frame;
+  latchHoldAtCurrentPose();
   hold_reason_ = reason;
   transitionTo(BridgeState::kHold, reason);
 }
@@ -1732,6 +1851,13 @@ bool EgoMavrosBridge::publishReturnGoal(std::string* reason) {
     return false;
   }
   planning_goal.header.stamp = now;
+  geometry_msgs::PoseStamped mavros_goal;
+  if (!transformToMavros(planning_goal, &mavros_goal, reason)) {
+    return false;
+  }
+  validated_goal_mavros_ = mavros_goal;
+  have_valid_goal_ = true;
+  trajectory_gate_.noteGoal(now);
   goal_publisher_.publish(planning_goal);
   return_in_progress_ = true;
   return_inside_tolerance_ = false;

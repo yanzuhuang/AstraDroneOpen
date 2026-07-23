@@ -9,12 +9,14 @@
 #include <astra_custom_msgs/InspectionCandidate.h>
 #include <astra_custom_msgs/InspectionCandidateArray.h>
 #include <astra_custom_msgs/PlannerStatus.h>
+#include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <std_msgs/UInt32.h>
@@ -68,7 +70,7 @@ const char* missionStateName(MissionState state) {
   return "UNKNOWN";
 }
 
-enum class GoalKind { kApproach, kSector, kRecovery };
+enum class GoalKind { kEntryGate, kSector, kRecovery };
 
 double yawFromQuaternion(const geometry_msgs::Quaternion& q) {
   return std::atan2(2.0 * (q.w * q.z + q.x * q.y),
@@ -158,6 +160,11 @@ class Stage3EgoMissionNode {
                                      "/tower_mission/candidate_targets");
     private_node_.param<std::string>("outputs/progress", progress_topic_,
                                      "/tower_mission/progress");
+    private_node_.param<std::string>("outputs/face_tower", face_tower_topic_,
+                                     "/tower_mission/face_tower");
+    private_node_.param<std::string>("outputs/selected_tower_center",
+                                     tower_center_topic_,
+                                     "/tower_mission/selected_tower_center");
     private_node_.param<std::string>("services/tracking", tracking_service_,
                                      "/ego_mavros_bridge/enable_tracking");
     private_node_.param<std::string>("services/cancel", cancel_service_,
@@ -181,6 +188,7 @@ class Stage3EgoMissionNode {
     private_node_.param("mission/virtual_ceil_height", virtual_ceil_height_, 45.0);
     private_node_.param("mission/radius", route_.radius, 14.0);
     private_node_.param("mission/sector_count", sector_count_, 8);
+    private_node_.param("mission/sector_limit", sector_limit_, 1);
     private_node_.param("mission/layer_count", layer_count_, 1);
     private_node_.param("mission/start_angle_deg", start_angle_deg_, -67.5);
     private_node_.param<std::string>("mission/direction", direction_,
@@ -197,6 +205,26 @@ class Stage3EgoMissionNode {
                         start_angle_deg_);
     private_node_.param("mission/approach_segment_length", approach_segment_length_,
                         6.0);
+    private_node_.param("entry_gate/minimum_radius",
+                        entry_gate_config_.minimum_radius, route_.radius + 2.0);
+    private_node_.param("entry_gate/maximum_radius",
+                        entry_gate_config_.maximum_radius, route_.radius + 10.0);
+    private_node_.param("entry_gate/maximum_horizontal_distance",
+                        entry_gate_config_.maximum_horizontal_distance, 60.0);
+    private_node_.param("entry_gate/minimum_clearance",
+                        entry_gate_config_.minimum_clearance, 2.0);
+    private_node_.param("entry_gate/cloud_inflation",
+                        entry_gate_config_.cloud_inflation, 0.4);
+    private_node_.param("entry_gate/corridor_sample_step",
+                        entry_gate_config_.corridor_sample_step, 0.5);
+    private_node_.param("entry_gate/clearance_weight",
+                        entry_gate_config_.clearance_weight, 0.1);
+    private_node_.param("entry_gate/distance_weight",
+                        entry_gate_config_.distance_weight, 1.0);
+    private_node_.param("entry_gate/blocked_corridor_penalty",
+                        entry_gate_config_.blocked_corridor_penalty, 5.0);
+    private_node_.param("entry_gate/maximum_segment_length",
+                        entry_gate_segment_length_, 6.0);
     private_node_.param("mission/sector_angle_half_width_deg",
                         sector_angle_half_width_deg_, 12.0);
     private_node_.param("mission/sector_radius_half_width", sector_radius_half_width_,
@@ -212,13 +240,16 @@ class Stage3EgoMissionNode {
                         0.4);
     private_node_.param("candidate/corridor_sample_step",
                         filter_config_.corridor_sample_step, 0.5);
+    private_node_.param("candidate/blocked_corridor_penalty",
+                        filter_config_.blocked_corridor_penalty, 5.0);
     private_node_.param("recovery/radial_step", recovery_config_.radial_step, 3.0);
     private_node_.param("recovery/tangent_step", recovery_config_.tangent_step, 4.0);
     private_node_.param("recovery/maximum_radius", recovery_config_.maximum_radius,
                         24.0);
     private_node_.param("recovery/direction", recovery_direction_, direction_);
-    private_node_.param("recovery/recovery_height", recovery_height_, 35.0);
+    private_node_.param("recovery/recovery_height", recovery_height_, 38.0);
     recovery_height_ = std::min(recovery_height_, recovery_height_max_);
+    recovery_config_.recovery_height = recovery_height_;
 
     route_.height = inspection_height_;
     route_.waypoint_count = sector_count_;
@@ -242,10 +273,21 @@ class Stage3EgoMissionNode {
       for (double radius : radius_offsets)
         for (double height : height_offsets)
           offsets_.push_back({angle, radius, height});
+    private_node_.param("entry_gate/angle_offsets_deg",
+                        entry_gate_angle_offsets_,
+                        std::vector<double>{-40.0, -30.0, -20.0, -10.0, 0.0,
+                                            10.0, 20.0, 30.0, 40.0});
+    private_node_.param("entry_gate/radius_offsets_m",
+                        entry_gate_radius_offsets_,
+                        std::vector<double>{2.0, 4.0, 6.0});
+    entry_gate_config_.inspection_height = inspection_height_;
+    entry_gate_config_.minimum_height = route_.minimum_height;
+    entry_gate_config_.maximum_height = virtual_ceil_height_;
 
     loadStaticObstacles();
     const auto validation = validateRouteConfig(route_, &validation_reason_);
-    if (!validation || sector_count_ != 8 || layer_count_ != 1 ||
+    if (!validation || sector_count_ != 8 || sector_limit_ < 1 ||
+        sector_limit_ > sector_count_ || layer_count_ != 1 ||
         inspection_height_ > virtual_ceil_height_ ||
         recovery_height_max_ > virtual_ceil_height_ || loop_rate_ < 5.0) {
       throw std::runtime_error(validation_reason_.empty()
@@ -259,6 +301,9 @@ class Stage3EgoMissionNode {
         recovery_config_.radial_step <= 0.0 || recovery_config_.tangent_step <= 0.0 ||
         recovery_config_.maximum_radius < route_.radius ||
         recovery_config_.maximum_radius <= 0.0 ||
+        entry_gate_config_.minimum_radius <= route_.tower_collision_radius ||
+        entry_gate_config_.maximum_radius < entry_gate_config_.minimum_radius ||
+        entry_gate_segment_length_ <= 0.0 ||
         recovery_height_ < route_.minimum_height ||
         recovery_height_ > recovery_height_max_) {
       throw std::runtime_error("invalid stage3 height or recovery envelope");
@@ -268,6 +313,7 @@ class Stage3EgoMissionNode {
   void loadStaticObstacles() {
     std::vector<std::string> names;
     std::vector<double> xs, ys, zs, radii, zmins, zmaxs;
+    std::vector<double> half_extent_xs, half_extent_ys, yaws;
     const bool any = private_node_.getParam("static_obstacles/names", names) ||
                      private_node_.getParam("static_obstacles/x", xs) ||
                      private_node_.getParam("static_obstacles/y", ys) ||
@@ -291,9 +337,22 @@ class Stage3EgoMissionNode {
     private_node_.getParam("static_obstacles/radius", radii);
     private_node_.getParam("static_obstacles/z_min", zmins);
     private_node_.getParam("static_obstacles/z_max", zmaxs);
+    private_node_.getParam("static_obstacles/half_extent_x", half_extent_xs);
+    private_node_.getParam("static_obstacles/half_extent_y", half_extent_ys);
+    private_node_.getParam("static_obstacles/yaw", yaws);
     if (names.empty() || names.size() != xs.size() || names.size() != ys.size() ||
         names.size() != zs.size() || names.size() != radii.size()) {
       throw std::runtime_error("static_obstacles arrays must have equal nonzero length");
+    }
+    const auto optionalSizeValid =
+        [&names](const std::vector<double>& values) {
+          return values.empty() || values.size() == names.size();
+        };
+    if (!optionalSizeValid(zmins) || !optionalSizeValid(zmaxs) ||
+        !optionalSizeValid(half_extent_xs) ||
+        !optionalSizeValid(half_extent_ys) || !optionalSizeValid(yaws)) {
+      throw std::runtime_error(
+          "optional static_obstacles arrays must be empty or match names");
     }
     for (std::size_t i = 0; i < names.size(); ++i) {
       StaticObstacle obstacle;
@@ -301,6 +360,26 @@ class Stage3EgoMissionNode {
       obstacle.z = zs[i]; obstacle.radius = radii[i];
       obstacle.z_min = i < zmins.size() ? zmins[i] : -1.0e9;
       obstacle.z_max = i < zmaxs.size() ? zmaxs[i] : 1.0e9;
+      obstacle.half_extent_x =
+          i < half_extent_xs.size() ? half_extent_xs[i] : 0.0;
+      obstacle.half_extent_y =
+          i < half_extent_ys.size() ? half_extent_ys[i] : 0.0;
+      obstacle.yaw = i < yaws.size() ? yaws[i] : 0.0;
+      const bool box_requested =
+          obstacle.half_extent_x > 0.0 || obstacle.half_extent_y > 0.0;
+      if (!std::isfinite(obstacle.x) || !std::isfinite(obstacle.y) ||
+          !std::isfinite(obstacle.radius) || obstacle.radius < 0.0 ||
+          !std::isfinite(obstacle.z_min) || !std::isfinite(obstacle.z_max) ||
+          obstacle.z_max <= obstacle.z_min ||
+          !std::isfinite(obstacle.half_extent_x) ||
+          !std::isfinite(obstacle.half_extent_y) ||
+          !std::isfinite(obstacle.yaw) ||
+          (box_requested &&
+           (obstacle.half_extent_x <= 0.0 ||
+            obstacle.half_extent_y <= 0.0))) {
+        throw std::runtime_error("invalid static obstacle geometry: " +
+                                 obstacle.id);
+      }
       obstacles_.push_back(obstacle);
     }
     // Treat the inspected tower itself as a corridor obstacle as well as a
@@ -339,6 +418,16 @@ class Stage3EgoMissionNode {
     candidates_pub_ = node_.advertise<astra_custom_msgs::InspectionCandidateArray>(
         candidates_topic_, 5, true);
     progress_pub_ = node_.advertise<std_msgs::Float64>(progress_topic_, 5);
+    face_tower_pub_ = node_.advertise<std_msgs::Bool>(face_tower_topic_, 1, true);
+    tower_center_pub_ = node_.advertise<geometry_msgs::PointStamped>(
+        tower_center_topic_, 1, true);
+    geometry_msgs::PointStamped tower_center;
+    tower_center.header.stamp = ros::Time::now();
+    tower_center.header.frame_id = route_.frame_id;
+    tower_center.point.x = route_.center_x;
+    tower_center.point.y = route_.center_y;
+    tower_center.point.z = 0.0;
+    tower_center_pub_.publish(tower_center);
     tracking_client_ = node_.serviceClient<std_srvs::SetBool>(tracking_service_);
     cancel_client_ = node_.serviceClient<std_srvs::Trigger>(cancel_service_);
     resume_client_ = node_.serviceClient<std_srvs::Trigger>(resume_service_);
@@ -430,46 +519,53 @@ class Stage3EgoMissionNode {
     return goal;
   }
 
-  void buildApproachGoals() {
-    if (!approach_goals_.empty()) return;
-    geometry_msgs::Point start = pointOf(odom_);
-    const double angle = observation_angle_deg_ * kPi / 180.0;
-    CandidatePoint observation;
-    observation.id = "observation_point";
-    observation.x = route_.center_x + (route_.radius + observation_radius_offset_) *
-                    std::cos(angle);
-    observation.y = route_.center_y + (route_.radius + observation_radius_offset_) *
-                    std::sin(angle);
-    observation.z = transit_height_;
-    observation.yaw = normalizeAngle(std::atan2(route_.center_y - observation.y,
-                                                route_.center_x - observation.x));
-    const double distance = std::hypot(observation.x - start.x, observation.y - start.y);
-    const int segments = std::max(1, static_cast<int>(std::ceil(
-        distance / std::max(0.5, approach_segment_length_))));
-    for (int i = 1; i <= segments; ++i) {
-      const double ratio = static_cast<double>(i) / segments;
-      CandidatePoint point = observation;
-      point.id = "approach_" + std::to_string(i);
-      point.x = start.x + ratio * (observation.x - start.x);
-      point.y = start.y + ratio * (observation.y - start.y);
-      approach_goals_.push_back(point);
+  bool buildApproachGoals(int excluded_gate_index = -1) {
+    approach_goals_.clear();
+    entry_gate_index_ = -1;
+    if (!have_odom_ || !mapFresh(ros::Time::now())) return false;
+    const geometry_msgs::Point start = pointOf(odom_);
+    if (!have_home_position_) {
+      home_position_ = start;
+      have_home_position_ = true;
     }
-    CandidatePoint climb = observation;
-    climb.id = "approach_climb"; climb.z = inspection_height_;
-    approach_goals_.push_back(climb);
-    geometry_msgs::Point previous = start;
-    for (const auto& goal : approach_goals_) {
-      geometry_msgs::Point next;
-      next.x = goal.x; next.y = goal.y; next.z = goal.z;
-      if (!lineCorridorSafe(previous, next, planningMapPoints(), obstacles_,
-                            filter_config_.minimum_clearance +
-                                filter_config_.cloud_inflation,
-                            filter_config_.corridor_sample_step)) {
-        approach_goals_.clear();
-        return;
-      }
-      previous = next;
+    entry_gate_candidates_ = buildEntryGateCandidates(
+        route_, entry_gate_angle_offsets_, entry_gate_radius_offsets_,
+        inspection_height_);
+    for (auto& candidate : entry_gate_candidates_) {
+      evaluateEntryGateCandidate(
+          &candidate, route_, start, home_position_, planningMapPoints(),
+          obstacles_, mapFresh(ros::Time::now()), entry_gate_config_);
     }
+    if (excluded_gate_index >= 0 &&
+        excluded_gate_index <
+            static_cast<int>(entry_gate_candidates_.size())) {
+      entry_gate_candidates_[excluded_gate_index].accepted = false;
+      entry_gate_candidates_[excluded_gate_index].rejection_reason =
+          "RETRY_AFTER_PATH_FAILURE";
+    }
+    entry_gate_index_ = chooseBestEntryGateCandidate(entry_gate_candidates_);
+    for (const auto& candidate : entry_gate_candidates_) {
+      const std::string reason = candidate.rejection_reason.empty()
+                                     ? ""
+                                     : " reason=" + candidate.rejection_reason;
+      ROS_INFO("[STAGE3_TASK] %s %s score=%.3f clearance=%.3f%s",
+               candidate.id.c_str(), candidate.accepted ? "accepted" : "rejected",
+               candidate.score, candidate.clearance, reason.c_str());
+    }
+    if (entry_gate_index_ < 0) {
+      ROS_WARN("[STAGE3_TASK] no safe ENTRY_GATE candidate in fresh map");
+      return false;
+    }
+    const CandidatePoint entry_gate =
+        entry_gate_candidates_[entry_gate_index_];
+    approach_goals_ = buildRollingApproachGoals(
+        start, entry_gate, entry_gate_segment_length_);
+    if (approach_goals_.empty()) return false;
+    ROS_WARN("[STAGE3_TASK] ENTRY_GATE selected: %s (%.2f, %.2f, %.2f), "
+             "rolling_goals=%zu",
+             entry_gate.id.c_str(), entry_gate.x, entry_gate.y, entry_gate.z,
+             approach_goals_.size());
+    return true;
   }
 
   bool mapFresh(const ros::Time& now) const {
@@ -499,7 +595,8 @@ class Stage3EgoMissionNode {
         item.sector_id = candidate.sector_id; item.layer_id = candidate.layer_id;
         item.target.x = candidate.x; item.target.y = candidate.y; item.target.z = candidate.z;
         item.yaw = static_cast<float>(candidate.yaw); item.accepted = candidate.accepted;
-        item.rejection_reason = candidate.rejection_reason;
+        item.rejection_reason = candidate.accepted ? candidate.risk_reason
+                                                    : candidate.rejection_reason;
         item.clearance = static_cast<float>(candidate.clearance);
         item.score = static_cast<float>(candidate.score);
         item.unknown_ratio = static_cast<float>(candidate.unknown_ratio);
@@ -507,6 +604,94 @@ class Stage3EgoMissionNode {
       }
     }
     candidates_pub_.publish(message);
+  }
+
+  bool lockNearestSafeInitialSector(const ros::Time& now) {
+    if (sectors_.empty() || !mapFresh(now)) return false;
+    const geometry_msgs::Point current = pointOf(odom_);
+    std::size_t geometric_nearest = 0;
+    double geometric_nearest_distance =
+        std::numeric_limits<double>::infinity();
+
+    for (std::size_t index = 0; index < sectors_.size(); ++index) {
+      auto& sector = sectors_[index];
+      sector.state = SectorState::kEvaluating;
+      sector.locked_index = -1;
+      const double nominal_x =
+          sector.center_x +
+          sector.nominal_radius * std::cos(sector.nominal_angle_rad);
+      const double nominal_y =
+          sector.center_y +
+          sector.nominal_radius * std::sin(sector.nominal_angle_rad);
+      const double dx = current.x - nominal_x;
+      const double dy = current.y - nominal_y;
+      const double dz = current.z - sector.nominal_height;
+      const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+      if (distance < geometric_nearest_distance) {
+        geometric_nearest_distance = distance;
+        geometric_nearest = index;
+      }
+      for (auto& candidate : sector.candidates) {
+        evaluateCandidate(&candidate, sector, current, planningMapPoints(),
+                          obstacles_, true, filter_config_, nullptr);
+      }
+    }
+
+    const int safe_index =
+        nearestSectorIndexWithAcceptedCandidate(current, sectors_);
+    if (safe_index < 0) {
+      for (auto& sector : sectors_) {
+        sector.state = SectorState::kRelocating;
+        sector.failure_reason = "ALL_CANDIDATES_REJECTED";
+      }
+      return false;
+    }
+
+    if (static_cast<std::size_t>(safe_index) != geometric_nearest) {
+      int obstacle_rejections = 0;
+      for (const auto& candidate : sectors_[geometric_nearest].candidates) {
+        if (candidate.rejection_reason == "KNOWN_OBSTACLE_CLEARANCE") {
+          ++obstacle_rejections;
+        }
+      }
+      ROS_WARN("[STAGE3_TASK] nearest geometric sector %d is unavailable "
+               "(known-obstacle rejections=%d/%zu); selecting nearest safe "
+               "sector %d",
+               sectors_[geometric_nearest].sector_id, obstacle_rejections,
+               sectors_[geometric_nearest].candidates.size(),
+               sectors_[safe_index].sector_id);
+    }
+
+    Sector& safe_sector = sectors_[safe_index];
+    const int selected =
+        chooseBestCandidate(safe_sector, nullptr, target_replacement_margin_);
+    if (selected < 0) return false;
+    safe_sector.locked_index = selected;
+    safe_sector.state = SectorState::kTargetLocked;
+    const int safe_sector_id = safe_sector.sector_id;
+    for (std::size_t index = 0; index < sectors_.size(); ++index) {
+      if (index != static_cast<std::size_t>(safe_index)) {
+        sectors_[index].state = SectorState::kPending;
+      }
+    }
+    std::rotate(sectors_.begin(), sectors_.begin() + safe_index,
+                sectors_.end());
+    current_sector_ = 0;
+    active_target_ =
+        sectors_.front().candidates[sectors_.front().locked_index];
+    publishCandidateDebug(now);
+    ROS_WARN("[STAGE3_TASK] initial safe sector selected: sector_id=%d, "
+             "target=%s, distance_from_ENTRY_GATE=%.3f m",
+             safe_sector_id, active_target_.id.c_str(),
+             std::sqrt((current.x - active_target_.x) *
+                           (current.x - active_target_.x) +
+                       (current.y - active_target_.y) *
+                           (current.y - active_target_.y) +
+                       (current.z - active_target_.z) *
+                           (current.z - active_target_.z)));
+    transition(MissionState::kTargetLocked,
+               "nearest safe inspection sector locked after ENTRY_GATE");
+    return true;
   }
 
   bool evaluateSector(const ros::Time& now) {
@@ -548,8 +733,6 @@ class Stage3EgoMissionNode {
     }
     sector.locked_index = selected; sector.state = SectorState::kTargetLocked;
     active_target_ = sector.candidates[selected];
-    target_pub_.publish(makeGoal(active_target_));
-    requestResume();
     transition(MissionState::kTargetLocked, "safe candidate locked: " + active_target_.id);
     return true;
   }
@@ -630,53 +813,50 @@ class Stage3EgoMissionNode {
             std::abs(point.z - odom_.pose.pose.position.z) < 1.0) return false;
       }
     }
-    recovery_targets_ = makeRecoveryTargets(route_, pointOf(odom_), sector,
-                                             recovery_config_);
-    const auto schemeSafe = [&](const RecoveryTargets& targets) {
-      StaticObstacle tower;
-      tower.id = route_.tower_name;
-      tower.x = route_.center_x;
-      tower.y = route_.center_y;
-      tower.radius = route_.tower_collision_radius;
-      tower.z_min = route_.minimum_height;
-      tower.z_max = virtual_ceil_height_;
-      const double inflation = filter_config_.minimum_clearance;
-      const auto pointSafe = [&](const CandidatePoint& point) {
-        geometry_msgs::Point p;
-        p.x = point.x; p.y = point.y; p.z = point.z;
-        return !pointInObstacle(p, tower, inflation) &&
-               lineCorridorSafe(p, p, planningMapPoints(), obstacles_, inflation,
-                                filter_config_.corridor_sample_step);
-      };
-      geometry_msgs::Point current = pointOf(odom_);
-      geometry_msgs::Point r1;
-      r1.x = targets.r1.x; r1.y = targets.r1.y; r1.z = targets.r1.z;
-      geometry_msgs::Point r2;
-      r2.x = targets.r2.x; r2.y = targets.r2.y; r2.z = targets.r2.z;
-      geometry_msgs::Point reentry;
-      reentry.x = targets.reentry.x; reentry.y = targets.reentry.y;
-      reentry.z = targets.reentry.z;
-      return pointSafe(targets.r1) && pointSafe(targets.r2) &&
-             pointSafe(targets.reentry) &&
-             lineCorridorSafe(current, r1, planningMapPoints(), obstacles_, inflation,
-                              filter_config_.corridor_sample_step) &&
-             lineCorridorSafe(r1, r2, planningMapPoints(), obstacles_, inflation,
-                              filter_config_.corridor_sample_step) &&
-             lineCorridorSafe(r2, reentry, planningMapPoints(), obstacles_, inflation,
-                              filter_config_.corridor_sample_step);
-    };
-    if (!schemeSafe(recovery_targets_)) {
-      RecoveryConfig opposite = recovery_config_;
-      opposite.direction = opposite.direction == OrbitDirection::kCounterClockwise
-                               ? OrbitDirection::kClockwise
-                               : OrbitDirection::kCounterClockwise;
-      const RecoveryTargets alternative =
-          makeRecoveryTargets(route_, pointOf(odom_), sector, opposite);
-      if (!schemeSafe(alternative)) return false;
-      recovery_config_ = opposite;
-      recovery_targets_ = alternative;
+    const CandidatePoint* locked = nullptr;
+    if (sector.locked_index >= 0) {
+      locked = &sector.candidates[sector.locked_index];
+    } else if (active_goal_kind_ == GoalKind::kSector &&
+               active_target_.sector_id == sector.sector_id) {
+      locked = &active_target_;
     }
+    RecoveryConfig clockwise = recovery_config_;
+    clockwise.direction = OrbitDirection::kClockwise;
+    RecoveryConfig counter_clockwise = recovery_config_;
+    counter_clockwise.direction = OrbitDirection::kCounterClockwise;
+    const RecoveryTargets clockwise_targets = makeRecoveryTargets(
+        route_, pointOf(odom_), sector, clockwise, locked);
+    const RecoveryTargets counter_clockwise_targets = makeRecoveryTargets(
+        route_, pointOf(odom_), sector, counter_clockwise, locked);
+    const RecoveryAssessment clockwise_assessment = assessRecoveryTargets(
+        pointOf(odom_), clockwise_targets, planningMapPoints(), obstacles_,
+        filter_config_.minimum_clearance,
+        filter_config_.corridor_sample_step);
+    const RecoveryAssessment counter_clockwise_assessment = assessRecoveryTargets(
+        pointOf(odom_), counter_clockwise_targets, planningMapPoints(), obstacles_,
+        filter_config_.minimum_clearance,
+        filter_config_.corridor_sample_step);
+    if (!clockwise_assessment.endpoints_safe &&
+        !counter_clockwise_assessment.endpoints_safe) return false;
+    const bool choose_clockwise = clockwise_assessment.endpoints_safe &&
+        (!counter_clockwise_assessment.endpoints_safe ||
+         clockwise_assessment.score > counter_clockwise_assessment.score);
+    recovery_targets_ = choose_clockwise ? clockwise_targets
+                                         : counter_clockwise_targets;
+    recovery_config_.direction = choose_clockwise
+                                     ? OrbitDirection::kClockwise
+                                     : OrbitDirection::kCounterClockwise;
+    const RecoveryAssessment& selected_assessment = choose_clockwise
+                                                        ? clockwise_assessment
+                                                        : counter_clockwise_assessment;
+    ROS_WARN("[STAGE3_TASK] recovery selected %s; blocked straight corridors=%d "
+             "(soft risk only), re-entry=%s",
+             choose_clockwise ? "clockwise" : "counter_clockwise",
+             selected_assessment.blocked_corridors,
+             recovery_targets_.reentry.id.c_str());
     recovery_step_ = 0;
+    have_sent_goal_ = false;
+    arrival_since_ = ros::Time(0);
     sector.recovery_count++;
     sector.state = SectorState::kRecovering;
     transition(MissionState::kRecovering, "HOLD complete; executing R1/R2/re-entry");
@@ -692,13 +872,17 @@ class Stage3EgoMissionNode {
   void publishGoal(const CandidatePoint& target, GoalKind kind) {
     active_target_ = target; active_goal_kind_ = kind;
     geometry_msgs::PoseStamped goal = makeGoal(target);
+    std_msgs::Bool face_tower;
+    face_tower.data = target.face_tower;
+    face_tower_pub_.publish(face_tower);
     goal_pub_.publish(goal); target_pub_.publish(goal);
     requestResume();
     goal_sent_ = ros::Time::now(); arrival_since_ = ros::Time(0);
     trajectory_baseline_ = have_command_ ? command_.trajectory_id : 0;
     have_sent_goal_ = true;
-    if (kind == GoalKind::kSector) transition(MissionState::kNavigate,
-                                               "sector target sent to EGO");
+    if (kind == GoalKind::kSector) {
+      transition(MissionState::kNavigate, "sector target sent to EGO");
+    }
   }
 
   bool arrived(const ros::Time& now) const {
@@ -710,9 +894,10 @@ class Stage3EgoMissionNode {
     const auto& v = odom_.twist.twist.linear;
     const double speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     const double yaw = yawFromQuaternion(odom_.pose.pose.orientation);
+    const bool yaw_aligned = !active_target_.require_arrival_yaw ||
+        std::abs(angleError(yaw, active_target_.yaw)) <= arrival_yaw_tolerance_;
     const bool stable = distance <= arrival_tolerance_ &&
-                        speed <= arrival_velocity_threshold_ &&
-                        std::abs(angleError(yaw, active_target_.yaw)) <= arrival_yaw_tolerance_;
+                        speed <= arrival_velocity_threshold_ && yaw_aligned;
     (void)now;
     return stable;
   }
@@ -752,33 +937,76 @@ class Stage3EgoMissionNode {
     if (now - mission_started_ > ros::Duration(overall_timeout_)) {
       failTerminal("overall mission timeout"); return;
     }
+    const bool active_mission_state =
+        state_ == MissionState::kApproach ||
+        state_ == MissionState::kEvaluate ||
+        state_ == MissionState::kTargetLocked ||
+        state_ == MissionState::kNavigate ||
+        state_ == MissionState::kRelocating ||
+        state_ == MissionState::kRecovering;
+    if (enable_control_ && active_mission_state &&
+        have_bridge_state_ && fresh(now, bridge_state_received_, 2.0) &&
+        bridge_state_ == "HOLD") {
+      // A bridge-local safety HOLD must be acknowledged by the mission before
+      // the bridge's finite loss timeout can request AUTO.LAND. Cancelling
+      // here turns it into a mission-supervised HOLD and preserves the normal
+      // ENTRY_GATE relocation / R1-R2 recovery chain.
+      if (state_ == MissionState::kApproach) {
+        entry_gate_failure_pending_ = true;
+      }
+      requestHold(std::string("bridge entered HOLD during ") +
+                  missionStateName(state_));
+      return;
+    }
     if (state_ == MissionState::kWaitInputs) {
       const bool bridge_ready = (!enable_control_ && bridge_state_ == "DRY_RUN") ||
                                 (enable_control_ && bridge_state_ == "HOVER_READY");
       if (have_odom_ && fresh(now, odom_received_, input_timeout_) &&
           mapFresh(now) &&
           have_bridge_state_ && fresh(now, bridge_state_received_, 2.0) && bridge_ready) {
+        if (!have_home_position_) {
+          home_position_ = pointOf(odom_);
+          have_home_position_ = true;
+        }
         sectors_ = buildInspectionSectors(
             route_, sector_count_, layer_count_, sector_angle_half_width_deg_,
             sector_radius_half_width_, sector_height_half_width_, offsets_);
-        buildApproachGoals();
-        if (sectors_.size() != static_cast<std::size_t>(sector_count_) ||
-            approach_goals_.empty()) {
-          failTerminal("sector generation failed"); return;
+        if (sectors_.size() != static_cast<std::size_t>(sector_count_)) {
+          failTerminal("sector generation failed");
+          return;
         }
-        transition(MissionState::kApproach, "odom/map bridge inputs ready");
+        if (!buildApproachGoals()) {
+          requestHold("ENTRY_GATE has no safe fresh-map candidate");
+          requestReturnOrLand("ENTRY_GATE selection failed");
+          return;
+        }
+        transition(MissionState::kApproach,
+                   "odom/map ready; rolling 3-D ENTRY_GATE selected");
       }
     } else if (state_ == MissionState::kApproach) {
       if (!have_sent_goal_) {
-        publishGoal(approach_goals_[approach_index_], GoalKind::kApproach);
-      } else if (arrived(now)) {
-        ++approach_index_; have_sent_goal_ = false;
-        if (approach_index_ >= approach_goals_.size()) {
-          current_sector_ = 0; transition(MissionState::kEvaluate, "observation point reached");
+        publishGoal(approach_goals_[approach_index_], GoalKind::kEntryGate);
+      } else {
+        std::string failure;
+        const bool planner_failed =
+            have_planner_status_ &&
+            fresh(now, planner_status_received_, input_timeout_) &&
+            plannerFailure(now, &failure);
+        if (planner_failed) {
+          entry_gate_failure_pending_ = true;
+          requestHold("ENTRY_GATE planner failure: " + failure);
+        } else if (arrived(now)) {
+          ++approach_index_; have_sent_goal_ = false;
+          if (approach_index_ >= approach_goals_.size()) {
+            if (!lockNearestSafeInitialSector(now)) {
+              requestHold("ENTRY_GATE reached but no inspection sector has "
+                          "a safe fresh-map candidate");
+            }
+          }
+        } else if (now - goal_sent_ > ros::Duration(goal_timeout_)) {
+          entry_gate_failure_pending_ = true;
+          requestHold("ENTRY_GATE rolling subgoal timeout");
         }
-      } else if (now - goal_sent_ > ros::Duration(goal_timeout_)) {
-        requestHold("approach target timeout");
-        if (!buildRecovery(now)) failTerminal("approach recovery unavailable");
       }
     } else if (state_ == MissionState::kEvaluate || state_ == MissionState::kRelocating) {
       if (!mapFresh(now)) {
@@ -801,9 +1029,11 @@ class Stage3EgoMissionNode {
         if (arrival_since_.isZero()) arrival_since_ = now;
         if (now - arrival_since_ >= ros::Duration(arrival_hold_duration_)) {
           sectors_[current_sector_].state = SectorState::kCovered;
+          ++visited_sector_count_;
           ++current_sector_; have_sent_goal_ = false; arrival_since_ = ros::Time(0);
-          if (current_sector_ >= sectors_.size()) {
-            requestReturnOrLand("all sectors covered");
+          if (visited_sector_count_ >= static_cast<std::size_t>(sector_limit_) ||
+              current_sector_ >= sectors_.size()) {
+            requestReturnOrLand("configured sector limit covered");
           } else {
             transition(MissionState::kEvaluate, "sector covered");
           }
@@ -817,7 +1047,16 @@ class Stage3EgoMissionNode {
       }
     } else if (state_ == MissionState::kHolding) {
       if (now - state_entered_ >= ros::Duration(failure_hold_duration_)) {
-        if (failure_reason_ == astra_custom_msgs::PlannerStatus::GOAL_IN_OCCUPANCY) {
+        if (entry_gate_failure_pending_) {
+          entry_gate_failure_pending_ = false;
+          if (buildApproachGoals(entry_gate_index_)) {
+            have_sent_goal_ = false;
+            transition(MissionState::kApproach,
+                       "fresh map selected alternate ENTRY_GATE after HOLD");
+          } else {
+            requestReturnOrLand("ENTRY_GATE recovery exhausted");
+          }
+        } else if (failure_reason_ == astra_custom_msgs::PlannerStatus::GOAL_IN_OCCUPANCY) {
           have_sent_goal_ = false;
           transition(MissionState::kRelocating,
                      "target rejected after safety HOLD");
@@ -897,35 +1136,40 @@ class Stage3EgoMissionNode {
 
   ros::NodeHandle node_, private_node_;
   ros::Subscriber odom_sub_, command_sub_, cloud_sub_, occupancy_sub_, planner_status_sub_, bridge_state_sub_;
-  ros::Publisher goal_pub_, state_pub_, target_pub_, sector_pub_, candidates_pub_, progress_pub_;
+  ros::Publisher goal_pub_, state_pub_, target_pub_, sector_pub_, candidates_pub_, progress_pub_, face_tower_pub_, tower_center_pub_;
   ros::ServiceClient tracking_client_, cancel_client_, resume_client_, return_client_, land_client_;
   ros::Timer timer_;
   std::string planning_frame_, odom_topic_, command_topic_, cloud_topic_, occupancy_topic_, planner_status_topic_,
       bridge_state_topic_, goal_topic_, state_topic_, target_topic_, sector_topic_, candidates_topic_,
-      progress_topic_, tracking_service_, cancel_service_, resume_service_, return_service_, land_service_;
+      progress_topic_, face_tower_topic_, tower_center_topic_, tracking_service_, cancel_service_, resume_service_, return_service_, land_service_;
   bool enable_control_{false};
   double loop_rate_{20.0}, input_timeout_{0.7}, map_timeout_{0.7}, planning_timeout_{10.0}, goal_timeout_{180.0};
   double arrival_tolerance_{0.5}, arrival_velocity_threshold_{0.2}, arrival_yaw_tolerance_{0.26}, arrival_hold_duration_{1.0};
   double tracking_error_limit_{1.2}, no_progress_window_{12.0}, no_progress_epsilon_{0.15}, emergency_stop_timeout_{6.0};
   double failure_hold_duration_{2.0}, recovery_target_timeout_{60.0}, overall_timeout_{2400.0}, report_period_{0.2};
-  int consecutive_plan_failure_limit_{3}, max_recovery_attempts_{2}, sector_count_{8}, layer_count_{1};
+  int consecutive_plan_failure_limit_{3}, max_recovery_attempts_{2}, sector_count_{8}, sector_limit_{1}, layer_count_{1};
   double inspection_height_{30.0}, recovery_height_max_{40.0}, virtual_ceil_height_{45.0}, transit_height_{4.0};
   double observation_radius_offset_{5.0}, observation_angle_deg_{-67.5}, approach_segment_length_{6.0};
   double sector_angle_half_width_deg_{12.0}, sector_radius_half_width_{4.0}, sector_height_half_width_{1.0};
   double target_replacement_margin_{2.0}, recovery_height_{35.0}, start_angle_deg_{-67.5};
+  double entry_gate_segment_length_{6.0};
   std::string direction_, recovery_direction_, report_file_, validation_reason_;
   RouteConfig route_;
   CandidateFilterConfig filter_config_;
   RecoveryConfig recovery_config_;
   std::vector<CandidateOffset> offsets_;
+  std::vector<double> entry_gate_angle_offsets_, entry_gate_radius_offsets_;
+  EntryGateConfig entry_gate_config_;
   std::vector<StaticObstacle> obstacles_;
   std::vector<Sector> sectors_;
   std::vector<CandidatePoint> approach_goals_;
+  std::vector<CandidatePoint> entry_gate_candidates_;
   RecoveryTargets recovery_targets_;
   std::vector<geometry_msgs::Point> cloud_points_, occupancy_points_;
-  std::size_t current_sector_{0}, approach_index_{0}, recovery_step_{0};
+  std::size_t current_sector_{0}, approach_index_{0}, recovery_step_{0}, visited_sector_count_{0};
+  int entry_gate_index_{-1};
   CandidatePoint active_target_;
-  GoalKind active_goal_kind_{GoalKind::kApproach};
+  GoalKind active_goal_kind_{GoalKind::kEntryGate};
   MissionState state_{MissionState::kWaitInputs};
   std::string bridge_state_, failure_reason_;
   nav_msgs::Odometry odom_;
@@ -933,6 +1177,8 @@ class Stage3EgoMissionNode {
   astra_custom_msgs::PlannerStatus planner_status_;
   bool have_odom_{false}, have_command_{false}, have_cloud_{false}, have_occupancy_{false}, have_planner_status_{false},
       have_bridge_state_{false}, have_sent_goal_{false};
+  bool have_home_position_{false}, entry_gate_failure_pending_{false};
+  geometry_msgs::Point home_position_;
   ros::Time odom_received_, command_received_, cloud_received_, occupancy_received_, planner_status_received_, bridge_state_received_;
   ros::Time state_entered_, mission_started_, goal_sent_, arrival_since_, last_report_;
   std::uint32_t trajectory_baseline_{0};

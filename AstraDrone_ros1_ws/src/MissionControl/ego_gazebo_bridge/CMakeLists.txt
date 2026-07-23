@@ -114,4 +114,9 @@ if(CATKIN_ENABLE_TESTING)
       ${catkin_LIBRARIES}
     )
   endif()
+
+  catkin_add_gtest(recovery_control_test test/recovery_control_test.cpp)
+  if(TARGET recovery_control_test)
+    target_link_libraries(recovery_control_test ${catkin_LIBRARIES})
+  endif()
 endif()

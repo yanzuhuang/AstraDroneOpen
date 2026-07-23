@@ -185,6 +185,26 @@ bool applyVelocityFacingYaw(double minimum_horizontal_speed,
   return true;
 }
 
+bool limitYawCommand(double current_yaw, double desired_yaw,
+                     double maximum_yaw_rate, double dt,
+                     double* limited_yaw, double* limited_yaw_rate) {
+  if (limited_yaw == nullptr || limited_yaw_rate == nullptr ||
+      !finite(current_yaw) || !finite(desired_yaw) ||
+      !finite(maximum_yaw_rate) || maximum_yaw_rate <= 0.0 ||
+      !finite(dt) || dt <= 0.0) {
+    return false;
+  }
+  const double desired_change = angularDistance(current_yaw, desired_yaw);
+  const double maximum_change = maximum_yaw_rate * dt;
+  const double limited_change =
+      std::max(-maximum_change, std::min(maximum_change, desired_change));
+  *limited_yaw =
+      std::atan2(std::sin(current_yaw + limited_change),
+                 std::cos(current_yaw + limited_change));
+  *limited_yaw_rate = limited_change / dt;
+  return true;
+}
+
 geometry_msgs::PoseStamped commandToPose(
     const quadrotor_msgs::PositionCommand& command,
     const std::string& fallback_frame) {

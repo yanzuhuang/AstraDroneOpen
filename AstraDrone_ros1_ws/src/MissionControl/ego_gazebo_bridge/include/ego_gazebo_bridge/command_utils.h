@@ -47,6 +47,10 @@ bool applyVelocityFacingYaw(double minimum_horizontal_speed,
                             quadrotor_msgs::PositionCommand* command,
                             std::string* reason);
 
+bool limitYawCommand(double current_yaw, double desired_yaw,
+                     double maximum_yaw_rate, double dt,
+                     double* limited_yaw, double* limited_yaw_rate);
+
 geometry_msgs::PoseStamped commandToPose(
     const quadrotor_msgs::PositionCommand& command,
     const std::string& fallback_frame);

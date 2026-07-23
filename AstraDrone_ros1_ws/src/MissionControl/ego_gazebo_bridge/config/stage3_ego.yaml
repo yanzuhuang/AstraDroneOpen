@@ -2,15 +2,16 @@
 enable_control: false
 require_sim_time: true
 auto_track_on_command: false
-takeoff_height: 1.0
-return_height: 1.0
+takeoff_height: 4.0
+return_height: 4.0
 min_relative_height: 0.3
 max_relative_height: 40.0
 max_horizontal_radius: 60.0
 cloud_timeout: 0.7
 planner_odom_timeout: 0.7
-command_timeout: 0.25
+command_timeout: 0.60
 land_after_loss: 8.0
+alignment_yaw_error_duration: 1.0
 virtual_ceil_height: 45.0
 planning_frame: camera_init
 mavros_frame: map
@@ -20,3 +21,13 @@ cloud_topic: /stage3/cloud_registered_filtered
 input_goal_topic: /move_base_simple/goal
 planner_goal_topic: /planning/goal
 setpoint_topic: /mavros/setpoint_raw/local
+planning_cancel_topic: /planning/cancel
+
+# Match the Stage 2 verified yaw boundary: approach is velocity-forward;
+# final observation alignment, climb, sector and recovery explicitly face the tower.
+tower_yaw_override_enabled: true
+tower_camera_yaw_offset: 0.0
+forward_yaw_min_speed: 0.05
+tower_center_topic: /tower_mission/selected_tower_center
+tower_yaw_mode_topic: /tower_mission/face_tower
+max_yaw_rate: 0.5235987755982988

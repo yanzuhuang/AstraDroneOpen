@@ -199,6 +199,27 @@ TEST(YawPolicy, PreservesYawWhenHorizontalVelocityIsTooSmall) {
   EXPECT_DOUBLE_EQ(0.0, command.yaw_dot);
 }
 
+TEST(YawPolicy, FirstTowerFacingCommandIsRateLimitedFromMeasuredYaw) {
+  double limited_yaw = 0.0;
+  double limited_yaw_rate = 0.0;
+  ASSERT_TRUE(limitYawCommand(
+      0.0, 0.5 * kPi, 0.5, 0.02,
+      &limited_yaw, &limited_yaw_rate));
+  EXPECT_NEAR(0.01, limited_yaw, 1e-12);
+  EXPECT_NEAR(0.5, limited_yaw_rate, 1e-12);
+}
+
+TEST(YawPolicy, RateLimiterUsesShortestWrappedTurn) {
+  double limited_yaw = 0.0;
+  double limited_yaw_rate = 0.0;
+  ASSERT_TRUE(limitYawCommand(
+      170.0 * kPi / 180.0, -170.0 * kPi / 180.0,
+      1.0, 0.1, &limited_yaw, &limited_yaw_rate));
+  EXPECT_NEAR(0.1, angularDistance(170.0 * kPi / 180.0, limited_yaw),
+              1e-12);
+  EXPECT_NEAR(1.0, limited_yaw_rate, 1e-12);
+}
+
 TEST(CommandLimiter, LimitsPositionAndShortestYawStep) {
   const auto current = makePose(0.0, 0.0, 0.0, 170.0 * kPi / 180.0);
   const auto target = makePose(3.0, 4.0, 0.0, -170.0 * kPi / 180.0);
