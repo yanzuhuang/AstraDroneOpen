@@ -55,6 +55,38 @@ TEST(RecoveryHold, LatchReplacesStaleOutputWithMeasuredVehiclePose) {
                    latch.hold_pose.pose.position.z);
 }
 
+TEST(HomeHoverLanding, RequiresEveryNormalLandingGate) {
+  EXPECT_TRUE(homeHoverAllowsAutoLand(
+      true, true, true, true, 0.20, 0.25));
+  EXPECT_FALSE(homeHoverAllowsAutoLand(
+      false, true, true, true, 0.20, 0.25));
+  EXPECT_FALSE(homeHoverAllowsAutoLand(
+      true, false, true, true, 0.20, 0.25));
+  EXPECT_FALSE(homeHoverAllowsAutoLand(
+      true, true, false, true, 0.20, 0.25));
+  EXPECT_FALSE(homeHoverAllowsAutoLand(
+      true, true, true, false, 0.20, 0.25));
+  EXPECT_FALSE(homeHoverAllowsAutoLand(
+      true, true, true, true, 0.30, 0.25));
+}
+
+TEST(EmergencyLanding, RequiresMissionSupervisedHoldAndFreshOffboardPose) {
+  EXPECT_TRUE(supervisedHoldAllowsEmergencyAutoLand(
+      true, true, true, true, true, true));
+  EXPECT_FALSE(supervisedHoldAllowsEmergencyAutoLand(
+      false, true, true, true, true, true));
+  EXPECT_FALSE(supervisedHoldAllowsEmergencyAutoLand(
+      true, false, true, true, true, true));
+  EXPECT_FALSE(supervisedHoldAllowsEmergencyAutoLand(
+      true, true, false, true, true, true));
+  EXPECT_FALSE(supervisedHoldAllowsEmergencyAutoLand(
+      true, true, true, false, true, true));
+  EXPECT_FALSE(supervisedHoldAllowsEmergencyAutoLand(
+      true, true, true, true, false, true));
+  EXPECT_FALSE(supervisedHoldAllowsEmergencyAutoLand(
+      true, true, true, true, true, false));
+}
+
 }  // namespace
 }  // namespace ego_gazebo_bridge
 

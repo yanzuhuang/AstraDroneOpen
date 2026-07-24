@@ -164,10 +164,13 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
                        const std::vector<geometry_msgs::Point>& cloud_points,
                        const std::vector<StaticObstacle>& obstacles,
                        bool map_fresh, const CandidateFilterConfig& config,
-                       const CandidatePoint* previous_target) {
+                       const CandidatePoint* previous_target,
+                       double unknown_ratio) {
   if (candidate == nullptr) return false;
   candidate->accepted = false;
+  candidate->target_invalid = false;
   candidate->straight_corridor_blocked = false;
+  candidate->planner_unreachable = false;
   candidate->rejection_reason.clear();
   candidate->risk_reason.clear();
   candidate->score = -1.0e9;
@@ -177,6 +180,7 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
   target.y = candidate->y;
   target.z = candidate->z;
   const auto reject = [candidate](const std::string& reason) {
+    candidate->target_invalid = true;
     candidate->rejection_reason = reason;
     return false;
   };
@@ -231,19 +235,39 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
   if (candidate->straight_corridor_blocked) {
     candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
   }
-  candidate->unknown_ratio = 0.0;
+  candidate->unknown_ratio = unknown_ratio;
   if (candidate->unknown_ratio > config.unknown_ratio_limit) {
-    return reject("UNKNOWN_REGION");
+    if (config.unknown_is_hard_constraint) {
+      return reject("UNKNOWN_REGION");
+    }
+    if (candidate->risk_reason.empty()) {
+      candidate->risk_reason = "UNKNOWN_REGION_DIAGNOSTIC";
+    } else {
+      candidate->risk_reason += ";UNKNOWN_REGION_DIAGNOSTIC";
+    }
   }
   if (!std::isfinite(candidate->clearance)) candidate->clearance = 100.0;
-  const double nominal_distance =
-      distance3d(candidate->x, candidate->y, candidate->z, 0.0, 0.0, 0.0);
+  const double angle_error =
+      std::abs(normalizeAngle(candidate_angle - sector.nominal_angle_rad));
+  const double radius_error =
+      std::abs(candidate_radius - sector.nominal_radius);
+  const double height_error =
+      std::abs(candidate->z - sector.nominal_height);
+  candidate->nominal_deviation = distance3d(
+      candidate->x, candidate->y, candidate->z,
+      sector.center_x + sector.nominal_radius *
+                            std::cos(sector.nominal_angle_rad),
+      sector.center_y + sector.nominal_radius *
+                            std::sin(sector.nominal_angle_rad),
+      sector.nominal_height);
+  candidate->height_deviation = height_error;
+  candidate->observation_deviation =
+      radius_error + sector.nominal_radius * angle_error;
   const double current_distance = distance3d(candidate->x, candidate->y,
                                               candidate->z,
                                               current_position.x,
                                               current_position.y,
                                               current_position.z);
-  const double nominal_error = std::abs(candidate->z - sector.nominal_height);
   const double continuity_error = previous_target == nullptr
                                       ? 0.0
                                       : distance3d(candidate->x, candidate->y,
@@ -251,15 +275,35 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
                                                    previous_target->x,
                                                    previous_target->y,
                                                    previous_target->z);
+  candidate->continuity_error = continuity_error;
+  candidate->route_distance = current_distance;
+  const double epsilon = 1.0e-6;
+  const double small_angle =
+      config.small_angle_offset_deg * kPi / 180.0 + epsilon;
+  if (angle_error < epsilon && radius_error < epsilon &&
+      height_error < epsilon) {
+    candidate->priority = 0;
+  } else if (height_error < epsilon && radius_error < epsilon &&
+             angle_error <= small_angle) {
+    candidate->priority = 1;
+  } else if (height_error < epsilon && angle_error < epsilon &&
+             radius_error <= config.small_radius_offset_m + epsilon) {
+    candidate->priority = 2;
+  } else if (height_error > epsilon &&
+             height_error <= config.small_height_offset_m + epsilon) {
+    candidate->priority = 3;
+  } else if (height_error < epsilon) {
+    candidate->priority = 4;
+  } else {
+    candidate->priority = 5;
+  }
   candidate->score = config.score_clearance_weight * candidate->clearance -
-                     config.score_nominal_weight * nominal_error -
+                     config.score_nominal_weight *
+                         (candidate->nominal_deviation +
+                          10.0 * candidate->height_deviation) -
                      config.score_distance_weight * current_distance -
                      config.score_continuity_weight * continuity_error -
-                     config.score_unknown_weight * candidate->unknown_ratio -
-                     (candidate->straight_corridor_blocked
-                          ? config.blocked_corridor_penalty
-                          : 0.0) -
-                     0.001 * nominal_distance;
+                     config.score_unknown_weight * candidate->unknown_ratio;
   candidate->accepted = true;
   return true;
 }
@@ -283,17 +327,24 @@ int chooseBestCandidate(const Sector& sector, const CandidatePoint* locked,
       return static_cast<int>(index);
     }
   }
+  const auto key = [](const CandidatePoint& candidate) {
+    return std::make_tuple(
+        candidate.priority, candidate.nominal_deviation,
+        candidate.height_deviation, candidate.observation_deviation,
+        -candidate.clearance, candidate.continuity_error,
+        candidate.route_distance, candidate.id);
+  };
   int best = -1;
-  double best_score = -1.0e9;
   for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
     const auto& candidate = sector.candidates[index];
-    if (candidate.accepted && candidate.score > best_score) {
+    if (candidate.accepted &&
+        (best < 0 || key(candidate) < key(sector.candidates[best]))) {
       best = static_cast<int>(index);
-      best_score = candidate.score;
     }
   }
   if (locked == nullptr || best < 0) return best;
-  if (locked->accepted && locked->score + replacement_margin >= best_score) {
+  if (locked->accepted && locked->priority == sector.candidates[best].priority &&
+      locked->score + replacement_margin >= sector.candidates[best].score) {
     for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
       if (sector.candidates[index].id == locked->id &&
           sector.candidates[index].accepted) {
@@ -342,15 +393,18 @@ bool evaluateEntryGateCandidate(
     const geometry_msgs::Point& home_position,
     const std::vector<geometry_msgs::Point>& map_points,
     const std::vector<StaticObstacle>& obstacles, bool map_fresh,
-    const EntryGateConfig& config) {
+    const EntryGateConfig& config, double unknown_ratio,
+    double unknown_ratio_limit) {
   if (candidate == nullptr) return false;
   candidate->accepted = false;
+  candidate->target_invalid = false;
   candidate->straight_corridor_blocked = false;
   candidate->rejection_reason.clear();
   candidate->risk_reason.clear();
   candidate->score = -1.0e9;
   candidate->clearance = std::numeric_limits<double>::infinity();
   const auto reject = [candidate](const std::string& reason) {
+    candidate->target_invalid = true;
     candidate->rejection_reason = reason;
     return false;
   };
@@ -401,6 +455,10 @@ bool evaluateEntryGateCandidate(
     if (clearance < config.minimum_clearance) {
       return reject("OCCUPANCY_OR_CLEARANCE");
     }
+  }
+  candidate->unknown_ratio = unknown_ratio;
+  if (unknown_ratio > unknown_ratio_limit) {
+    return reject("UNKNOWN_REGION");
   }
 
   // A straight line is only a risk hint here.  The rolling goals below are
@@ -463,11 +521,61 @@ std::vector<CandidatePoint> buildRollingApproachGoals(
     goal.x = start.x + ratio * (entry_gate.x - start.x);
     goal.y = start.y + ratio * (entry_gate.y - start.y);
     goal.z = start.z + ratio * (entry_gate.z - start.z);
-    goal.require_arrival_yaw = index == segments;
-    goal.face_tower = true;
+    // ENTRY_GATE is transit, not inspection. Its yaw follows horizontal
+    // motion; tower-facing yaw begins only after a sector target is issued.
+    goal.require_arrival_yaw = false;
+    goal.face_tower = false;
     goals.push_back(goal);
   }
   return goals;
+}
+
+std::vector<CandidatePoint> buildVerticalClimbGoals(
+    const CandidatePoint& staging_point, double entry_height,
+    double height_step) {
+  if (!std::isfinite(staging_point.x) || !std::isfinite(staging_point.y) ||
+      !std::isfinite(staging_point.z) || !std::isfinite(entry_height) ||
+      !std::isfinite(height_step) || height_step <= 0.0 ||
+      entry_height <= staging_point.z) {
+    return {};
+  }
+  const int segments = std::max(
+      1, static_cast<int>(std::ceil(
+             (entry_height - staging_point.z) / height_step)));
+  std::vector<CandidatePoint> goals;
+  goals.reserve(static_cast<std::size_t>(segments));
+  for (int index = 1; index <= segments; ++index) {
+    CandidatePoint goal = staging_point;
+    goal.id = index == segments
+                  ? "SAFE_ALTITUDE_HOLD"
+                  : "STAGING_CLIMB_" + std::to_string(index);
+    goal.z = staging_point.z +
+             (entry_height - staging_point.z) *
+                 static_cast<double>(index) / segments;
+    // A fixed-XY vertical climb has no meaningful horizontal bearing. Small
+    // EGO XY corrections can legitimately rotate the velocity-facing yaw, so
+    // yaw must not gate safe-altitude arrival. ENTRY_GATE yaw is evaluated
+    // and locked only after the map dwell that follows this target.
+    goal.require_arrival_yaw = false;
+    goals.push_back(goal);
+  }
+  return goals;
+}
+
+std::vector<std::size_t> buildClosedLapVisitSequence(
+    std::size_t waypoint_count, int inspection_laps) {
+  if (waypoint_count == 0U || inspection_laps < 1) return {};
+  std::vector<std::size_t> visits;
+  visits.reserve(1U +
+                 static_cast<std::size_t>(inspection_laps) * waypoint_count);
+  visits.push_back(0U);
+  for (int lap = 0; lap < inspection_laps; ++lap) {
+    for (std::size_t waypoint = 1U; waypoint < waypoint_count; ++waypoint) {
+      visits.push_back(waypoint);
+    }
+    visits.push_back(0U);
+  }
+  return visits;
 }
 
 void rotateSectorsToNearest(const geometry_msgs::Point& current,

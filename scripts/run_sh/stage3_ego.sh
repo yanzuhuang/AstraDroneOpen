@@ -18,7 +18,7 @@ usage() {
   stage3_ego.sh --stop
 
 查看完整动态仿真（会自动解锁、起飞和执行任务）：
-  stage3_ego.sh --control --sector-limit 1 --gui --rviz --attach
+  stage3_ego.sh --control --sector-limit 8 --gui --rviz --attach
 
 默认 dry-run：按阶段二已经验证的顺序启动 PX4/Gazebo、FAST-LIO、EGO、
 traj_server、bridge 和阶段三任务管理器；PlannerStatus 由 EGO FSM 直接发布，但 bridge
@@ -26,8 +26,8 @@ traj_server、bridge 和阶段三任务管理器；PlannerStatus 由 EGO FSM 直
 
 阶段三控制必须显式添加 --control。只有 dry-run、点云/TF/占据图对齐、
 preflight 和控制权唯一性证据全部通过并由项目负责人批准后才能使用。
-默认世界为 worksite.world。生产配置是 8 扇区；首次带控制验证必须显式
-使用 --sector-limit 1，禁止直接跑完整 8 扇区。
+默认世界为 worksite.world。带控制运行只接受完整 8 扇区；较小 sector-limit
+仅保留给无控制的状态机测试，不作为阶段三飞行流程。
 EOF
 }
 
@@ -158,11 +158,21 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 
+if [[ "$enable_control" == true && "$sector_limit" != 8 ]]; then
+    echo "阶段三带控制运行只允许完整 8 扇区；较小 sector-limit 仅供无控制测试。" >&2
+    exit 2
+fi
+
 if [[ "$stop" == true ]]; then
     if ! tmux has-session -t "$session_name" 2>/dev/null; then
         echo "阶段三会话未运行。"
         exit 0
     fi
+
+    evidence_bag="$(
+        tmux show-options -t "$session_name" -v @stage3_bag_file \
+            2>/dev/null || true
+    )"
 
     # A large compressed bag can need tens of seconds to flush its final chunk
     # and index after SIGINT. Stop the recorder first and do not destroy the
@@ -193,7 +203,23 @@ if [[ "$stop" == true ]]; then
             echo "stage3 recorder 在 120 秒内未完成；为保护 bag，未强制结束会话。" >&2
             exit 1
         fi
-        echo "stage3 recorder 已完成，bag 索引已写入。"
+        if [[ -n "$evidence_bag" && ! -f "$evidence_bag" ]]; then
+            active_bag="${evidence_bag}.active"
+            if [[ -f "$active_bag" ]]; then
+                echo "recorder 未完成最终重命名；保留原始 active 并重建索引……"
+                rosbag reindex "$active_bag"
+                [[ -f "${active_bag}.orig.active" ]] || {
+                    echo "rosbag reindex 未保留原始 active，拒绝继续。" >&2
+                    exit 1
+                }
+                mv -- "$active_bag" "$evidence_bag"
+            fi
+        fi
+        if [[ -n "$evidence_bag" && ! -s "$evidence_bag" ]]; then
+            echo "stage3 recorder 已退出，但完整 bag 不存在：$evidence_bag" >&2
+            exit 1
+        fi
+        echo "stage3 recorder 已完成，完整 bag 已验证：$evidence_bag"
     fi
 
     while IFS= read -r window; do
@@ -274,6 +300,7 @@ printf -v integration_command '%q --component integration %q %q %q %q %q' \
     "$record_bag"
 
 tmux new-session -d -s "$session_name" -n px4_gazebo "$px4_command"
+tmux set-option -t "$session_name" @stage3_bag_file "$bag_file"
 tmux new-window -d -t "$session_name:" -n fast_lio "$fast_lio_command"
 if [[ "$record_bag" == true ]]; then
     tmux new-window -d -t "$session_name:" -n recorder "$recorder_command"

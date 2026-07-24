@@ -21,9 +21,11 @@ class Stage3NoControlIntegration(unittest.TestCase):
     def setUp(self):
         self.lock = threading.Lock()
         self.state = ""
+        self.states = []
         self.goal_count = 0
         self.trajectory_id = 0
         self.failure_injected = False
+        self.sector_failure_goal_count = 0
         self.recovery_started = False
         self.bridge_hold_injected = False
         self.bridge_hold_active = False
@@ -77,6 +79,7 @@ class Stage3NoControlIntegration(unittest.TestCase):
     def state_callback(self, message):
         with self.lock:
             self.state = message.data
+            self.states.append(message.data)
             if message.data == "EVALUATING" and not self.recovery_started:
                 self.obstacle_enabled = True
             if message.data == "RECOVERING":
@@ -96,24 +99,27 @@ class Stage3NoControlIntegration(unittest.TestCase):
             self.goal_count += 1
             self.trajectory_id += 1
             state = self.state
-            if state == "APPROACH":
+            if state == "ENTRY_GATE_TRANSIT":
                 self.approach_goal_count += 1
                 if not self.bridge_hold_injected:
-                    # Reproduce the 2026-07-23 13:15 bag chain: bridge enters
-                    # a local HOLD immediately after the first ENTRY_GATE
-                    # command. The mission must cancel/supervise it, relocate
-                    # the gate, and continue without any MAVROS publication.
+                    # Inject one bridge-local HOLD during the newly explicit
+                    # safe-altitude ENTRY_GATE transit. The mission must
+                    # supervise it and retry the same locked goal without
+                    # switching ascent channels or publishing MAVROS output.
                     self.bridge_hold_injected = True
                     self.bridge_hold_active = True
                     return
             if state == "RECOVERING":
                 self.recovery_goal_heights.append(message.pose.position.z)
-            # After alternate ENTRY_GATE succeeds, hold the first sector
+            # After ENTRY_GATE succeeds, hold the first sector
             # target away from odom so a real PlannerStatus failure event
             # drives the separate HOLD/R1/R2 chain.
-            if state != "APPROACH" and not self.recovery_started:
-                self.failure_injected = True
-                return
+            if state in ("TARGET_LOCKED", "NAVIGATING") and not self.recovery_started:
+                if self.sector_failure_goal_count < 2:
+                    self.sector_failure_goal_count += 1
+                    self.failure_injected = True
+                    return
+                self.failure_injected = False
             self.position = [message.pose.position.x,
                              message.pose.position.y,
                              message.pose.position.z]
@@ -164,8 +170,18 @@ class Stage3NoControlIntegration(unittest.TestCase):
         odom.pose.pose.orientation.w = math.cos(yaw * 0.5)
         self.odom_pub.publish(odom)
 
-        cloud = point_cloud2.create_cloud_xyz32(
-            odom.header, [(100.0, 100.0, 100.0)])
+        rays = []
+        for azimuth_deg in range(-180, 180, 4):
+            azimuth = math.radians(azimuth_deg)
+            for elevation_deg in range(-6, 53, 4):
+                elevation = math.radians(elevation_deg)
+                horizontal = 40.0 * math.cos(elevation)
+                rays.append((
+                    position[0] + horizontal * math.cos(azimuth),
+                    position[1] + horizontal * math.sin(azimuth),
+                    position[2] + 40.0 * math.sin(elevation),
+                ))
+        cloud = point_cloud2.create_cloud_xyz32(odom.header, rays)
         self.cloud_pub.publish(cloud)
         occupancy_points = [(8.0, 0.0, 5.0)] if obstacle_enabled else []
         occupancy = point_cloud2.create_cloud_xyz32(odom.header,
@@ -186,7 +202,7 @@ class Stage3NoControlIntegration(unittest.TestCase):
         status = PlannerStatus()
         status.header = odom.header
         status.planner_state = "REPLAN_TRAJ" if failures else "EXEC_TRAJ"
-        status.target_id = "integration_target"
+        status.target_id = "integration_target_{}".format(trajectory_id)
         status.trajectory_id = trajectory_id
         status.last_plan_success = failures == 0
         status.consecutive_plan_failures = failures
@@ -212,10 +228,10 @@ class Stage3NoControlIntegration(unittest.TestCase):
             self.assertGreaterEqual(self.tracking_disable_calls, 2)
             self.assertGreaterEqual(self.resume_calls, 1)
             self.assertEqual(self.return_calls, 1)
-            self.assertGreaterEqual(len(self.recovery_goal_heights), 3)
-            self.assertAlmostEqual(self.recovery_goal_heights[0], 7.0, places=3)
-            self.assertAlmostEqual(self.recovery_goal_heights[1], 7.0, places=3)
-            self.assertAlmostEqual(self.recovery_goal_heights[2], 5.0, places=3)
+            self.assertIn("NORMAL_RETURN", self.states)
+            self.assertNotIn("RETURN_EGRESS", self.states)
+            self.assertEqual(self.sector_failure_goal_count, 2)
+            self.assertEqual(len(self.recovery_goal_heights), 0)
             self.assertIn(True, self.face_tower_modes)
             self.assertEqual(self.mavros_setpoints, 0)
 

@@ -5,6 +5,7 @@
 #include <ros/time.h>
 
 #include <cstdint>
+#include <cmath>
 
 namespace ego_gazebo_bridge {
 
@@ -52,6 +53,28 @@ inline bool shouldAutoLandFromHold(bool mission_supervised,
                                    double hold_duration,
                                    double timeout) {
   return !mission_supervised && hold_duration >= timeout;
+}
+
+inline bool homeHoverAllowsAutoLand(bool in_home_hover_state,
+                                    bool inputs_fresh,
+                                    bool armed,
+                                    bool offboard,
+                                    double home_position_error,
+                                    double home_tolerance) {
+  return in_home_hover_state && inputs_fresh && armed && offboard &&
+         std::isfinite(home_position_error) &&
+         std::isfinite(home_tolerance) && home_tolerance > 0.0 &&
+         home_position_error <= home_tolerance;
+}
+
+inline bool supervisedHoldAllowsEmergencyAutoLand(bool in_hold_state,
+                                                  bool mission_supervised,
+                                                  bool inputs_fresh,
+                                                  bool armed,
+                                                  bool offboard,
+                                                  bool pose_fresh) {
+  return in_hold_state && mission_supervised && inputs_fresh && armed &&
+         offboard && pose_fresh;
 }
 
 // Raw EGO commands bypass the position-only output_setpoint_ slew state. A

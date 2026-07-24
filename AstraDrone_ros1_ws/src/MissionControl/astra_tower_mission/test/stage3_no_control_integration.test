@@ -18,9 +18,14 @@
     <param name="mission/observation_angle_deg" value="0.0"/>
     <param name="mission/observation_radius_offset" value="3.0"/>
     <param name="mission/sector_limit" value="1"/>
+    <param name="mission/inspection_laps" value="1"/>
     <param name="entry_gate/minimum_radius" value="9.0"/>
     <param name="entry_gate/maximum_radius" value="16.0"/>
     <param name="entry_gate/maximum_segment_length" value="6.0"/>
+    <param name="staging/height" value="4.0"/>
+    <param name="staging/climb_height_step" value="1.0"/>
+    <param name="coverage/unknown_ratio_limit" value="0.90"/>
+    <param name="coverage/wait_timeout" value="2.0"/>
     <param name="recovery/recovery_height" value="7.0"/>
     <param name="return_egress/orbit_radius" value="12.0"/>
     <param name="return_egress/transit_height" value="7.0"/>

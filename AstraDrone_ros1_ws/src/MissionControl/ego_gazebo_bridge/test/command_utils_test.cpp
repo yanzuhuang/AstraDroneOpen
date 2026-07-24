@@ -182,20 +182,20 @@ TEST(YawPolicy, FacesHorizontalVelocityAndComputesYawRate) {
   command.acceleration.x = -1.0;
   std::string reason;
 
-  ASSERT_TRUE(applyVelocityFacingYaw(0.05, &command, &reason)) << reason;
+  ASSERT_TRUE(applyVelocityFacingYaw(0.05, -0.7, &command, &reason)) << reason;
   EXPECT_NEAR(0.5 * kPi, command.yaw, 1e-12);
   EXPECT_NEAR(0.5, command.yaw_dot, 1e-12);
 }
 
-TEST(YawPolicy, PreservesYawWhenHorizontalVelocityIsTooSmall) {
+TEST(YawPolicy, HoldsVehicleYawWhenHorizontalVelocityIsTooSmall) {
   quadrotor_msgs::PositionCommand command;
   command.velocity.x = 0.01;
   command.yaw = -1.2;
   command.yaw_dot = 0.4;
   std::string reason;
 
-  ASSERT_TRUE(applyVelocityFacingYaw(0.05, &command, &reason)) << reason;
-  EXPECT_DOUBLE_EQ(-1.2, command.yaw);
+  ASSERT_TRUE(applyVelocityFacingYaw(0.05, -0.7, &command, &reason)) << reason;
+  EXPECT_DOUBLE_EQ(-0.7, command.yaw);
   EXPECT_DOUBLE_EQ(0.0, command.yaw_dot);
 }
 

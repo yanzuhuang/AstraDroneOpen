@@ -20,6 +20,8 @@ mission:
   # one sector in the no-control/integration launch; never use that override
   # as evidence for a complete orbit.
   sector_limit: 8
+  # A lap is strictly waypoint 1 -> ... -> waypoint 8 -> waypoint 1.
+  inspection_laps: 1
   layer_count: 1
   start_angle_deg: -67.5
   direction: counter_clockwise
@@ -32,16 +34,17 @@ mission:
   approach_segment_length: 6.0
   sector_angle_half_width_deg: 12.0
   sector_radius_half_width: 4.0
-  # Sector 1 is occluded by the 35.0283 m crane boom at the nominal layer.
-  # Keep the same angular sector id and use 38 m only when all 29..31 m
-  # candidates fail their hard endpoint clearance checks.
+  # The nominal target of every sector remains exactly 30 m.  The 38 m
+  # candidate is a last-resort fallback after all smaller endpoint changes
+  # fail their hard constraints or bounded EGO attempts.
   sector_height_half_width: 8.0
   target_replacement_margin: 2.0
 
 entry_gate:
   # Candidate offsets are relative to mission/radius and start_angle_deg.
-  # Every accepted gate is at inspection_height; no low-altitude XY gate or
-  # fixed-X/Y vertical climb is generated.
+  # No gate is selected at low altitude.  The vehicle first climbs on the
+  # locked home-local channel, dwells for mapping at 30 m, then evaluates and
+  # locks one gate for a segmented horizontal EGO transit.
   # Wider angular coverage is required because the crane boom crosses the
   # original -87.5..-47.5 degree gate fan at inspection height.
   angle_offsets_deg: [-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
@@ -51,13 +54,55 @@ entry_gate:
   maximum_horizontal_distance: 60.0
   minimum_clearance: 2.0
   cloud_inflation: 0.4
+  # FAST-LIO publishes obstacle hits, not a persistent free/unknown voxel
+  # state. The instantaneous MID360 field-of-view ratio is therefore a risk
+  # diagnostic for sector endpoints, not a hard rejection. Fresh-map,
+  # occupancy and known-obstacle checks remain hard constraints.
+  unknown_is_hard_constraint: false
   corridor_sample_step: 0.5
   clearance_weight: 0.1
   distance_weight: 1.0
   blocked_corridor_penalty: 5.0
   maximum_segment_length: 6.0
+  target_timeout: 90.0
+  # Compatibility key; the ascent-specific switch limit below is authoritative.
+  maximum_relocations: 2
+
+staging:
+  # Primary ascent is captured home-hover XY. ENTRY_GATE selection is delayed
+  # until safe altitude. Nearby channels are tried only after a hard
+  # endpoint/path block or bounded EGO-unreachable result.
+  use_configured_xy: false
+  x: 0.0
+  y: 0.0
+  height: 4.0
+  climb_height_step: 3.0
+  channel_offsets_x: [0.0, 3.0, -3.0, 0.0, 0.0]
+  channel_offsets_y: [0.0, 0.0, 0.0, 3.0, -3.0]
+  maximum_channel_switches: 2
+  minimum_channel_hold: 5.0
+
+# The simulated FAST-LIO cloud is hit-only, so missing returns cannot prove a
+# free voxel.  These bounds define candidate observability in the MID-360
+# sensor volume; known occupancy and EGO planning remain separate hard gates.
+coverage:
+  angular_bin_deg: 2.0
+  neighborhood_radius: 3.0
+  sample_resolution: 1.0
+  # Match the effective simulated chain: FAST-LIO blind=0.5 m and the
+  # Gazebo MID-360 plugin maximum range=40 m.
+  minimum_range: 0.5
+  maximum_range: 40.0
+  unknown_ratio_limit: 0.65
+  wait_timeout: 12.0
+  safe_altitude_dwell: 4.0
+  sensor_min_elevation_deg: -7.2
+  sensor_max_elevation_deg: 52.2
 
 candidate:
+  # Generation order does not define selection.  After hard rejection, the
+  # task uses strict priority: nominal 30 m, small angle, small radius,
+  # 29..31 m, larger horizontal change, then 38 m.
   angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0]
   radius_offsets_m: [0.0, 2.0, 4.0]
   height_offsets_m: [0.0, -1.0, 1.0, 8.0]
@@ -99,6 +144,8 @@ topics:
   occupancy_inflate: /grid_map/occupancy_inflate
   planner_status: /planner/status
   bridge_state: /ego_mavros_bridge/state
+  mavros_state: /mavros/state
+  mavros_extended_state: /mavros/extended_state
   goal: /move_base_simple/goal
 
 outputs:
@@ -146,10 +193,16 @@ arrival_velocity_threshold: 0.2
 arrival_yaw_tolerance: 0.26
 arrival_hold_duration: 1.0
 consecutive_plan_failure_limit: 3
+# A safe endpoint is retried unchanged through EGO before it may be marked
+# planner_unreachable and replaced. A blocked straight chord is only a risk.
+planner_unreachable_attempt_limit: 2
 emergency_stop_timeout: 6.0
 failure_hold_duration: 2.0
 max_recovery_attempts: 2
 recovery_target_timeout: 60.0
+normal_return:
+  # Normal completion retries the saved ingress path before RETURN_EGRESS.
+  maximum_retries: 2
 overall_timeout: 2400.0
 report_period: 0.2
 report_file: /tmp/astra_stage3_latest.csv

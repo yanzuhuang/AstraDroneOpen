@@ -44,6 +44,7 @@ bool applyPointFacingYaw(const geometry_msgs::Point& target,
                          std::string* reason);
 
 bool applyVelocityFacingYaw(double minimum_horizontal_speed,
+                            double stationary_yaw,
                             quadrotor_msgs::PositionCommand* command,
                             std::string* reason);
 

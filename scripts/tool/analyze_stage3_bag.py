@@ -264,7 +264,10 @@ def audit(
             elif topic == "/rosout":
                 text = message.msg
                 gate = re.search(
-                    r"ENTRY_GATE selected: (ENTRY_GATE_a\d+)", text
+                    r"(?:ENTRY_GATE selected: |"
+                    r"ENTRY_GATE locked only after safe-altitude map dwell: )"
+                    r"(ENTRY_GATE_a\d+)",
+                    text,
                 )
                 if gate:
                     entry_gates.append(
@@ -298,13 +301,13 @@ def audit(
                         }
                     )
 
-    sector_visits_by_index = {}
+    sector_visits = []
     for target in sector_targets:
-        sector_visits_by_index.setdefault(target["visit_index"], target)
-    sector_visits = [
-        sector_visits_by_index[index]
-        for index in sorted(sector_visits_by_index)
-    ]
+        if (
+            not sector_visits
+            or sector_visits[-1]["target_id"] != target["target_id"]
+        ):
+            sector_visits.append(target)
     unique_sector_ids = []
     for target in sector_visits:
         if target["sector_id"] not in unique_sector_ids:
@@ -316,6 +319,39 @@ def audit(
         ).items()
         if count > 1
     ]
+    closed_lap_count = 0
+    closed_lap_valid = False
+    if sector_visits:
+        ids = [item["sector_id"] for item in sector_visits]
+        start_sector = ids[0]
+        cursor = 0
+        while cursor + 8 < len(ids):
+            expected = [
+                (start_sector + offset) % 8 for offset in range(8)
+            ] + [start_sector]
+            if ids[cursor:cursor + 9] != expected:
+                break
+            closed_lap_count += 1
+            cursor += 8
+        closed_lap_valid = (
+            closed_lap_count >= 1 and cursor == len(ids) - 1
+        )
+    mission_state_names = [event["state"] for event in mission_states]
+    bridge_state_names = [event["state"] for event in bridge_states]
+    normal_return_preferred = (
+        "NORMAL_RETURN" in mission_state_names
+        and (
+            "RETURN_EGRESS" not in mission_state_names
+            or mission_state_names.index("NORMAL_RETURN")
+            < mission_state_names.index("RETURN_EGRESS")
+        )
+    )
+    home_hover_before_landing = (
+        "HOME_HOVER" in bridge_state_names
+        and "LANDING" in bridge_state_names
+        and bridge_state_names.index("HOME_HOVER")
+        < bridge_state_names.index("LANDING")
+    )
 
     missing_topics = [
         topic for topic in REQUIRED_TOPICS if topic_counts.get(topic, 0) == 0
@@ -345,6 +381,10 @@ def audit(
         "sector_visits": sector_visits,
         "unique_sector_ids": unique_sector_ids,
         "repeated_sector_ids": repeated_sector_ids,
+        "closed_lap_count": closed_lap_count,
+        "closed_lap_valid": closed_lap_valid,
+        "normal_return_preferred": normal_return_preferred,
+        "home_hover_before_landing": home_hover_before_landing,
         "current_sector_events": current_sector_events,
         "cancel_count": cancel_count,
         "planner": {
@@ -411,7 +451,9 @@ def audit(
         "on_ground": final_extended is not None
         and final_extended["landed_state"] == 1,
         "no_missing_required_topics": not missing_topics,
-        "no_duplicate_sector_target_ids": not repeated_sector_ids,
+        "closed_lap_completed": closed_lap_valid,
+        "normal_return_precedes_fallback": normal_return_preferred,
+        "home_hover_precedes_auto_land": home_hover_before_landing,
         "no_planner_collision_or_emergency": not planner_flag_counts,
         "no_sustained_tracking_error": (
             tracking_max_continuous_duration < tracking_error_duration

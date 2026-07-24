@@ -161,7 +161,67 @@ TEST(Stage3Planner, SafeCandidateIsAcceptedAndHysteresisKeepsLock) {
   second.score = 10.0;
   sector.candidates = {first, second};
   EXPECT_EQ(chooseBestCandidate(sector, &first, 100.0), 0);
-  EXPECT_EQ(chooseBestCandidate(sector, &first, -100.0), 1);
+  // Numerical score and hysteresis cannot overturn lexicographic nominal
+  // deviation within this priority class.
+  EXPECT_EQ(chooseBestCandidate(sector, &first, -100.0), 0);
+}
+
+TEST(Stage3Planner, UnknownCoverageIsAHardConstraint) {
+  Sector sector = makeSector();
+  CandidatePoint point = candidate(8.0, 0.0);
+  CandidateFilterConfig config;
+  config.unknown_ratio_limit = 0.25;
+  EXPECT_FALSE(evaluateCandidate(
+      &point, sector, geometry_msgs::Point(), {}, {}, true, config,
+      nullptr, 0.30));
+  EXPECT_EQ(point.rejection_reason, "UNKNOWN_REGION");
+  EXPECT_TRUE(point.target_invalid);
+}
+
+TEST(Stage3Planner, UnknownCoverageCanRemainDiagnosticForKnownClearSector) {
+  Sector sector = makeSector();
+  CandidatePoint point = candidate(8.0, 0.0);
+  CandidateFilterConfig config;
+  config.unknown_ratio_limit = 0.25;
+  config.unknown_is_hard_constraint = false;
+  EXPECT_TRUE(evaluateCandidate(
+      &point, sector, geometry_msgs::Point(), {}, {}, true, config,
+      nullptr, 0.30));
+  EXPECT_TRUE(point.accepted);
+  EXPECT_FALSE(point.target_invalid);
+  EXPECT_EQ(point.risk_reason, "UNKNOWN_REGION_DIAGNOSTIC");
+}
+
+TEST(Stage3Planner, LexicographicFallbackCannotBeBoughtByClearanceScore) {
+  Sector sector = makeSector();
+  CandidateFilterConfig config;
+  geometry_msgs::Point current;
+  current.x = 8.0;
+  current.z = 5.0;
+
+  CandidatePoint small_angle =
+      candidate(8.0 * std::cos(5.0 * kPi / 180.0),
+                8.0 * std::sin(5.0 * kPi / 180.0), 5.0);
+  small_angle.id = "small_angle";
+  CandidatePoint small_radius = candidate(10.0, 0.0, 5.0);
+  small_radius.id = "small_radius";
+  CandidatePoint small_height = candidate(8.0, 0.0, 6.0);
+  small_height.id = "small_height";
+  ASSERT_TRUE(evaluateCandidate(&small_angle, sector, current, {}, {}, true,
+                                config));
+  ASSERT_TRUE(evaluateCandidate(&small_radius, sector, current, {}, {}, true,
+                                config));
+  ASSERT_TRUE(evaluateCandidate(&small_height, sector, current, {}, {}, true,
+                                config));
+  small_angle.score = -1000.0;
+  small_angle.clearance = 2.0;
+  small_radius.score = 1000.0;
+  small_radius.clearance = 100.0;
+  small_height.score = 2000.0;
+  small_height.clearance = 200.0;
+  sector.candidates = {small_height, small_radius, small_angle};
+  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0), 2);
+  EXPECT_EQ(sector.candidates[2].priority, 1);
 }
 
 TEST(Stage3Planner, StaleMapRejectsBeforeAnyScoring) {
@@ -374,7 +434,39 @@ TEST(Stage3Planner, RollingEntryGoalsMoveAndClimbTogether) {
   EXPECT_LT(goals.back().x, gate.x + 1.0e-9);
   EXPECT_DOUBLE_EQ(goals.back().z, gate.z);
   EXPECT_FALSE(goals.front().require_arrival_yaw);
-  EXPECT_TRUE(goals.back().require_arrival_yaw);
+  EXPECT_FALSE(goals.back().require_arrival_yaw);
+  EXPECT_FALSE(goals.front().face_tower);
+  EXPECT_FALSE(goals.back().face_tower);
+}
+
+TEST(Stage3Planner, SegmentedClimbKeepsConfiguredXYAndLocksTopOnce) {
+  CandidatePoint staging;
+  staging.x = 3.0;
+  staging.y = -4.0;
+  staging.z = 4.0;
+  const auto goals = buildVerticalClimbGoals(staging, 30.0, 6.0);
+  ASSERT_EQ(goals.size(), 5U);
+  for (const auto& goal : goals) {
+    EXPECT_DOUBLE_EQ(goal.x, staging.x);
+    EXPECT_DOUBLE_EQ(goal.y, staging.y);
+  }
+  EXPECT_DOUBLE_EQ(goals.back().z, 30.0);
+  EXPECT_EQ(goals.back().id, "SAFE_ALTITUDE_HOLD");
+  EXPECT_FALSE(goals.back().require_arrival_yaw);
+}
+
+TEST(Stage3Planner, OneAndMultipleLapsAreExplicitlyClosedAtWaypointOne) {
+  const auto one_lap = buildClosedLapVisitSequence(8U, 1);
+  const std::vector<std::size_t> expected_one{
+      0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 0U};
+  EXPECT_EQ(one_lap, expected_one);
+
+  const auto two_laps = buildClosedLapVisitSequence(8U, 2);
+  ASSERT_EQ(two_laps.size(), 17U);
+  EXPECT_EQ(two_laps.front(), 0U);
+  EXPECT_EQ(two_laps[8], 0U);
+  EXPECT_EQ(two_laps.back(), 0U);
+  EXPECT_EQ(std::count(two_laps.begin(), two_laps.end(), 0U), 3);
 }
 
 TEST(Stage3Planner, LandingGetsADeadlineIndependentFromEgoReturn) {

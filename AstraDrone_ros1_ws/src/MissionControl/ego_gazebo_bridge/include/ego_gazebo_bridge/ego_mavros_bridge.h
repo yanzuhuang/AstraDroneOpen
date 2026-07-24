@@ -40,6 +40,7 @@ enum class BridgeState {
   kHoverReady,
   kTrackEgo,
   kHold,
+  kHomeHover,
   kLanding,
   kDone,
   kError,

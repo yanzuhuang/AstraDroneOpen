@@ -151,10 +151,12 @@ bool applyPointFacingYaw(const geometry_msgs::Point& target,
 }
 
 bool applyVelocityFacingYaw(double minimum_horizontal_speed,
+                            double stationary_yaw,
                             quadrotor_msgs::PositionCommand* command,
                             std::string* reason) {
   if (command == nullptr || reason == nullptr ||
       !finite(minimum_horizontal_speed) || minimum_horizontal_speed <= 0.0 ||
+      !finite(stationary_yaw) ||
       !isFinitePositionCommand(*command)) {
     if (reason != nullptr) {
       *reason = "invalid velocity-facing yaw input";
@@ -169,8 +171,11 @@ bool applyVelocityFacingYaw(double minimum_horizontal_speed,
   const double minimum_speed_squared =
       minimum_horizontal_speed * minimum_horizontal_speed;
   if (speed_squared < minimum_speed_squared) {
-    // Horizontal direction is undefined while nearly stationary. Preserve the
-    // last trajectory yaw instead of amplifying velocity/acceleration noise.
+    // Horizontal direction is undefined during a vertical segment or while
+    // nearly stationary. Hold the measured/effective vehicle yaw supplied by
+    // the bridge instead of accepting traj_server's undefined forward yaw.
+    command->yaw =
+        std::atan2(std::sin(stationary_yaw), std::cos(stationary_yaw));
     command->yaw_dot = 0.0;
     reason->clear();
     return true;

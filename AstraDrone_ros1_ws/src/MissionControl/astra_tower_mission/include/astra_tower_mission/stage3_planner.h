@@ -6,6 +6,7 @@
 #include <geometry_msgs/Point.h>
 
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace astra_tower_mission {
@@ -56,12 +57,20 @@ struct CandidatePoint {
   bool require_arrival_yaw{true};
   bool face_tower{true};
   bool accepted{false};
+  bool target_invalid{false};
   bool straight_corridor_blocked{false};
+  bool planner_unreachable{false};
   std::string rejection_reason;
   std::string risk_reason;
   double clearance{0.0};
   double score{-1.0e9};
   double unknown_ratio{0.0};
+  int priority{99};
+  double nominal_deviation{1.0e9};
+  double height_deviation{1.0e9};
+  double observation_deviation{1.0e9};
+  double continuity_error{1.0e9};
+  double route_distance{1.0e9};
 };
 
 // ENTRY_GATE is a first-class task waypoint at inspection height.  It is
@@ -109,6 +118,7 @@ struct CandidateFilterConfig {
   double map_timeout{0.5};
   double cloud_inflation{0.4};
   double unknown_ratio_limit{0.25};
+  bool unknown_is_hard_constraint{true};
   double corridor_sample_step{0.5};
   double tower_extra_clearance{0.0};
   double score_clearance_weight{1.0};
@@ -117,6 +127,9 @@ struct CandidateFilterConfig {
   double score_continuity_weight{0.5};
   double score_unknown_weight{1.0};
   double blocked_corridor_penalty{5.0};
+  double small_angle_offset_deg{5.0};
+  double small_radius_offset_m{2.0};
+  double small_height_offset_m{1.0};
 };
 
 struct RecoveryConfig {
@@ -163,7 +176,8 @@ bool evaluateCandidate(CandidatePoint* candidate,
                        const std::vector<StaticObstacle>& obstacles,
                        bool map_fresh,
                        const CandidateFilterConfig& config,
-                        const CandidatePoint* previous_target = nullptr);
+                       const CandidatePoint* previous_target = nullptr,
+                       double unknown_ratio = 0.0);
 
 int chooseBestCandidate(const Sector& sector,
                         const CandidatePoint* locked_target,
@@ -183,7 +197,9 @@ bool evaluateEntryGateCandidate(
     const std::vector<geometry_msgs::Point>& map_points,
     const std::vector<StaticObstacle>& obstacles,
     bool map_fresh,
-    const EntryGateConfig& config);
+    const EntryGateConfig& config,
+    double unknown_ratio = 0.0,
+    double unknown_ratio_limit = 1.0);
 
 int chooseBestEntryGateCandidate(const std::vector<CandidatePoint>& candidates);
 
@@ -191,6 +207,15 @@ std::vector<CandidatePoint> buildRollingApproachGoals(
     const geometry_msgs::Point& start,
     const CandidatePoint& entry_gate,
     double maximum_segment_length);
+
+std::vector<CandidatePoint> buildVerticalClimbGoals(
+    const CandidatePoint& staging_point,
+    double entry_height,
+    double height_step);
+
+std::vector<std::size_t> buildClosedLapVisitSequence(
+    std::size_t waypoint_count,
+    int inspection_laps);
 
 void rotateSectorsToNearest(const geometry_msgs::Point& current,
                             std::vector<Sector>* sectors);

@@ -4,11 +4,140 @@
 Noetic、Gazebo Classic、PX4 SITL、MAVROS、FAST-LIO 和 EGO-Planner 单机仿真；
 不包含动态障碍预测、多机、相机检测、Cloud/QGIS、真机或 PX4/EGO 核心升级。
 
-截至 2026-07-23 20:25，已经按 `2 → 4 → 8` 扇区顺序完成实际控制飞行。
-最终 8 扇区完整 bag 证明安全 ENTRY_GATE、三维进场、8 个不重复扇区、
-塔外侧 EGO 返航、AUTO.LAND、`armed=false`、`ON_GROUND` 和双方 `DONE`。
+2026-07-23 的旧版本曾按 `2 → 4 → 8` 扇区完成实际控制飞行；该历史
+8 扇区 bag 证明的是旧状态机的 8 个不重复目标、`RETURN_EGRESS` 和
+AUTO.LAND，不证明本页 2026-07-24 收尾设计的 `1→…→8→1` 闭环、分段直升、
+正常反向进场返航或 HOME_HOVER 落地门禁。
+
+2026-07-24 已按 bag 根因完成进场、HOLD、返航和落地状态机修复，并完成新的
+8 扇区控制验收。最终方案不再搜索低空水平等待点，而是在 home hover 捕获并
+锁定 XY，分 9 段近竖直上升到 30 m，驻留建图后只锁定一个 ENTRY_GATE，再
+水平转场。最终完整 bag 的离线分析为 `passed=true`。
 最新总表见
 [`阶段三任务完成与待办总结.md`](./阶段三任务完成与待办总结.md)。
+
+## 0. 2026-07-24 最终设计与验证结论
+
+### 0.1 bag 根因
+
+最初复现 bag `/tmp/astra_stage3_repro_20260724_0220.bag` 在环境重启前完成
+分析：386.829 s、535,885 条消息。任务把 30 m ENTRY_GATE 的 XY 投影到
+`z=4 m` 作为低空等待点，在多个远端 gate 间切换并靠近树木；planner 出现
+current collision 117 次、no feasible 79 次、最大连续失败 741，采样最小
+净空仅 0.087 m。该 `/tmp` 文件随后随执行环境重启丢失，不作为可复核交付件，
+但分析结论促成了后续持久化复飞。
+
+旧 HOLD 的直接闭环缺陷是：入场前没有可用 RETURN_EGRESS，land 服务又只接受
+HOME_HOVER；任务进入 ERROR 后，bridge 的 mission-supervised HOLD 会抑制自动
+loss landing。因此既不能恢复、返航或降落，形成无限 HOLD。与此同时，
+`no_progress_timeout` 未真正驱动状态转换，旧 EGO 目标在覆盖等待时仍活跃，
+`Close to goal`/失败计数被重复累计。
+
+持久化失败 bag
+`/home/yanzu/bag/astra_stage3_vertical_entry_final_2026-07-24.bag`
+进一步发现 gate 判定不一致：`ENTRY_GATE_a23` 端点已经通过硬过滤，但首个
+滚动目标 `(2.919,3.764,29.963)` 又被保守起重机整块 OBB 判为占据。bag 中
+该点距实际膨胀占据点最近 `4.242 m`，只是在 OBB 的 2 m 膨胀边界内
+`0.038 m`。该轮在 2 s HOLD 后自动选择 NORMAL_RETURN，并完成
+HOME_HOVER/AUTO.LAND/DONE，证明无限 HOLD 已消除；但没有完成巡检，所以不记
+为成功。
+
+### 0.2 最终进场方案
+
+当前控制流程是：
+
+```text
+起飞到 home hover
+→ 捕获并锁定 home-local XY
+→ 3 m 步长分段垂直上升到 30 m
+→ 安全高度驻留 4 s 并持续建图
+→ 生成、评估并只锁定一个 ENTRY_GATE
+→ 分段水平飞向塔外侧
+→ 1→…→8→1 巡检闭环
+→ 反向复用成功进场目标正常返航
+→ HOME_HOVER → PX4 AUTO.LAND
+```
+
+主上升通道正常时绝不改变 XY。只有已知占据、路径阻挡或两次真实 EGO 不可达
+等硬失败，且当前通道至少保持 5 s，才按 `[home, +3x, -3x, +3y, -3y] m`
+选择附近通道；最多切换 2 次。地图未知、地图过期、目标被占据、路径阻挡和
+EGO 不可达分别记录，不再共用一个失败状态。MID-360 hit-only 点云不能用
+“没有命中”证明自由空间，因此上升段的 unknown 只作诊断；实际占据图终点检查
+和 EGO 规划仍是硬安全门禁。
+
+最终 gate 端点仍经过塔 keep-out、静态障碍、实际占据、任务边界和传感器可观测
+体检查。滚动中间点若被实际地图占据则报告 `ENTRY_GATE_TARGET_OCCUPIED` 并
+HOLD；若只与保守稀疏网格 OBB 相交，则报告
+`ENTRY_GATE_STATIC_CORRIDOR_RISK`，保持同一 gate 并交给 EGO 用实时占据图
+绕行。这消除了“端点按软走廊接受、首段按同一 OBB 硬拒绝”的矛盾。
+
+### 0.3 巡检目标、HOLD 与返航
+
+每扇区的 30 m 名义点绝对优先。只有名义点未通过硬约束或同一目标两次真实规划
+失败，才按最小角度、最小半径、29～31 m、小水平改动、最后 38 m 的字典序选择
+备用点；数值评分不能跨优先级补偿。目标锁定后保留迟滞和最小保持，不因一次
+重规划切换候选。
+
+任务状态为 `STAGING_POINT → SEGMENTED_CLIMB → ENTRY_GATE_TRANSIT →
+TARGET_LOCKED/NAVIGATING`，异常进入 `HOLDING`，再按同一目标有限重试、
+附近上升通道、NORMAL_RETURN、RETURN_EGRESS、FAILURE_LANDING 的顺序退化。
+APPROACH/ENTRY_GATE、HOLD、恢复、正常返航、备用返航和落地各有独立超时、
+重试上限和无进展检测。bridge 在 mission-supervised HOLD 中允许通过严格
+输入/姿态/控制权门禁请求紧急 AUTO.LAND，因此任何失败链都不能无限 HOLD。
+
+正常返航优先反向复用实际成功进场目标；有界重试耗尽才进入 24 m 塔外侧、
+38 m 高度的 RETURN_EGRESS。到达 home hover 后由任务请求 PX4 AUTO.LAND，
+成功必须同时满足 task/bridge `DONE`、`armed=false`、`ON_GROUND` 和 home
+接近约束。
+
+### 0.4 构建、故障注入与控制复飞
+
+相关包构建通过；任务/bridge gtest 和无控制集成测试最新汇总为
+`160 tests, 0 errors, 0 failures, 0 skipped`。无控制集成注入了 ENTRY_GATE
+期间 bridge HOLD、同一目标恢复、连续两次 planner failure 后最小备用点、
+NORMAL_RETURN；bridge 单测覆盖 HOME_HOVER 正常落地和 supervised HOLD 紧急
+落地门禁。
+
+持久化失败复飞：
+
+- bag：`/home/yanzu/bag/astra_stage3_vertical_entry_final_2026-07-24.bag`
+- 263.121 s、370,200 条消息；复现 OBB/实际占据不一致；
+- `SEGMENTED_CLIMB → ENTRY_GATE_TRANSIT → HOLDING → NORMAL_RETURN →
+  RETURN_HOME → DONE`；
+- HOME_HOVER 后 AUTO.LAND，最大跟踪误差 0.345 m，最终解锁接地。
+
+首次垂直进场成功复飞（后续 yaw/候选高度复测见第 7 节）：
+
+- bag：
+  `/home/yanzu/bag/astra_stage3_vertical_entry_final_retry1_2026-07-24.bag`
+- analysis：
+  `/home/yanzu/bag/astra_stage3_vertical_entry_final_retry1_2026-07-24.analysis.json`
+- SHA-256：`cfc5c451749edd7a1131ee5844ec7319e7074bf2e879616a42e8230c56305dd5`
+- 850.201 s、1,214,398 条消息，离线 `passed=true`；
+- 9 个上升目标只有 1 个 XY，z 为
+  `[6.90,9.79,12.67,15.56,18.45,21.34,24.22,27.11,30.00] m`；
+  实际最大 XY 偏差 0.234 m，无大于 0.05 m 的下降跳变；
+- ENTRY_GATE 仅锁定一次：`ENTRY_GATE_a23`；
+- 扇区顺序 `[1,2,3,4,5,6,7,0,1]`，闭环有效，均为同扇区 `c3`
+  38 m 保底点；30 m 名义点仍先评估，只因保守吊机硬几何不可用；
+- sector 0 一次无进展 HOLD 后对同一目标恢复成功，`cancel_count=1`；
+- planner `NONE=16864`，最大连续失败 0，无 collision/emergency；
+- 最小采样膨胀占据净空 2.737 m；
+- 跟踪误差 max 0.511 m、mean 0.122 m、P95 0.278 m，无持续超限；
+- 41,650 条 raw setpoint 的 `type_mask` 全为 0，控制发布者唯一为 bridge；
+- NORMAL_RETURN 优先，未使用 RETURN_EGRESS；HOME_HOVER 后 AUTO.LAND，
+  最终 `armed=false`、`ON_GROUND`、task/bridge `DONE`。
+
+### 0.5 尚存风险和限制
+
+- 当前 FAST-LIO 注册点云是 hit-only，没有正式 free/unknown 体素；本实现把
+  unknown 与已知占据分开，不能外推为真机自由空间证明。
+- 起重机 OBB 是保守整块包围盒，包含稀疏网格空隙；最终 gate/巡检终点仍硬过滤，
+  中间路径以实时占据和 EGO 为准。
+- 最新逐扇区复飞中 s3～s7 的 30 m 名义点可执行；s2 使用 31 m 最小备用点，
+  s0/s1 因保守起重机几何使用 38 m 备用点。
+- `map→camera_init` 单位变换、FAST-LIO 零 twist 和仿真传感器模型不是真机契约。
+- 只验证单机静态障碍；动态避障、多机、真机、相机、Cloud/QGIS 均未扩展。
 
 ## 环境准备
 
@@ -33,7 +162,7 @@ catkin_make -DCATKIN_WHITELIST_PACKAGES='astra_custom_msgs;plan_env;path_searchi
 
 ```bash
 cd /home/yanzu/AstraDroneOpen
-scripts/run_sh/stage3_ego.sh --sector-limit 1 \
+scripts/run_sh/stage3_ego.sh --sector-limit 8 \
   --bag /tmp/stage3_dryrun_evidence.bag --gui --rviz --attach
 ```
 
@@ -57,7 +186,7 @@ scripts/run_sh/stage3_ego.sh --stop
 推荐由启动脚本在 bridge/mission 启动前自动开始录包：
 
 ```bash
-scripts/run_sh/stage3_ego.sh --sector-limit 1 \
+scripts/run_sh/stage3_ego.sh --sector-limit 8 \
   --bag /tmp/stage3_dryrun_evidence.bag
 ```
 
@@ -117,12 +246,12 @@ scripts/run_sh/stage3_ego.sh --stop
 ## 带控制启动前检查与安全边界
 
 以下命令会解锁、起飞并进入 OFFBOARD，只允许在项目负责人明确批准后执行。
-第 1.4 节记录单扇区历史，第 1.5 节记录本轮已批准并完成的
-`2 → 4 → 8` 扇区验证；这些历史批准不自动授权下一次复飞：
+下面的小扇区命令只属于 2026-07-23 历史记录，当前脚本会拒绝带控制的小于
+8 扇区运行；历史批准不自动授权下一次复飞：
 
 ```bash
 cd /home/yanzu/AstraDroneOpen
-scripts/run_sh/stage3_ego.sh --control --sector-limit 1 \
+scripts/run_sh/stage3_ego.sh --control --sector-limit 8 \
   --bag /tmp/stage3_single_sector_repeat.bag --gui --rviz --attach
 ```
 
@@ -132,8 +261,7 @@ scripts/run_sh/stage3_ego.sh --control --sector-limit 1 \
 2. `/planner/status` 为 EGO FSM 直接发布，状态时间戳/失败计数有更新；
 3. `rosnode info /ego_mavros_bridge` 显示只有 bridge 发布 MAVROS 控制 topic；
 4. preflight、home、任务边界和 `worksite.world` 塔/吊机几何已审阅；
-5. 新环境仍须从较小范围开始；本轮是在单扇区历史基础上严格按
-   `--sector-limit 2 → 4 → 8` 递增，没有直接跳到 8 扇区。
+5. 当前只验收完整 8 扇区闭环；不得用旧 1/2/4 扇区结果替代新状态机验收。
 
 # 1. 2026-07-23 rosbag 时间线与根因
 
@@ -493,14 +621,16 @@ sampled inflated-occupancy voxel-center distance: minimum 3.247 m
 final position: (0.045,-0.039,-0.008)
 ```
 
-这证明当前单机 Gazebo/PX4 SITL 静态场景的完整阶段三主链已经通过。采样占据
-距离不是连续几何净空证明；动态障碍、真机外参和全部故障注入仍不在该结论内。
+这只证明 2026-07-23 旧状态机在当时单机 Gazebo/PX4 SITL 静态场景通过。
+它没有 `8→1` 闭环、当前分段直升覆盖门禁、NORMAL_RETURN 或 HOME_HOVER，
+不能替代 2026-07-24 新状态机验收。
 
-# 2. 修复设计与状态机
+# 2. 2026-07-23 旧设计与状态机（历史）
 
 ## ENTRY_GATE
 
-取消旧的“低空接近点 → 固定 XY 原地爬升”。任务层现在在巡检高度生成特殊
+本节记录旧版本，当前设计以第 0 节和 YAML 为准。旧版本曾取消
+“低空接近点 → 固定 XY 原地爬升”，并在巡检高度生成特殊
 `ENTRY_GATE` 候选（`sector_id=-1`，不计入 8 个扇区）：
 
 * 角度候选扩展为
@@ -566,7 +696,10 @@ generation gate 只接受取消之后、且对应新目标/新轨迹代次的命
 emergency-stop 时长；周期发布本身不会增加失败计数。任务层不再把 20 Hz
 适配器循环计数当成 EGO 规划尝试。
 
-# 3. 关键参数与 topic
+# 3. 2026-07-23 历史参数与当前 topic
+
+下表的 rolling ENTRY_GATE、递增 sector_limit 和主动落地描述属于旧版本。
+当前新增参数和语义见第 0 节以及 `stage3_ego.yaml`。
 
 阶段三配置：`AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/stage3_ego.yaml`
 
@@ -609,22 +742,24 @@ emergency-stop 时长；周期发布本身不会增加失败计数。任务层�
 
 bridge 仍是唯一 MAVROS setpoint 出口；dry-run 不创建该 publisher。
 
-# 4. 修改文件
+# 4. 修改文件（历史与本轮）
 
 * `astra_tower_mission/include/.../stage3_planner.h`、
-  `src/stage3_planner.cpp`：ENTRY_GATE 候选、硬过滤、近距离评分、三维滚动
+  `src/stage3_planner.cpp`：本轮增加名义点优先和严格字典序、覆盖硬约束、
+  直线走廊软风险、固定 XY 分段和显式闭环多圈；历史上还包括三维滚动
   子目标、吊机 yaw 定向三维包围盒、最近已接受扇区选择、同扇区高空候选、
   安全 RETURN_EGRESS 生成、home 落地点约束和已有候选/恢复逻辑；
-* `src/stage3_ego_mission_node.cpp`：ENTRY_GATE 状态、最近安全扇区、gate 重试、
-  recovery re-entry 目标隔离、独立返航/落地计时、RETURN_EGRESS 子目标、
-  yaw 到达、HOLD/返航链；
+* `src/stage3_ego_mission_node.cpp`：本轮增加 provisional gate、STAGING_POINT、
+  真实覆盖等待、固定 XY 分段、最多 3 次 gate 重定位、按 goal generation
+  消费真实规划结果、闭环多圈、NORMAL_RETURN 和 HOME_HOVER 终态证明；历史
+  RETURN_EGRESS 和 recovery 链保留为备用；
 * `config/stage3_ego.yaml`、`test/stage3_planner_test.cpp`、
   `test/stage3_no_control_integration.{test,py}`；
 * `ego_gazebo_bridge/src/ego_mavros_bridge.cpp`、
   `include/.../ego_mavros_bridge.h`、`command_utils.{h,cpp}`、
   `include/.../recovery_control.h`：首帧 yaw 实测初始化与限速、yaw 持续性
   对齐门禁、HOLD 输出缓存锁存、恢复监督 HOLD、cancel/resume/return 链和
-  旧轨迹 generation gate；
+  旧轨迹 generation gate；本轮增加 HOME_HOVER 和正常 AUTO.LAND 服务门禁；
 * `ego-planner/.../ego_replan_fsm.{h,cpp}`、
   `planning_status_tracker.h`、`traj_server.cpp`：真实 FSM 状态/失败计数、
   cancel 传播、旧 B-spline 隔离；未修改 EGO 优化数学、PX4 或 FAST-LIO；
@@ -635,6 +770,9 @@ bridge 仍是唯一 MAVROS setpoint 出口；dry-run 不创建该 publisher。
   安全、持续跟踪误差、控制权、frame、终态和采样占据净空审计。
 
 # 5. 测试和验证证据
+
+本节后续大段是 2026-07-23 历史证据。2026-07-24 当前代码的测试与失败控制
+复测以第 0.6 节为准。
 
 自动化与编译验证：
 
@@ -674,7 +812,7 @@ preflight healthy，但没有注册或发布 MAVROS 控制 topic。dry-run 会�
 `PositionCommand` 会被 bridge 拒绝；高度进入合法包络后 preflight 恢复健康，
 该现象没有产生控制输出。
 
-最终递增控制飞行已验证：
+2026-07-23 旧状态机的递增控制飞行曾验证：
 
 ```text
 ENTRY_GATE_a23 五段三维进场：通过
@@ -696,24 +834,28 @@ attempt 2 已在实际控制中触发并完成 38 m R1/R2/re-entry，但该轮�
 
 # 6. 已知风险与下一步
 
+* 当前没有阻止单机静态 SITL 验收的关键问题。MID-360/FAST-LIO 命中点链仍
+  没有正式 free/unknown 体素；最终实现把 unknown 作为独立诊断，已知占据和
+  EGO 作为硬门禁。该仿真结论不能外推为真机自由空间证明；
 * 当前 `map -> camera_init` 单位变换已由最终 bag 复核，但仍只是仿真假设，
   不是实测标定结果；
 * 占据图盖章适配只修时间戳，不独立证明体素坐标正确；
 * EGO direct `PlannerStatus` 是外层 FSM 真值，不是优化器内部每个候选体素的
-  解释器；不可达目标、长期地图过期、服务失败和持续控制断流仍需专门注入；
+  解释器；长期地图过期、全部服务同时失败和持续控制断流仍需继续专门注入；
 * `tower_crane` OBB 是保守预过滤，会包含网格空隙。路径避障仍由
-  FAST-LIO/EGO 地图负责；最终 bag 的 3.247 m 是每 10 帧采样的膨胀体素中心
-  距离，不是连续机体表面净空证明；
+  FAST-LIO/EGO 地图负责；2026-07-24 最新 bag 的采样膨胀体素中心最小距离
+  2.172 m，不是连续机体表面净空证明。逐扇区复核后，s3～s7 使用 30 m
+  名义点，s2 使用 31 m 最小改动备用点，s0/s1 使用 38 m 备用点；
 * bridge 仍执行 raw-local `PositionTarget`，只允许其一个 MAVROS 控制出口；
-* Stage 3 位置对齐门限 0.75 m 来自 38 m 长航段实测。最终 8 扇区最大跟踪
-  误差 0.597 m；4 扇区成功轮曾出现 1.086 m、连续 0.779 s 的短峰值，虽未达到
-  1.0 s HOLD 条件，仍需在更长时和扰动场景监控 estimator 漂移；
+* Stage 3 位置对齐门限 0.75 m 来自长航段实测。最新 8 扇区最大跟踪误差
+  0.643 m、P95 0.128 m，仍需在更长时和扰动场景监控 estimator 漂移；
 * `/Odometry` 在当前 FAST-LIO 仿真输出中的 twist 为零，任务速度到达条件可能
   低估真实速度；分析器已用 MAVROS odom 独立统计速度，但速度源契约仍应显式化；
-* attempt 2 实际完成 R1/R2/re-entry，但该轮后续返航失败；最终成功轮没有故意
-  注入 HOLD，不能据此宣称全部故障分支已控制验收；
-* 正常落地仍由 bridge 请求 `AUTO.LAND`，与项目长期的正常 OFFBOARD 受控下降
-  架构尚未统一；本阶段按用户指定的 AUTO.LAND 验收；
+* 最终成功轮在 sector 0 实际触发一次 no-progress HOLD，并保持同一目标恢复；
+  无控制集成还注入了 bridge HOLD 和两次 planner failure，但不能据此宣称全部
+  故障组合均已控制验收；
+* 本阶段正常落地已统一为 EGO home hover 后由任务请求 PX4 AUTO.LAND；
+  bridge 的控制权严重故障 failsafe 仍是独立安全分支；
 * 动态障碍、多机、相机检测、Cloud/QGIS、真机和干净 clone 交付均未验证；
 * 当前工作区未 commit、未 push，FAST-LIO `Log/mat_pre.txt` 是仿真运行写入，
   未被清理。
@@ -722,7 +864,7 @@ attempt 2 已在实际控制中触发并完成 38 m R1/R2/re-entry，但该轮�
 
 ```bash
 cd /home/yanzu/AstraDroneOpen
-scripts/run_sh/stage3_ego.sh --sector-limit 1 \
+scripts/run_sh/stage3_ego.sh --sector-limit 8 \
   --bag /tmp/stage3_dryrun_evidence.bag --gui --rviz --attach
 
 source /opt/ros/noetic/setup.bash
@@ -737,7 +879,7 @@ rosnode info /ego_mavros_bridge
 scripts/run_sh/stage3_ego.sh --stop
 ```
 
-最终 8 扇区 bag 的离线复核：
+2026-07-23 旧 8 扇区 bag 的离线复核：
 
 ```bash
 source /opt/ros/noetic/setup.bash
@@ -754,6 +896,85 @@ python3 scripts/tool/analyze_stage3_bag.py \
   /home/yanzu/bag/astra_stage3_eight_sector_2026-07-23.analysis.json
 ```
 
-本轮历史批准已经完成，不自动授权下一轮解锁、起飞或 OFFBOARD。后续优先做
-无控制不可达目标、地图过期、服务失败和持续断流注入；任何再次带控制复测仍需
-重新确认环境、控制权和明确批准。
+任何后续带控制复测仍须重新确认环境、控制权和明确批准。
+
+# 7. 2026-07-24 yaw 与逐扇区候选高度修正
+
+## 7.1 bag 根因
+
+上一成功 bag
+`/home/yanzu/bag/astra_stage3_vertical_entry_final_retry1_2026-07-24.bag`
+证明了两个相互独立的问题：
+
+1. 纯垂直段水平速度接近零，前进方向没有定义；bridge 旧逻辑此时保留
+   traj_server 输入 yaw。该输入在分段轨迹切换处可瞬时跳变，虽有 30 deg/s
+   限速，机体仍会明显转头。上一 bag 上升实际 yaw 速率 p95/max 为
+   44.29/60.27 deg/s，而 roll/pitch 均小于约 1.3 deg，因此上升画面乱晃的
+   主因是 yaw，不是姿态倾斜。
+2. 候选本来逐扇区重新评估，但从 s1 的 38 m 备用点出发后，s3～s7 的 30 m
+   名义点位于 MID360 当前向下视场之外，被瞬时视场启发式误判为
+   `UNKNOWN_REGION`，从而形成“前一扇区升高，后续扇区全部保持高空”的高度
+   级联。bag 中这些名义点的静态净空为 7.19 m，并非被占据或 EGO 不可达。
+3. 绕塔画面晃动不是 tower-facing yaw 失稳：旧稳定 bag 与上一 bag 的实际
+   yaw 速率 p95 分别为 1.45 和 1.51 deg/s；真正变化的是 roll p95 从
+   1.10 增到 2.43 deg。D435i 与机身刚性连接，无云台，EGO 分段轨迹的横向
+   加减速和重规划姿态会直接进入画面。
+
+## 7.2 最终修改
+
+- bridge 的 velocity-facing yaw 在水平速度低于阈值时，改为保持实测/上一
+  有效机体 yaw，不再接受未定义的轨迹前视 yaw；因此 home-local 垂直上升锁定
+  起飞悬停 yaw。
+- 任务管理器只有 `GoalKind::kSector` 发布朝塔模式；ENTRY_GATE 水平进场、
+  recovery、NORMAL_RETURN 和 RETURN_EGRESS 均保留朝运动方向，非巡检目标
+  不再等待塔向 arrival yaw。
+- ENTRY_GATE 的安全高度建图覆盖约束保持不变。对巡检扇区终点，由于当前
+  FAST-LIO 链只有 obstacle hits、没有持久 free/unknown 体素，瞬时传感器视场
+  unknown 改为 `UNKNOWN_REGION_DIAGNOSTIC`；地图新鲜度、实际占据、塔/吊机
+  静态净空和 EGO 不可达仍是各自独立硬约束。
+- 名义点与备用点继续在每个扇区独立生成、过滤和锁定；可用 `c0` 绝对优先，
+  只有硬约束拒绝名义点后才选择改动最小备用点。
+
+## 7.3 构建、测试与控制复飞证据
+
+相关三包构建通过，`catkin_test_results` 为 160 tests、0 errors、
+0 failures、0 skipped；新增覆盖“低水平速度保持机体 yaw”“unknown 可仅作
+扇区诊断”和 ENTRY_GATE 非朝塔策略。无控制集成测试通过。
+
+最终完整 8 扇区 bag：
+
+```text
+/home/yanzu/bag/astra_stage3_yaw_sectorfix_2026-07-24.bag
+/home/yanzu/bag/astra_stage3_yaw_sectorfix_2026-07-24.analysis.json
+```
+
+关键结果：
+
+```text
+SEGMENTED_CLIMB duration             101.250 s
+上升 yaw 起点/最大偏差                0.040 / 0.035 deg
+上升实际 yaw rate p95/max            0.223 / 0.456 deg/s
+上升最大 XY 漂移                     0.071 m
+目标序列                              s1_c3(38), s2_c50(31),
+                                      s3_c0～s7_c0(30),
+                                      s0_c3(38), s1_c3(38闭环)
+HOLD / planner连续失败                0 / 0
+跟踪误差 mean/p95/max                 0.061 / 0.128 / 0.643 m
+采样膨胀占据最小距离                  2.172 m
+绕塔 roll p95/max                     1.074 / 2.204 deg
+绕塔 pitch p95/max                    0.821 / 1.245 deg
+终态                                  正常返航 → HOME_HOVER →
+                                      AUTO.LAND → disarmed/ON_GROUND/DONE
+```
+
+s1 的 30 m 名义点以 `KNOWN_OBSTACLE_CLEARANCE=-3.360 m` 被拒绝，s2 的
+30 m 名义点净空 0.957 m，故选择 31 m 最小备用点；s0 的 30 m 名义点净空
+-0.761 m，故选择 38 m。s3 的 30 m 名义点虽记录
+`UNKNOWN_REGION_DIAGNOSTIC`，但静态净空 7.190 m、实际占据检查通过，由 EGO
+成功规划并到达；s4～s7 也均使用 30 m 名义点。这是逐扇区独立选择且不发生
+高度级联的直接证据。
+
+尚存限制：相机仍无云台，EGO 为避障产生的真实 roll/pitch 不可能由 yaw 策略
+完全消除；最新复飞已恢复到旧稳定 bag 的姿态水平，但更复杂障碍和更高速度下
+仍需继续监控画面稳定性。当前 unknown 处理仅适用于这条仿真 obstacle-hit
+点云链，不能外推为真机自由空间证明。

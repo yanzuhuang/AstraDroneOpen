@@ -89,6 +89,8 @@ const char* bridgeStateName(BridgeState state) {
       return "TRACK_EGO";
     case BridgeState::kHold:
       return "HOLD";
+    case BridgeState::kHomeHover:
+      return "HOME_HOVER";
     case BridgeState::kLanding:
       return "LANDING";
     case BridgeState::kDone:
@@ -630,6 +632,21 @@ void EgoMavrosBridge::commandCallback(
   }
 
   quadrotor_msgs::PositionCommand effective_command = *message;
+  const bool yaw_history_fresh =
+      have_effective_yaw_ && !last_effective_yaw_time_.isZero() &&
+      now > last_effective_yaw_time_ &&
+      now - last_effective_yaw_time_ <=
+          ros::Duration(config_.command_timeout);
+  const double yaw_reference =
+      yaw_history_fresh
+          ? effective_yaw_
+          : (have_mavros_pose_
+                 ? yawFromQuaternion(mavros_pose_.pose.orientation)
+                 : effective_command.yaw);
+  const double yaw_dt =
+      yaw_history_fresh
+          ? (now - last_effective_yaw_time_).toSec()
+          : 1.0 / config_.publish_rate;
   if (config_.tower_yaw_override_enabled && tower_yaw_mode_) {
     if (!have_tower_center_) {
       ROS_ERROR_THROTTLE(
@@ -665,6 +682,7 @@ void EgoMavrosBridge::commandCallback(
   } else if (config_.tower_yaw_override_enabled) {
     std::string yaw_reason;
     if (!applyVelocityFacingYaw(config_.forward_yaw_min_speed,
+                                yaw_reference,
                                 &effective_command, &yaw_reason)) {
       ROS_ERROR_THROTTLE(1.0, "[BRIDGE] Forward yaw command rejected: %s",
                          yaw_reason.c_str());
@@ -672,21 +690,6 @@ void EgoMavrosBridge::commandCallback(
     }
   }
 
-  const bool yaw_history_fresh =
-      have_effective_yaw_ && !last_effective_yaw_time_.isZero() &&
-      now > last_effective_yaw_time_ &&
-      now - last_effective_yaw_time_ <=
-          ros::Duration(config_.command_timeout);
-  const double yaw_reference =
-      yaw_history_fresh
-          ? effective_yaw_
-          : (have_mavros_pose_
-                 ? yawFromQuaternion(mavros_pose_.pose.orientation)
-                 : effective_command.yaw);
-  const double yaw_dt =
-      yaw_history_fresh
-          ? (now - last_effective_yaw_time_).toSec()
-          : 1.0 / config_.publish_rate;
   double next_effective_yaw = yaw_reference;
   double next_effective_yaw_rate = 0.0;
   if (!limitYawCommand(yaw_reference, effective_command.yaw,
@@ -949,8 +952,38 @@ bool EgoMavrosBridge::landService(std_srvs::Trigger::Request&,
     return true;
   }
   const ros::Time now = ros::Time::now();
-  if (!have_mavros_pose_ || !isFinitePose(mavros_pose_) ||
-      !isFresh(now, last_mavros_pose_time_, config_.mavros_pose_timeout)) {
+  std::string preflight_reason;
+  if (!baseInputsFresh(now, &preflight_reason)) {
+    response.success = false;
+    response.message =
+        "AUTO.LAND preflight failed: " + preflight_reason;
+    return true;
+  }
+  geometry_msgs::PoseStamped home_hover = home_pose_;
+  home_hover.pose.position.z += config_.return_height;
+  const double home_error =
+      have_mavros_pose_
+          ? positionDistance(mavros_pose_, home_hover)
+          : std::numeric_limits<double>::infinity();
+  const bool pose_fresh =
+      have_mavros_pose_ && isFinitePose(mavros_pose_) &&
+      isFresh(now, last_mavros_pose_time_, config_.mavros_pose_timeout);
+  const bool verified_home_hover =
+      have_home_ && homeHoverAllowsAutoLand(
+                        state_ == BridgeState::kHomeHover, true,
+                        fcu_state_.armed, fcu_state_.mode == "OFFBOARD",
+                        home_error, config_.return_tolerance);
+  const bool emergency_supervised_hold =
+      supervisedHoldAllowsEmergencyAutoLand(
+          state_ == BridgeState::kHold, supervised_hold_, true,
+          fcu_state_.armed, fcu_state_.mode == "OFFBOARD", pose_fresh);
+  if (!verified_home_hover && !emergency_supervised_hold) {
+    response.success = false;
+    response.message =
+        "AUTO.LAND requires verified HOME_HOVER or mission-supervised HOLD";
+    return true;
+  }
+  if (!pose_fresh) {
     response.success = false;
     response.message =
         "cannot start supervised landing without a fresh, valid pose";
@@ -960,7 +993,9 @@ bool EgoMavrosBridge::landService(std_srvs::Trigger::Request&,
   supervised_hold_ = false;
   land_requested_ = true;
   response.success = true;
-  response.message = "AUTO.LAND requested";
+  response.message = emergency_supervised_hold
+                         ? "emergency AUTO.LAND requested from supervised HOLD"
+                         : "AUTO.LAND requested";
   return true;
 }
 
@@ -1047,7 +1082,8 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
   const bool state_requires_armed_vehicle =
       state_ == BridgeState::kTakeoff ||
       state_ == BridgeState::kHoverReady ||
-      state_ == BridgeState::kTrackEgo || state_ == BridgeState::kHold;
+      state_ == BridgeState::kTrackEgo || state_ == BridgeState::kHold ||
+      state_ == BridgeState::kHomeHover;
   if (state_requires_armed_vehicle && have_fcu_state_ &&
       !fcu_state_.armed) {
     transitionTo(BridgeState::kError,
@@ -1298,6 +1334,17 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
         ROS_INFO_THROTTLE(
             2.0,
             "[BRIDGE] Mission-supervised recovery HOLD remains latched; automatic loss landing is suppressed.");
+      }
+      break;
+    }
+
+    case BridgeState::kHomeHover: {
+      publishHold(now);
+      std::string reason;
+      if (!baseInputsFresh(now, &reason)) {
+        startHold("home hover input failure: " + reason);
+      } else if (fcu_state_.mode != "OFFBOARD") {
+        requestMode("OFFBOARD", now);
       }
       break;
     }
@@ -1886,8 +1933,11 @@ void EgoMavrosBridge::updateReturnProgress(const ros::Time& now) {
       now - return_inside_since_ >=
           ros::Duration(config_.return_hold_duration)) {
     return_in_progress_ = false;
-    land_requested_ = true;
-    ROS_INFO("[BRIDGE] Home reached; AUTO.LAND will be requested.");
+    tracking_requested_ = false;
+    latchHoldAtCurrentPose();
+    transitionTo(BridgeState::kHomeHover,
+                 "home hover reached; waiting for supervised AUTO.LAND request");
+    ROS_INFO("[BRIDGE] Home reached; AUTO.LAND remains gated by mission checks.");
   }
 }
 
