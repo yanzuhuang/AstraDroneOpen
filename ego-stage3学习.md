@@ -68,6 +68,28 @@ scripts/run_sh/stage3_ego.sh --control --sector-limit 8 --cycles 1 \
   --bag /tmp/stage3_layer_return_fix_20260725.bag
 ```
 
+任务结束后使用安全停止入口：
+
+```bash
+scripts/run_sh/stage3_ego.sh --stop
+```
+
+`--stop` 在完成 bag 封包和进程退出后，会自动用本轮 CSV 生成等比例、分阶段
+着色的三维实际轨迹和高度曲线，保存到仓库 `trc_picture/`。时间戳文件保留
+每轮结果，`latest_stage3_trajectory.png` 始终指向最新生成结果。也可对任意
+历史 CSV 手动重画：
+
+```bash
+python3 scripts/tool/plot_stage3_trajectory.py \
+  --csv /tmp/astra_stage3_evidence/control_20260726_003511.csv
+```
+
+CSV 的 `x/y/z` 来自阶段三任务实际使用的 FAST-LIO `/Odometry`
+（`camera_init`/ENU），不是 `/mavros/local_position/pose`；因此新图标题使用
+“Actual recorded 3D trajectory”，不再把该数据误标为 MAVROS。图中同时绘制
+塔中心轴、26/22 m 名义参考圈、ENTRY_GATE、层间切换、EXIT_GATE 和返航阶段，
+且 X/Y/Z 使用相同米制视觉比例，避免旧 3D 透视图造成轨迹形变。
+
 两循环控制入口只需把参数改为 `--cycles 2`。快速状态机/轨迹逻辑回归不解锁
 PX4，测试 launch 内固定 `planned_cycles=2`：
 
@@ -106,6 +128,10 @@ max/mean/P95 为 0.317/0.056/0.099 m，采样最小占据净空 1.126 m，朝塔
 误差 max/P95 为 0.0197/0.0132 rad。raw `type_mask=0`，唯一 MAVROS 控制
 发布者为 `/ego_mavros_bridge`；最终 task/bridge `DONE`、`armed=false`、
 `ON_GROUND`。最终三包回归为 `200 tests, 0 errors, 0 failures, 0 skipped`。
+
+2026-07-26 最新 CSV `control_20260726_003511.csv` 已按上述新绘图流程重画为
+`trc_picture/stage3_actual_trajectory_control_20260726_003511.png`，并同步
+更新 `trc_picture/latest_stage3_trajectory.png`。
 
 ## 2026-07-24 两层分层巡塔（历史基线）
 

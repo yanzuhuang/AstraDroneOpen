@@ -29,6 +29,8 @@ traj_server、bridge 和阶段三任务管理器；PlannerStatus 由 EGO FSM 直
 preflight 和控制权唯一性证据全部通过并由项目负责人批准后才能使用。
 默认世界为 worksite.world。带控制运行只接受完整 8 扇区；较小 sector-limit
 仅保留给无控制的状态机测试，不作为阶段三飞行流程。
+每次通过 --stop 安全结束后，会用本轮 CSV 自动生成 3D 轨迹和高度曲线到
+仓库 trc_picture/ 目录。
 EOF
 }
 
@@ -183,6 +185,10 @@ if [[ "$stop" == true ]]; then
         tmux show-options -t "$session_name" -v @stage3_bag_file \
             2>/dev/null || true
     )"
+    evidence_report="$(
+        tmux show-options -t "$session_name" -v @stage3_report_file \
+            2>/dev/null || true
+    )"
 
     # A large compressed bag can need tens of seconds to flush its final chunk
     # and index after SIGINT. Stop the recorder first and do not destroy the
@@ -244,6 +250,15 @@ if [[ "$stop" == true ]]; then
     done
     tmux kill-session -t "$session_name" 2>/dev/null || true
     echo "阶段三会话已停止。"
+    if [[ -n "$evidence_report" && -s "$evidence_report" ]]; then
+        plot_script="$repo_root/scripts/tool/plot_stage3_trajectory.py"
+        if python3 "$plot_script" --csv "$evidence_report" \
+            --output-dir "$repo_root/trc_picture"; then
+            echo "本轮实际轨迹图已生成：$repo_root/trc_picture"
+        else
+            echo "警告：仿真已安全停止，但轨迹图生成失败：$evidence_report" >&2
+        fi
+    fi
     exit 0
 fi
 
@@ -312,6 +327,7 @@ printf -v integration_command '%q --component integration %q %q %q %q %q %q' \
 
 tmux new-session -d -s "$session_name" -n px4_gazebo "$px4_command"
 tmux set-option -t "$session_name" @stage3_bag_file "$bag_file"
+tmux set-option -t "$session_name" @stage3_report_file "$report_file"
 tmux new-window -d -t "$session_name:" -n fast_lio "$fast_lio_command"
 if [[ "$record_bag" == true ]]; then
     tmux new-window -d -t "$session_name:" -n recorder "$recorder_command"
