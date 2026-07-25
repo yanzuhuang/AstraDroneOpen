@@ -161,9 +161,7 @@ TEST(Stage3Planner, SafeCandidateIsAcceptedAndHysteresisKeepsLock) {
   second.score = 10.0;
   sector.candidates = {first, second};
   EXPECT_EQ(chooseBestCandidate(sector, &first, 100.0), 0);
-  // Numerical score and hysteresis cannot overturn lexicographic nominal
-  // deviation within this priority class.
-  EXPECT_EQ(chooseBestCandidate(sector, &first, -100.0), 0);
+  EXPECT_EQ(chooseBestCandidate(sector, &first, -100.0), 1);
 }
 
 TEST(Stage3Planner, UnknownCoverageIsAHardConstraint) {
@@ -192,7 +190,7 @@ TEST(Stage3Planner, UnknownCoverageCanRemainDiagnosticForKnownClearSector) {
   EXPECT_EQ(point.risk_reason, "UNKNOWN_REGION_DIAGNOSTIC");
 }
 
-TEST(Stage3Planner, LexicographicFallbackCannotBeBoughtByClearanceScore) {
+TEST(Stage3Planner, WeightedFallbackUsesConfiguredScoreAfterNominalIsBlocked) {
   Sector sector = makeSector();
   CandidateFilterConfig config;
   geometry_msgs::Point current;
@@ -220,8 +218,7 @@ TEST(Stage3Planner, LexicographicFallbackCannotBeBoughtByClearanceScore) {
   small_height.score = 2000.0;
   small_height.clearance = 200.0;
   sector.candidates = {small_height, small_radius, small_angle};
-  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0), 2);
-  EXPECT_EQ(sector.candidates[2].priority, 1);
+  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0), 0);
 }
 
 TEST(Stage3Planner, StaleMapRejectsBeforeAnyScoring) {
@@ -303,6 +300,125 @@ TEST(Stage3Planner, NearestSectorBecomesFirstWithoutChangingOrbitOrder) {
   EXPECT_EQ(sectors[2].sector_id, 0);
 }
 
+TEST(Stage3Planner, EntryGateSelectsNextCounterClockwiseWaypoint) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.height = 26.0;
+  route.start_angle_rad = -67.5 * kPi / 180.0;
+  route.direction = OrbitDirection::kCounterClockwise;
+  const auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 3.0,
+      std::vector<CandidateOffset>{{0.0, 0.0, 0.0}});
+  const double entry_angle = -90.0 * kPi / 180.0;
+  const auto order =
+      directionalSectorOrder(entry_angle, sectors, route.direction);
+  ASSERT_EQ(order.size(), 8U);
+  EXPECT_EQ(sectors[order[0]].sector_id, 0);
+  EXPECT_EQ(sectors[order[1]].sector_id, 1);
+  EXPECT_NEAR(directedAngularDifference(
+                  entry_angle, sectors[order[0]].nominal_angle_rad,
+                  route.direction),
+              22.5 * kPi / 180.0, 1.0e-12);
+  EXPECT_EQ(sectors[order.back()].sector_id, 7);
+}
+
+TEST(Stage3Planner, EntryGateSelectsNextClockwiseWaypoint) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.height = 26.0;
+  route.start_angle_rad = -67.5 * kPi / 180.0;
+  route.direction = OrbitDirection::kClockwise;
+  const auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 3.0,
+      std::vector<CandidateOffset>{{0.0, 0.0, 0.0}});
+  const double entry_angle = -90.0 * kPi / 180.0;
+  const auto order =
+      directionalSectorOrder(entry_angle, sectors, route.direction);
+  ASSERT_EQ(order.size(), 8U);
+  EXPECT_EQ(sectors[order[0]].sector_id, 1);
+  EXPECT_EQ(sectors[order[1]].sector_id, 2);
+  EXPECT_NEAR(directedAngularDifference(
+                  entry_angle, sectors[order[0]].nominal_angle_rad,
+                  route.direction),
+              22.5 * kPi / 180.0, 1.0e-12);
+  EXPECT_EQ(sectors[order.back()].sector_id, 0);
+}
+
+TEST(Stage3Planner, DirectionalReorderClosesOneFullLapAtSelectedWaypoint) {
+  for (const OrbitDirection direction :
+       {OrbitDirection::kCounterClockwise, OrbitDirection::kClockwise}) {
+    RouteConfig route;
+    route.radius = 12.5;
+    route.height = 26.0;
+    route.start_angle_rad = -67.5 * kPi / 180.0;
+    route.direction = direction;
+    const auto sectors = buildInspectionSectors(
+        route, 8, 1, 12.0, 4.0, 3.0,
+        std::vector<CandidateOffset>{{0.0, 0.0, 0.0}});
+    const auto order = directionalSectorOrder(
+        -90.0 * kPi / 180.0, sectors, direction);
+    const auto visits = buildClosedLapVisitSequence(order.size(), 1);
+    ASSERT_EQ(visits.size(), 9U);
+    EXPECT_EQ(order[visits.front()], order[visits.back()]);
+    std::vector<int> executed_sector_ids;
+    for (std::size_t visit : visits) {
+      executed_sector_ids.push_back(sectors[order[visit]].sector_id);
+    }
+    if (direction == OrbitDirection::kCounterClockwise) {
+      EXPECT_EQ(executed_sector_ids,
+                (std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7, 0}));
+    } else {
+      EXPECT_EQ(executed_sector_ids,
+                (std::vector<int>{1, 2, 3, 4, 5, 6, 7, 0, 1}));
+    }
+  }
+}
+
+TEST(Stage3Planner, ExactEntryWaypointIsNotWrappedBehindRoute) {
+  RouteConfig route;
+  route.radius = 12.5;
+  route.height = 26.0;
+  route.start_angle_rad = -67.5 * kPi / 180.0;
+  route.direction = OrbitDirection::kClockwise;
+  const auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 3.0,
+      std::vector<CandidateOffset>{{0.0, 0.0, 0.0}});
+  const auto order = directionalSectorOrder(
+      route.start_angle_rad, sectors, route.direction);
+  ASSERT_EQ(order.size(), 8U);
+  EXPECT_EQ(sectors[order.front()].sector_id, 0);
+  EXPECT_NEAR(directedAngularDifference(
+                  route.start_angle_rad,
+                  sectors[order.front()].nominal_angle_rad, route.direction),
+              0.0, 1.0e-12);
+}
+
+TEST(Stage3Planner, EntryToOppositeWaypointCrossesTowerKeepOut) {
+  geometry_msgs::Point entry;
+  entry.x = 0.0;
+  entry.y = -15.0;
+  entry.z = 26.0;
+  geometry_msgs::Point forward;
+  forward.x = 12.5 * std::cos(-67.5 * kPi / 180.0);
+  forward.y = 12.5 * std::sin(-67.5 * kPi / 180.0);
+  forward.z = 26.0;
+  geometry_msgs::Point opposite;
+  opposite.x = 12.5 * std::cos(67.5 * kPi / 180.0);
+  opposite.y = 12.5 * std::sin(67.5 * kPi / 180.0);
+  opposite.z = 26.0;
+  StaticObstacle tower;
+  tower.id = "tower";
+  tower.radius = 6.41;
+  tower.z_min = 0.0;
+  tower.z_max = 40.0;
+  EXPECT_TRUE(lineCorridorSafe(entry, forward, {}, {tower}, 2.4, 0.2));
+  EXPECT_FALSE(lineCorridorSafe(entry, opposite, {}, {tower}, 2.4, 0.2));
+}
+
 TEST(Stage3Planner, NearestAcceptedSectorSkipsBlockedNearestSector) {
   RouteConfig route;
   route.center_x = 0.0;
@@ -380,20 +496,23 @@ TEST(Stage3Planner, ClockwiseAndCounterClockwiseRecoveryAreBothAssessable) {
                   .endpoints_safe);
 }
 
-TEST(Stage3Planner, EntryGateCandidatesAreAtInspectionHeightAndChooseNearestSafe) {
+TEST(Stage3Planner, EntryGateCandidatesStayInUserSectorAndUseWeightedPriorities) {
   RouteConfig route;
   route.center_x = 0.0;
   route.center_y = 0.0;
   route.radius = 8.0;
-  route.start_angle_rad = 0.0;
+  route.start_angle_rad = -1.2;
+  route.direction = OrbitDirection::kClockwise;
   route.tower_collision_radius = 2.0;
   const auto candidates =
-      buildEntryGateCandidates(route, {-10.0, 0.0, 10.0}, {2.0, 4.0}, 12.0);
-  ASSERT_EQ(candidates.size(), 6U);
+      buildEntryGateCandidates(route, 2, 10.0, 12.0, 10.0,
+                               7.5, 1.0, 12.0);
+  ASSERT_EQ(candidates.size(), 21U);
   for (const auto& candidate : candidates) {
-    EXPECT_EQ(candidate.sector_id, -1);
+    EXPECT_EQ(candidate.sector_id, 1);
     EXPECT_DOUBLE_EQ(candidate.z, 12.0);
     EXPECT_TRUE(candidate.face_tower);
+    EXPECT_TRUE(entryGatePointInSector(candidate, route, 2));
   }
   geometry_msgs::Point current;
   current.x = 10.0;
@@ -403,17 +522,74 @@ TEST(Stage3Planner, EntryGateCandidatesAreAtInspectionHeightAndChooseNearestSafe
   config.inspection_height = 12.0;
   config.minimum_height = 2.0;
   config.maximum_height = 20.0;
-  config.minimum_radius = 9.0;
-  config.maximum_radius = 20.0;
+  config.minimum_radius = 10.0;
+  config.maximum_radius = 12.0;
+  config.preferred_radius = 10.0;
+  CandidatePoint first_inspection;
+  const double first_angle = 22.5 * kPi / 180.0;
+  first_inspection.x = 8.0 * std::cos(first_angle);
+  first_inspection.y = 8.0 * std::sin(first_angle);
+  first_inspection.z = 12.0;
   std::vector<CandidatePoint> evaluated = candidates;
   for (auto& candidate : evaluated) {
     EXPECT_TRUE(evaluateEntryGateCandidate(
-        &candidate, route, current, home, {}, {}, true, config));
+        &candidate, route, current, home, {}, {}, true, config, 0.0, 1.0,
+        &first_inspection));
   }
   const int best = chooseBestEntryGateCandidate(evaluated);
   ASSERT_GE(best, 0);
-  EXPECT_NEAR(evaluated[best].x, 10.0, 1.0e-6);
-  EXPECT_NEAR(evaluated[best].y, 0.0, 1.0e-6);
+  EXPECT_NEAR(std::hypot(evaluated[best].x, evaluated[best].y),
+              config.preferred_radius, 1.0e-6);
+  // Centerline is the first angular preference; the first inspection
+  // waypoint breaks otherwise equivalent centerline/radius alternatives.
+  EXPECT_NEAR(std::atan2(evaluated[best].y, evaluated[best].x),
+              kPi / 4.0, 1.0e-6);
+
+  const int first_best = best;
+  evaluated[first_best].accepted = false;
+  evaluated[first_best].planner_unreachable = true;
+  evaluated[first_best].rejection_reason = "PLANNER_UNREACHABLE";
+  const int reachable_fallback = chooseBestEntryGateCandidate(evaluated);
+  ASSERT_GE(reachable_fallback, 0);
+  EXPECT_NE(reachable_fallback, first_best);
+  EXPECT_EQ(evaluated[reachable_fallback].sector_id, 1);
+  EXPECT_TRUE(entryGatePointInSector(
+      evaluated[reachable_fallback], route, 2));
+}
+
+TEST(Stage3Planner, UserEntrySectorNumbersMapCounterClockwiseFromPositiveX) {
+  RouteConfig route;
+  route.center_x = 2.0;
+  route.center_y = -3.0;
+  route.start_angle_rad = 1.1;
+  route.direction = OrbitDirection::kClockwise;
+  for (int user_sector = 1; user_sector <= 8; ++user_sector) {
+    const CandidatePoint gate =
+        buildFixedEntryGate(route, 8, user_sector, 10.0, 12.0);
+    const double expected_angle = (user_sector - 1) * kPi / 4.0;
+    ASSERT_FALSE(gate.target_invalid);
+    EXPECT_EQ(gate.sector_id, user_sector - 1);
+    EXPECT_NEAR(gate.x, route.center_x + 10.0 * std::cos(expected_angle),
+                1.0e-9);
+    EXPECT_NEAR(gate.y, route.center_y + 10.0 * std::sin(expected_angle),
+                1.0e-9);
+    EXPECT_TRUE(entryGatePointInSector(gate, route, user_sector));
+  }
+  EXPECT_TRUE(std::isnan(entryGateSectorCenterAngleRad(0)));
+  EXPECT_TRUE(std::isnan(entryGateSectorCenterAngleRad(9)));
+}
+
+TEST(Stage3Planner, EntryGateSelectionDoesNotFallbackAcrossSectors) {
+  RouteConfig route;
+  const auto selected_sector =
+      buildEntryGateCandidates(route, 7, 10.0, 12.0, 11.0,
+                               7.5, 1.0, 12.0);
+  ASSERT_FALSE(selected_sector.empty());
+  for (const auto& candidate : selected_sector) {
+    EXPECT_EQ(candidate.sector_id, 6);
+    EXPECT_TRUE(entryGatePointInSector(candidate, route, 7));
+  }
+  EXPECT_EQ(chooseBestEntryGateCandidate(selected_sector), -1);
 }
 
 TEST(Stage3Planner, RollingEntryGoalsMoveAndClimbTogether) {
@@ -575,21 +751,15 @@ TEST(Stage3Planner, FixedEntryGateSharesConfiguredSectorRadial) {
   route.start_angle_rad = -67.5 * kPi / 180.0;
   route.direction = OrbitDirection::kCounterClockwise;
   const CandidatePoint gate =
-      buildFixedEntryGate(route, 8, 3, 15.0, 26.0);
-  const auto sectors = buildInspectionSectors(
-      route, 8, 1, 12.0, 8.0, 0.1, {{0.0, 0.0, 0.0}});
-  ASSERT_EQ(sectors.size(), 8U);
+      buildFixedEntryGate(route, 8, 4, 15.0, 26.0);
   ASSERT_FALSE(gate.target_invalid);
   EXPECT_EQ(gate.sector_id, 3);
   EXPECT_NEAR(std::hypot(gate.x - route.center_x,
                          gate.y - route.center_y),
               15.0, 1.0e-9);
-  EXPECT_NEAR(
-      normalizeAngle(
-          std::atan2(gate.y - route.center_y,
-                     gate.x - route.center_x) -
-          sectors[3].nominal_angle_rad),
-      0.0, 1.0e-9);
+  EXPECT_NEAR(std::atan2(gate.y - route.center_y,
+                         gate.x - route.center_x),
+              135.0 * kPi / 180.0, 1.0e-9);
 }
 
 TEST(Stage3Planner, FixedEntryGateAcceptsExactRadiusWithinFloatingTolerance) {
@@ -608,6 +778,7 @@ TEST(Stage3Planner, FixedEntryGateAcceptsExactRadiusWithinFloatingTolerance) {
   config.inspection_height = 26.0;
   config.minimum_height = 2.0;
   config.maximum_height = 45.0;
+  config.preferred_radius = 15.0;
   config.minimum_radius = 15.0;
   config.maximum_radius = 15.0;
   config.maximum_horizontal_distance = 60.0;
@@ -718,6 +889,152 @@ TEST(Stage3Planner, CraneOccludedSectorUsesSameSectorAtSafeOverflightHeight) {
   ASSERT_GE(selected, 0);
   EXPECT_DOUBLE_EQ(crane_sector.candidates[selected].z, 38.0);
   EXPECT_EQ(crane_sector.candidates[selected].sector_id, 1);
+}
+
+TEST(Stage3Planner, CoarseCraneBoxCanRemainRiskHintWhenLiveMapIsClear) {
+  Sector sector = makeSector();
+  CandidatePoint point = candidate(8.0, 0.0);
+  StaticObstacle coarse_box;
+  coarse_box.id = "crane_obb";
+  coarse_box.x = 8.0;
+  coarse_box.y = 0.0;
+  coarse_box.z_min = 0.0;
+  coarse_box.z_max = 10.0;
+  coarse_box.half_extent_x = 2.0;
+  coarse_box.half_extent_y = 10.0;
+  CandidateFilterConfig config;
+  config.known_obstacle_is_hard_constraint = false;
+  EXPECT_TRUE(evaluateCandidate(&point, sector, geometry_msgs::Point(), {},
+                                {coarse_box}, true, config));
+  EXPECT_TRUE(point.accepted);
+  EXPECT_NE(point.risk_reason.find("COARSE_KNOWN_OBSTACLE_OVERLAP"),
+            std::string::npos);
+}
+
+TEST(Stage3Planner, LocalDescentBeatsLargeRadialDeviationButNotSmallOne) {
+  Sector sector = makeSector();
+  geometry_msgs::Point current;
+  current.x = 8.0;
+  current.z = 5.0;
+  CandidateFilterConfig config;
+
+  CandidatePoint radial_two = candidate(10.0, 0.0, 5.0);
+  radial_two.id = "radial_two";
+  CandidatePoint radial_four = candidate(12.0, 0.0, 5.0);
+  radial_four.id = "radial_four";
+  CandidatePoint descend_one = candidate(8.0, 0.0, 4.0);
+  descend_one.id = "descend_one";
+  ASSERT_TRUE(evaluateCandidate(&radial_two, sector, current, {}, {}, true,
+                                config));
+  ASSERT_TRUE(evaluateCandidate(&radial_four, sector, current, {}, {}, true,
+                                config));
+  ASSERT_TRUE(evaluateCandidate(&descend_one, sector, current, {}, {}, true,
+                                config));
+
+  sector.candidates = {radial_two, descend_one};
+  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0), 0);
+  sector.candidates = {radial_four, descend_one};
+  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0), 1);
+}
+
+TEST(Stage3Planner, RecoveryCannotLeaveCurrentSectorOrThreeMetreEnvelope) {
+  Sector sector = makeSector();
+  RecoveryTargets local;
+  local.r1 = candidate(9.0, 0.0, 3.0);
+  local.r2 = candidate(9.0 * std::cos(0.2), 9.0 * std::sin(0.2), 3.0);
+  local.reentry = candidate(8.0, 0.0, 5.0);
+  EXPECT_TRUE(recoveryTargetsStayInSector(local, sector, 3.0));
+
+  RecoveryTargets wrong_sector = local;
+  wrong_sector.r2.x = 9.0 * std::cos(0.6);
+  wrong_sector.r2.y = 9.0 * std::sin(0.6);
+  EXPECT_FALSE(recoveryTargetsStayInSector(wrong_sector, sector, 3.0));
+
+  RecoveryTargets too_low = local;
+  too_low.r1.z = 1.9;
+  EXPECT_FALSE(recoveryTargetsStayInSector(too_low, sector, 3.0));
+}
+
+TEST(Stage3Planner, LayerGateHeightIsRegeneratedForEachInspectionLayer) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.start_angle_rad = -67.5 * kPi / 180.0;
+  route.direction = OrbitDirection::kCounterClockwise;
+  const CandidatePoint upper =
+      buildFixedEntryGate(route, 8, 3, 15.0, 26.0);
+  const CandidatePoint lower =
+      buildFixedEntryGate(route, 8, 3, 15.0, 22.0);
+  EXPECT_DOUBLE_EQ(upper.x, lower.x);
+  EXPECT_DOUBLE_EQ(upper.y, lower.y);
+  EXPECT_NEAR(upper.x, route.center_x, 1.0e-9);
+  EXPECT_NEAR(upper.y, route.center_y + 15.0, 1.0e-9);
+  EXPECT_EQ(upper.sector_id, 2);
+  EXPECT_DOUBLE_EQ(upper.z, 26.0);
+  EXPECT_DOUBLE_EQ(lower.z, 22.0);
+}
+
+TEST(Stage3Planner, BlockedLayerHeightUsesLocalDescentThenRestoresNominal) {
+  RouteConfig route;
+  route.center_x = 0.0;
+  route.center_y = 0.0;
+  route.radius = 8.0;
+  route.height = 5.0;
+  route.minimum_height = 2.0;
+  route.maximum_height = 10.0;
+  route.tower_collision_radius = 2.0;
+  route.direction = OrbitDirection::kCounterClockwise;
+  const std::vector<CandidateOffset> offsets = {
+      {0.0, 0.0, 0.0}, {0.0, 0.0, -1.0},
+      {0.0, 0.0, -2.0}, {0.0, 0.0, -3.0},
+      {0.0, 2.0, 0.0}, {0.0, 4.0, 0.0},
+  };
+  auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 3.0, offsets);
+  ASSERT_EQ(sectors.size(), 8U);
+  geometry_msgs::Point current;
+  current.x = 8.0;
+  current.z = 5.0;
+  CandidateFilterConfig config;
+
+  // Occupy every original-height endpoint in the current sector. The same
+  // radial/angle location remains clear one metre below.
+  std::vector<geometry_msgs::Point> blocked_layer_points;
+  for (const auto& point : sectors[0].candidates) {
+    if (std::abs(point.z - route.height) < 1.0e-9) {
+      geometry_msgs::Point obstacle;
+      obstacle.x = point.x;
+      obstacle.y = point.y;
+      obstacle.z = point.z;
+      blocked_layer_points.push_back(obstacle);
+    }
+  }
+  for (auto& point : sectors[0].candidates) {
+    evaluateCandidate(&point, sectors[0], current, blocked_layer_points, {},
+                      true, config);
+  }
+  const int lowered =
+      chooseBestCandidate(sectors[0], nullptr, 0.0);
+  ASSERT_GE(lowered, 0);
+  EXPECT_DOUBLE_EQ(sectors[0].candidates[lowered].z, 2.0);
+  EXPECT_NEAR(std::hypot(sectors[0].candidates[lowered].x,
+                         sectors[0].candidates[lowered].y),
+              route.radius, 1.0e-9);
+
+  // Once the next sector is clear, its exact nominal point wins and restores
+  // the configured layer height smoothly over the sector-to-sector leg.
+  for (auto& point : sectors[1].candidates) {
+    evaluateCandidate(&point, sectors[1], current, {}, {}, true, config,
+                      &sectors[0].candidates[lowered]);
+  }
+  const int restored =
+      chooseBestCandidate(sectors[1], nullptr, 0.0);
+  ASSERT_GE(restored, 0);
+  EXPECT_DOUBLE_EQ(sectors[1].candidates[restored].z, route.height);
+  EXPECT_NEAR(std::hypot(sectors[1].candidates[restored].x,
+                         sectors[1].candidates[restored].y),
+              route.radius, 1.0e-9);
 }
 
 }  // namespace

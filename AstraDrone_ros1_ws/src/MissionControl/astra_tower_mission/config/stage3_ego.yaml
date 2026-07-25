@@ -36,16 +36,31 @@ mission:
   observation_angle_deg: -67.5
   approach_segment_length: 6.0
   sector_angle_half_width_deg: 12.0
-  sector_radius_half_width: 8.0
-  sector_height_half_width: 0.1
+  # Keep relocations close to the 12.5 m inspection ring and inside the
+  # active angular sector. A local blockage may use a 1--3 m temporary
+  # descent; the next clear nominal target restores the layer height.
+  sector_radius_half_width: 4.0
+  sector_height_half_width: 3.0
+  maximum_temporary_descent: 3.0
   target_replacement_margin: 2.0
 
+first_waypoint:
+  # A gate nearly coincident with a ring waypoint may use that waypoint.
+  # Otherwise the first waypoint is the next one in the configured orbit
+  # direction; fixed inspection_start_sector is not used for entry selection.
+  angular_tolerance_deg: 5.0
+  distance_tolerance: 3.0
+
 entry_gate:
-  entry_sector: 3
-  radius: 15.0
-  height: 26.0
+  # User-facing map sectors are fixed and independent of the inspection-route
+  # start angle: 1=+X, 2=NE, 3=+Y, 4=NW, 5=-X, 6=SW, 7=-Y, 8=SE.
+  # Internally the node converts this once with entry_sector - 1.
+  entry_sector: 7
+  preferred_radius: 15.0
   minimum_radius: 15.0
-  maximum_radius: 15.0
+  maximum_radius: 18.0
+  angular_sample_step_deg: 7.5
+  radial_sample_step: 1.0
   maximum_horizontal_distance: 60.0
   minimum_clearance: 2.0
   cloud_inflation: 0.4
@@ -55,15 +70,22 @@ entry_gate:
   # occupancy and known-obstacle checks remain hard constraints.
   unknown_is_hard_constraint: false
   corridor_sample_step: 0.5
-  clearance_weight: 0.1
-  distance_weight: 1.0
-  blocked_corridor_penalty: 5.0
+  clearance_weight: 0.2
+  distance_weight: 0.1
+  sector_center_weight: 4.0
+  preferred_radius_weight: 4.0
+  first_waypoint_weight: 0.8
+  blocked_corridor_penalty: 8.0
   maximum_segment_length: 6.0
+  # After the fixed vertical climb, use short same-height goals only when the
+  # fresh occupancy map proves the entire high corridor clear. Otherwise EGO
+  # receives the safe final gate and owns the local detour.
+  prefer_safe_overflight: true
   # At the unchanged 0.30 m/s mission speed, the approximately 34 m
   # home-to-gate leg needs at least 113 s before planning detours.
   target_timeout: 180.0
   # Compatibility key; the ascent-specific switch limit below is authoritative.
-  maximum_relocations: 2
+  maximum_relocations: 28
 
 staging:
   # The captured home-hover XY is immutable. A blocked vertical segment
@@ -99,18 +121,28 @@ coverage:
   sensor_max_elevation_deg: 52.2
 
 candidate:
-  # Layer height is fixed. Static obstacles may only move a candidate within
-  # its angular sector and radially outward from the 12.5 m nominal ring.
+  # Candidate order does not determine the winner. Hard live-map checks are
+  # followed by a weighted score that strongly penalizes radial/sector drift.
   angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0]
-  radius_offsets_m: [0.0, 2.0, 4.0, 6.0, 8.0]
-  height_offsets_m: [0.0]
+  radius_offsets_m: [0.0, 2.0, 4.0]
+  height_offsets_m: [0.0, -1.0, -2.0, -3.0]
   minimum_clearance: 2.0
   cloud_inflation: 0.4
   corridor_sample_step: 0.5
-  blocked_corridor_penalty: 5.0
+  blocked_corridor_penalty: 6.0
+  score_clearance_weight: 0.2
+  score_radius_weight: 6.0
+  score_sector_weight: 4.0
+  score_height_weight: 14.0
+  score_distance_weight: 0.1
+  score_continuity_weight: 0.2
+  # The crane OBB encloses large empty volumes between sparse mesh members.
+  # Keep it as a risk/corridor hint; fresh inflated occupancy remains the hard
+  # endpoint authority and the tower radial keep-out remains hard.
+  known_obstacle_is_hard_constraint: false
 
-# Conservative known static geometry. FAST-LIO/EGO remains the obstacle
-# authority; these regions are only hard pre-filters for task candidates.
+# Conservative known static geometry. These coarse regions only contribute
+# risk/corridor hints; fresh inflated occupancy remains the hard authority.
 # Gazebo's <state> places tower_crane at (6.36257, 21.7297), yaw=-0.479608.
 # Its inch-scaled DAE local bounds are x=[-3.27311,3.27311],
 # y=[-27.363674,11.720921], z=[0,35.0282].  The OBB center below is the
@@ -128,10 +160,13 @@ static_obstacles:
   yaw: [-0.479608]
 
 recovery:
-  radial_step: 3.0
-  tangent_step: 4.0
-  maximum_radius: 24.0
-  # Clears the crane mesh top (35.0283 m) by more than minimum_clearance.
+  # Recovery is constrained to the current sector and the same 3 m downward
+  # envelope as candidate relocation. The legacy configured height remains a
+  # global safety ceiling only; runtime recovery derives height from the
+  # active inspection layer.
+  radial_step: 2.0
+  tangent_step: 2.5
+  maximum_radius: 16.5
   recovery_height: 38.0
   direction: counter_clockwise
 

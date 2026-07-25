@@ -214,9 +214,16 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
   for (const auto& obstacle : obstacles) {
     const double clearance = obstacleClearance(target, obstacle,
                                                config.cloud_inflation);
-    candidate->clearance = std::min(candidate->clearance, clearance);
-    if (clearance < config.minimum_clearance) {
+    if (config.known_obstacle_is_hard_constraint) {
+      candidate->clearance = std::min(candidate->clearance, clearance);
+    }
+    if (clearance < config.minimum_clearance &&
+        config.known_obstacle_is_hard_constraint) {
       return reject("KNOWN_OBSTACLE_CLEARANCE");
+    }
+    if (clearance < config.minimum_clearance &&
+        candidate->risk_reason.empty()) {
+      candidate->risk_reason = "COARSE_KNOWN_OBSTACLE_OVERLAP";
     }
   }
   for (const auto& cloud : cloud_points) {
@@ -233,7 +240,11 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       config.minimum_clearance + config.cloud_inflation,
       config.corridor_sample_step);
   if (candidate->straight_corridor_blocked) {
-    candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
+    if (candidate->risk_reason.empty()) {
+      candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
+    } else {
+      candidate->risk_reason += ";STRAIGHT_CORRIDOR_BLOCKED";
+    }
   }
   candidate->unknown_ratio = unknown_ratio;
   if (candidate->unknown_ratio > config.unknown_ratio_limit) {
@@ -298,12 +309,16 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
     candidate->priority = 5;
   }
   candidate->score = config.score_clearance_weight * candidate->clearance -
-                     config.score_nominal_weight *
-                         (candidate->nominal_deviation +
-                          10.0 * candidate->height_deviation) -
+                     config.score_radius_weight * radius_error -
+                     config.score_sector_weight *
+                         sector.nominal_radius * angle_error -
+                     config.score_height_weight * height_error -
                      config.score_distance_weight * current_distance -
                      config.score_continuity_weight * continuity_error -
-                     config.score_unknown_weight * candidate->unknown_ratio;
+                     config.score_unknown_weight * candidate->unknown_ratio -
+                     (candidate->straight_corridor_blocked
+                          ? config.blocked_corridor_penalty
+                          : 0.0);
   candidate->accepted = true;
   return true;
 }
@@ -327,23 +342,24 @@ int chooseBestCandidate(const Sector& sector, const CandidatePoint* locked,
       return static_cast<int>(index);
     }
   }
-  const auto key = [](const CandidatePoint& candidate) {
-    return std::make_tuple(
-        candidate.priority, candidate.nominal_deviation,
-        candidate.height_deviation, candidate.observation_deviation,
-        -candidate.clearance, candidate.continuity_error,
-        candidate.route_distance, candidate.id);
-  };
   int best = -1;
   for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
     const auto& candidate = sector.candidates[index];
-    if (candidate.accepted &&
-        (best < 0 || key(candidate) < key(sector.candidates[best]))) {
+    if (!candidate.accepted) continue;
+    if (best < 0 || candidate.score > sector.candidates[best].score + 1.0e-9 ||
+        (std::abs(candidate.score - sector.candidates[best].score) <= 1.0e-9 &&
+         std::make_tuple(candidate.observation_deviation,
+                         candidate.height_deviation,
+                         candidate.route_distance, candidate.id) <
+             std::make_tuple(sector.candidates[best].observation_deviation,
+                             sector.candidates[best].height_deviation,
+                             sector.candidates[best].route_distance,
+                             sector.candidates[best].id))) {
       best = static_cast<int>(index);
     }
   }
   if (locked == nullptr || best < 0) return best;
-  if (locked->accepted && locked->priority == sector.candidates[best].priority &&
+  if (locked->accepted &&
       locked->score + replacement_margin >= sector.candidates[best].score) {
     for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
       if (sector.candidates[index].id == locked->id &&
@@ -356,21 +372,74 @@ int chooseBestCandidate(const Sector& sector, const CandidatePoint* locked,
 }
 
 std::vector<CandidatePoint> buildEntryGateCandidates(
-    const RouteConfig& route, const std::vector<double>& angle_offsets_deg,
-    const std::vector<double>& radius_offsets_m, double inspection_height) {
+    const RouteConfig& route, int entry_sector_user, double minimum_radius,
+    double maximum_radius, double preferred_radius,
+    double angular_sample_step_deg, double radial_sample_step,
+    double inspection_height) {
   std::vector<CandidatePoint> candidates;
-  candidates.reserve(angle_offsets_deg.size() * radius_offsets_m.size());
+  if (entry_sector_user < 1 || entry_sector_user > 8 ||
+      !std::isfinite(minimum_radius) || !std::isfinite(maximum_radius) ||
+      !std::isfinite(preferred_radius) ||
+      !std::isfinite(angular_sample_step_deg) ||
+      !std::isfinite(radial_sample_step) ||
+      !std::isfinite(inspection_height) ||
+      minimum_radius <= 0.0 || maximum_radius < minimum_radius ||
+      preferred_radius < minimum_radius ||
+      preferred_radius > maximum_radius ||
+      angular_sample_step_deg <= 0.0 ||
+      angular_sample_step_deg > 22.5 || radial_sample_step <= 0.0) {
+    return candidates;
+  }
+
+  const auto append_unique = [](double value, std::vector<double>* values) {
+    const auto duplicate = std::find_if(
+        values->begin(), values->end(), [value](double existing) {
+          return std::abs(existing - value) <= 1.0e-9;
+        });
+    if (duplicate == values->end()) values->push_back(value);
+  };
+
+  std::vector<double> angle_offsets_deg{0.0};
+  for (double offset = angular_sample_step_deg;
+       offset < 22.5 + 1.0e-9; offset += angular_sample_step_deg) {
+    append_unique(-std::min(offset, 22.5), &angle_offsets_deg);
+    append_unique(std::min(offset, 22.5), &angle_offsets_deg);
+  }
+  // Always include both legal sector boundaries. They retain the selected
+  // sector id and never cause a search in either neighboring sector.
+  append_unique(-22.5, &angle_offsets_deg);
+  append_unique(22.5, &angle_offsets_deg);
+
+  std::vector<double> radii{preferred_radius};
+  for (double offset = radial_sample_step;
+       preferred_radius - offset >= minimum_radius - 1.0e-9 ||
+       preferred_radius + offset <= maximum_radius + 1.0e-9;
+       offset += radial_sample_step) {
+    if (preferred_radius - offset >= minimum_radius - 1.0e-9) {
+      append_unique(std::max(minimum_radius, preferred_radius - offset),
+                    &radii);
+    }
+    if (preferred_radius + offset <= maximum_radius + 1.0e-9) {
+      append_unique(std::min(maximum_radius, preferred_radius + offset),
+                    &radii);
+    }
+  }
+  append_unique(minimum_radius, &radii);
+  append_unique(maximum_radius, &radii);
+
+  candidates.reserve(angle_offsets_deg.size() * radii.size());
+  const double sector_center =
+      entryGateSectorCenterAngleRad(entry_sector_user);
   std::size_t index = 0;
   for (double angle_offset : angle_offsets_deg) {
-    for (double radius_offset : radius_offsets_m) {
+    for (double radius : radii) {
       const double angle = normalizeAngle(
-          route.start_angle_rad + angle_offset * kPi / 180.0);
-      const double radius = route.radius + radius_offset;
+          sector_center + angle_offset * kPi / 180.0);
       CandidatePoint candidate;
       std::ostringstream id;
-      id << "ENTRY_GATE_a" << index++;
+      id << "ENTRY_GATE_s" << entry_sector_user << "_c" << index++;
       candidate.id = id.str();
-      candidate.sector_id = -1;
+      candidate.sector_id = entry_sector_user - 1;
       candidate.layer_id = 0;
       candidate.x = route.center_x + radius * std::cos(angle);
       candidate.y = route.center_y + radius * std::sin(angle);
@@ -389,26 +458,22 @@ std::vector<CandidatePoint> buildEntryGateCandidates(
 
 CandidatePoint buildFixedEntryGate(const RouteConfig& route,
                                    int sector_count,
-                                   int entry_sector,
+                                   int entry_sector_user,
                                    double gate_radius,
                                    double gate_height) {
   CandidatePoint candidate;
-  if (sector_count < 1 || entry_sector < 0 ||
-      entry_sector >= sector_count || !std::isfinite(gate_radius) ||
+  if (sector_count != 8 || entry_sector_user < 1 ||
+      entry_sector_user > sector_count || !std::isfinite(gate_radius) ||
       !std::isfinite(gate_height)) {
     candidate.target_invalid = true;
     candidate.rejection_reason = "INVALID_FIXED_ENTRY_GATE";
     return candidate;
   }
-  const double direction_sign =
-      route.direction == OrbitDirection::kCounterClockwise ? 1.0 : -1.0;
-  const double angle = normalizeAngle(
-      route.start_angle_rad +
-      direction_sign * entry_sector * 2.0 * kPi / sector_count);
+  const double angle = entryGateSectorCenterAngleRad(entry_sector_user);
   std::ostringstream id;
-  id << "ENTRY_GATE_s" << entry_sector;
+  id << "ENTRY_GATE_s" << entry_sector_user;
   candidate.id = id.str();
-  candidate.sector_id = entry_sector;
+  candidate.sector_id = entry_sector_user - 1;
   candidate.layer_id = 0;
   candidate.x = route.center_x + gate_radius * std::cos(angle);
   candidate.y = route.center_y + gate_radius * std::sin(angle);
@@ -422,6 +487,30 @@ CandidatePoint buildFixedEntryGate(const RouteConfig& route,
   return candidate;
 }
 
+double entryGateSectorCenterAngleRad(int entry_sector_user) {
+  if (entry_sector_user < 1 || entry_sector_user > 8) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return normalizeAngle(
+      static_cast<double>(entry_sector_user - 1) * kPi / 4.0);
+}
+
+bool entryGatePointInSector(const CandidatePoint& candidate,
+                            const RouteConfig& route,
+                            int entry_sector_user,
+                            double tolerance_rad) {
+  const double center = entryGateSectorCenterAngleRad(entry_sector_user);
+  if (!std::isfinite(center) || !std::isfinite(candidate.x) ||
+      !std::isfinite(candidate.y) || !std::isfinite(tolerance_rad) ||
+      tolerance_rad < 0.0) {
+    return false;
+  }
+  const double angle = std::atan2(candidate.y - route.center_y,
+                                  candidate.x - route.center_x);
+  return std::abs(normalizeAngle(angle - center)) <=
+         kPi / 8.0 + tolerance_rad;
+}
+
 bool evaluateEntryGateCandidate(
     CandidatePoint* candidate, const RouteConfig& route,
     const geometry_msgs::Point& current_position,
@@ -429,7 +518,8 @@ bool evaluateEntryGateCandidate(
     const std::vector<geometry_msgs::Point>& map_points,
     const std::vector<StaticObstacle>& obstacles, bool map_fresh,
     const EntryGateConfig& config, double unknown_ratio,
-    double unknown_ratio_limit) {
+    double unknown_ratio_limit,
+    const CandidatePoint* first_inspection_target) {
   if (candidate == nullptr) return false;
   candidate->accepted = false;
   candidate->target_invalid = false;
@@ -509,11 +599,29 @@ bool evaluateEntryGateCandidate(
     candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
   }
   if (!std::isfinite(candidate->clearance)) candidate->clearance = 100.0;
+  const double preferred_radius_error =
+      std::abs(radius - config.preferred_radius);
+  const double sector_center =
+      static_cast<double>(candidate->sector_id) * kPi / 4.0;
+  const double sector_center_error =
+      std::abs(normalizeAngle(
+          std::atan2(candidate->y - route.center_y,
+                     candidate->x - route.center_x) -
+          sector_center));
+  const double first_waypoint_distance =
+      first_inspection_target == nullptr
+          ? 0.0
+          : distance2d(candidate->x, candidate->y,
+                       first_inspection_target->x,
+                       first_inspection_target->y);
   candidate->score =
       config.clearance_weight * candidate->clearance -
       config.distance_weight * distance3d(
           candidate->x, candidate->y, candidate->z, current_position.x,
           current_position.y, current_position.z) -
+      config.sector_center_weight * radius * sector_center_error -
+      config.preferred_radius_weight * preferred_radius_error -
+      config.first_waypoint_weight * first_waypoint_distance -
       (candidate->straight_corridor_blocked
            ? config.blocked_corridor_penalty
            : 0.0);
@@ -641,6 +749,42 @@ std::vector<std::size_t> buildClosedLapVisitSequence(
     visits.push_back(0U);
   }
   return visits;
+}
+
+double directedAngularDifference(double entry_angle_rad,
+                                 double waypoint_angle_rad,
+                                 OrbitDirection direction) {
+  const double signed_difference =
+      direction == OrbitDirection::kCounterClockwise
+          ? waypoint_angle_rad - entry_angle_rad
+          : entry_angle_rad - waypoint_angle_rad;
+  double wrapped = std::fmod(signed_difference, 2.0 * kPi);
+  if (wrapped < 0.0) wrapped += 2.0 * kPi;
+  if (wrapped >= 2.0 * kPi - 1.0e-12) wrapped = 0.0;
+  return wrapped;
+}
+
+std::vector<std::size_t> directionalSectorOrder(
+    double entry_angle_rad, const std::vector<Sector>& sectors,
+    OrbitDirection direction) {
+  std::vector<std::size_t> order(sectors.size());
+  for (std::size_t index = 0; index < sectors.size(); ++index) {
+    order[index] = index;
+  }
+  std::stable_sort(
+      order.begin(), order.end(),
+      [&sectors, entry_angle_rad, direction](std::size_t lhs,
+                                             std::size_t rhs) {
+        const double lhs_difference = directedAngularDifference(
+            entry_angle_rad, sectors[lhs].nominal_angle_rad, direction);
+        const double rhs_difference = directedAngularDifference(
+            entry_angle_rad, sectors[rhs].nominal_angle_rad, direction);
+        if (std::abs(lhs_difference - rhs_difference) > 1.0e-12) {
+          return lhs_difference < rhs_difference;
+        }
+        return sectors[lhs].sector_id < sectors[rhs].sector_id;
+      });
+  return order;
 }
 
 void rotateSectorsToNearest(const geometry_msgs::Point& current,
@@ -782,6 +926,37 @@ RecoveryAssessment assessRecoveryTargets(
   // A blocked straight segment is a risk hint, never an unreachable verdict.
   result.score = -100.0 * result.blocked_corridors - length;
   return result;
+}
+
+bool recoveryTargetsStayInSector(const RecoveryTargets& targets,
+                                 const Sector& sector,
+                                 double maximum_descent) {
+  if (!std::isfinite(maximum_descent) || maximum_descent < 0.0) {
+    return false;
+  }
+  const CandidatePoint points[] = {
+      targets.r1, targets.r2, targets.reentry};
+  const double angle_half_width = std::max(
+      std::abs(normalizeAngle(sector.max_angle_rad -
+                              sector.nominal_angle_rad)),
+      std::abs(normalizeAngle(sector.min_angle_rad -
+                              sector.nominal_angle_rad)));
+  for (const auto& point : points) {
+    const double radius =
+        distance2d(point.x, point.y, sector.center_x, sector.center_y);
+    const double angle = std::atan2(point.y - sector.center_y,
+                                    point.x - sector.center_x);
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+        !std::isfinite(point.z) || radius < sector.min_radius ||
+        radius > sector.max_radius ||
+        std::abs(normalizeAngle(angle - sector.nominal_angle_rad)) >
+            angle_half_width + 1.0e-9 ||
+        point.z > sector.nominal_height + 1.0e-9 ||
+        point.z < sector.nominal_height - maximum_descent - 1.0e-9) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool returnOrLandingTimedOut(bool landing_active,

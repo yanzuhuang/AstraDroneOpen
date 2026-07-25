@@ -30,6 +30,8 @@ class Stage3NoControlIntegration(unittest.TestCase):
         self.bridge_hold_injected = False
         self.bridge_hold_active = False
         self.approach_goal_count = 0
+        self.entry_gate_positions = []
+        self.inspection_positions = []
         self.obstacle_enabled = False
         self.return_calls = 0
         self.cancel_calls = 0
@@ -38,6 +40,7 @@ class Stage3NoControlIntegration(unittest.TestCase):
         self.recovery_goal_heights = []
         self.ascent_positions = []
         self.layer_transition_positions = []
+        self.normal_return_positions = []
         self.face_tower_modes = []
         self.mavros_setpoints = 0
         self.position = [12.0, 0.0, 4.0]
@@ -105,6 +108,11 @@ class Stage3NoControlIntegration(unittest.TestCase):
             state = self.state
             if state == "ENTRY_GATE_TRANSIT":
                 self.approach_goal_count += 1
+                self.entry_gate_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
                 if not self.bridge_hold_injected:
                     # Inject one bridge-local HOLD during the newly explicit
                     # safe-altitude ENTRY_GATE transit. The mission must
@@ -123,6 +131,18 @@ class Stage3NoControlIntegration(unittest.TestCase):
                 ))
             if state == "LAYER_TRANSITION":
                 self.layer_transition_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
+            if state == "NORMAL_RETURN":
+                self.normal_return_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
+            if state in ("TARGET_LOCKED", "NAVIGATING"):
+                self.inspection_positions.append((
                     message.pose.position.x,
                     message.pose.position.y,
                     message.pose.position.z,
@@ -246,12 +266,23 @@ class Stage3NoControlIntegration(unittest.TestCase):
             self.assertEqual(self.state, "RETURN_HOME")
             self.assertTrue(self.bridge_hold_injected)
             self.assertGreaterEqual(self.approach_goal_count, 2)
+            self.assertGreaterEqual(len(self.entry_gate_positions), 1)
+            selected_entry = self.entry_gate_positions[-1]
+            selected_angle = (
+                math.degrees(math.atan2(selected_entry[1],
+                                        selected_entry[0])) + 360.0
+            ) % 360.0
+            self.assertGreaterEqual(selected_angle, 247.5)
+            self.assertLessEqual(selected_angle, 292.5)
+            self.assertAlmostEqual(
+                math.hypot(selected_entry[0], selected_entry[1]),
+                11.0, places=2)
             self.assertGreaterEqual(self.cancel_calls, 2)
             self.assertGreaterEqual(self.tracking_disable_calls, 2)
             self.assertGreaterEqual(self.resume_calls, 1)
             self.assertEqual(self.return_calls, 1)
-            self.assertIn("RETURN_EGRESS", self.states)
-            self.assertNotIn("NORMAL_RETURN", self.states)
+            self.assertIn("NORMAL_RETURN", self.states)
+            self.assertNotIn("RETURN_EGRESS", self.states)
             self.assertIn("LAYER_TRANSITION", self.states)
             self.assertEqual(self.states.count("STAGING_POINT"), 1)
             self.assertEqual(self.sector_failure_goal_count, 2)
@@ -270,8 +301,46 @@ class Stage3NoControlIntegration(unittest.TestCase):
                      for item in self.layer_transition_positions}),
                 1,
             )
+            self.assertGreaterEqual(len(self.normal_return_positions), 1)
+            self.assertEqual(
+                round(self.normal_return_positions[0][2], 2), 3.0)
+            self.assertLessEqual(
+                max(math.hypot(item[0], item[1])
+                    for item in self.normal_return_positions),
+                12.1,
+            )
             self.assertIn(True, self.face_tower_modes)
             self.assertEqual(self.mavros_setpoints, 0)
+            direction = rospy.get_param(
+                "/tower_mission/mission/direction")
+            expected_angle = (
+                292.5 if direction == "counter_clockwise" else 247.5)
+            for layer_height in (5.0, 3.0):
+                layer_positions = [
+                    item for item in self.inspection_positions
+                    if abs(item[2] - layer_height) < 0.05
+                ]
+                self.assertGreaterEqual(len(layer_positions), 1)
+                first_angle = (
+                    math.degrees(math.atan2(layer_positions[0][1],
+                                            layer_positions[0][0])) + 360.0
+                ) % 360.0
+                self.assertAlmostEqual(first_angle, expected_angle, places=1)
+            upper_unique_angles = []
+            for item in self.inspection_positions:
+                if abs(item[2] - 5.0) >= 0.05:
+                    continue
+                angle = (
+                    math.degrees(math.atan2(item[1], item[0])) + 360.0
+                ) % 360.0
+                if (not upper_unique_angles or
+                        abs(angle - upper_unique_angles[-1]) > 0.1):
+                    upper_unique_angles.append(angle)
+            self.assertGreaterEqual(len(upper_unique_angles), 2)
+            expected_fallback_angle = (
+                337.5 if direction == "counter_clockwise" else 202.5)
+            self.assertAlmostEqual(
+                upper_unique_angles[1], expected_fallback_angle, places=1)
 
 
 if __name__ == "__main__":

@@ -121,6 +121,7 @@ def audit(
     occupancy_stride,
     tracking_error_limit,
     tracking_error_duration,
+    expected_entry_sector,
 ):
     tracking_errors = []
     tracking_above_limit_count = 0
@@ -141,6 +142,8 @@ def audit(
     entry_gates = []
     ascent_targets = []
     layer_transition_targets = []
+    exit_gate_targets = []
+    normal_return_targets = []
     return_egress_targets = []
     ascent_odom_positions = []
     transition_odom_positions = []
@@ -331,10 +334,12 @@ def audit(
             elif topic == "/rosout":
                 text = message.msg
                 gate = re.search(
-                    r"(?:ENTRY_GATE selected: |"
+                    r"(?:ENTRY_GATE selected: layer=\d+ |"
+                    r"ENTRY_GATE selected: |"
                     r"ENTRY_GATE locked only after safe-altitude map dwell: |"
-                    r"fixed ENTRY_GATE locked after safe-altitude map dwell: )"
-                    r"(ENTRY_GATE_(?:a\d+|s\d+))",
+                    r"fixed ENTRY_GATE locked after safe-altitude map dwell: |"
+                    r"dynamic ENTRY_GATE/EXIT_GATE locked: layer=\d+ )"
+                    r"(ENTRY_GATE_(?:a\d+|s\d+(?:_c\d+)?))",
                     text,
                 )
                 if gate:
@@ -410,10 +415,17 @@ def audit(
                             float(goal.group(6)),
                         ],
                     }
-                    if "VERTICAL_ASCENT" in event["target_id"]:
+                    if event["target_id"].startswith("INGRESS_REVERSE_"):
+                        normal_return_targets.append(event)
+                    elif event["target_id"].startswith(
+                        "ASCENT_CHANNEL_"
+                    ) and "VERTICAL_ASCENT" in event["target_id"]:
                         ascent_targets.append(event)
                     elif event["target_id"].startswith("LAYER_TRANSITION_"):
                         layer_transition_targets.append(event)
+                    elif event["target_id"].startswith("EXIT_GATE_"):
+                        exit_gate_targets.append(event)
+                        normal_return_targets.append(event)
                     elif event["target_id"].startswith("RETURN_"):
                         return_egress_targets.append(event)
 
@@ -458,6 +470,8 @@ def audit(
     layer_transition_targets = unique_goal_positions(
         layer_transition_targets
     )
+    exit_gate_targets = unique_goal_positions(exit_gate_targets)
+    normal_return_targets = unique_goal_positions(normal_return_targets)
     ascent_heights = [round(item["position"][2], 2) for item in ascent_targets]
     ascent_xy = {
         (round(item["position"][0], 2), round(item["position"][1], 2))
@@ -475,6 +489,12 @@ def audit(
     }
     layer_transition_valid = (
         transition_heights == [24.0, 22.0] and len(transition_xy) == 1
+    )
+    dynamic_lower_exit_gate_valid = (
+        len(exit_gate_targets) == 1
+        and exit_gate_targets[0]["layer_id"] == 1
+        and round(exit_gate_targets[0]["position"][2], 2) == 22.0
+        and exit_gate_targets[0]["target_id"].startswith("EXIT_GATE_L1_Z22")
     )
     ascent_xy_error = None
     if ascent_targets and ascent_odom_positions:
@@ -521,6 +541,11 @@ def audit(
     mission_state_names = [event["state"] for event in mission_states]
     bridge_state_names = [event["state"] for event in bridge_states]
     return_egress_selected = "RETURN_EGRESS" in mission_state_names
+    direct_normal_return_selected = (
+        "NORMAL_RETURN" in mission_state_names
+        and dynamic_lower_exit_gate_valid
+        and not return_egress_selected
+    )
     home_hover_before_landing = (
         "HOME_HOVER" in bridge_state_names
         and "LANDING" in bridge_state_names
@@ -542,6 +567,13 @@ def audit(
         if topic != "/mavros/setpoint_raw/local" and publishers
     }
 
+    entry_gate_sector_valid = bool(entry_gates) and all(
+        re.fullmatch(
+            rf"ENTRY_GATE_s{expected_entry_sector}(?:_c\d+)?",
+            item["id"],
+        )
+        for item in entry_gates
+    )
     result = {
         "bag": path,
         "start_time": round(start, 3),
@@ -552,17 +584,19 @@ def audit(
         "mission_states": mission_states,
         "bridge_states": bridge_states,
         "entry_gates": entry_gates,
-        "fixed_entry_gate_valid": (
-            len({item["id"] for item in entry_gates}) == 1
-            and bool(entry_gates)
-            and entry_gates[0]["id"] == "ENTRY_GATE_s3"
-        ),
+        "expected_entry_sector": expected_entry_sector,
+        "adaptive_entry_gate_sector_valid": entry_gate_sector_valid,
+        "fixed_entry_gate_valid": entry_gate_sector_valid,
         "ascent_targets": ascent_targets,
         "vertical_ascent_valid": vertical_ascent_valid,
         "vertical_ascent_actual_max_xy_error": ascent_xy_error,
         "layer_transition_targets": layer_transition_targets,
         "layer_transition_valid": layer_transition_valid,
         "layer_transition_actual_max_xy_error": transition_xy_error,
+        "exit_gate_targets": exit_gate_targets,
+        "dynamic_lower_exit_gate_valid": dynamic_lower_exit_gate_valid,
+        "normal_return_targets": normal_return_targets,
+        "direct_normal_return_selected": direct_normal_return_selected,
         "tower_facing_yaw_error": {
             "count": len(tower_yaw_errors),
             "maximum": max(tower_yaw_errors) if tower_yaw_errors else None,
@@ -646,7 +680,9 @@ def audit(
         and final_extended["landed_state"] == 1,
         "no_missing_required_topics": not missing_topics,
         "closed_lap_completed": closed_lap_valid,
-        "fixed_entry_gate": result["fixed_entry_gate_valid"],
+        "entry_gate_stays_in_configured_sector": (
+            result["adaptive_entry_gate_sector_valid"]
+        ),
         "fixed_xy_vertical_ascent": vertical_ascent_valid,
         "actual_vertical_ascent_xy_stable": (
             ascent_xy_error is not None and ascent_xy_error < 0.5
@@ -659,8 +695,9 @@ def audit(
             bool(tower_yaw_errors)
             and percentile(tower_yaw_errors, 95.0) < 0.35
         ),
-        "tower_exterior_return_egress": (
-            return_egress_selected and return_home_radial_valid
+        "dynamic_lower_exit_gate": dynamic_lower_exit_gate_valid,
+        "direct_normal_return_without_far_egress": (
+            direct_normal_return_selected
         ),
         "home_hover_precedes_auto_land": home_hover_before_landing,
         "no_planner_collision_or_emergency": not planner_flag_counts,
@@ -698,6 +735,13 @@ def main():
         default=1.0,
         help="bridge sustained-error protection duration in seconds",
     )
+    parser.add_argument(
+        "--entry-sector",
+        type=int,
+        default=7,
+        choices=range(1, 9),
+        help="expected user-facing ENTRY_GATE sector (default: 7)",
+    )
     parser.add_argument("--output")
     args = parser.parse_args()
     if args.occupancy_stride < 1:
@@ -711,6 +755,7 @@ def main():
         args.occupancy_stride,
         args.tracking_error_limit,
         args.tracking_error_duration,
+        args.entry_sector,
     )
     payload = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:

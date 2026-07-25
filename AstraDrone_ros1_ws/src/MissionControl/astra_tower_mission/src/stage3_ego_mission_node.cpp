@@ -112,12 +112,22 @@ geometry_msgs::Quaternion yawQuaternion(double yaw) {
   return q;
 }
 
+const char* entrySectorDirectionName(int entry_sector_user) {
+  static const char* const names[] = {
+      "+X RIGHT", "NE RIGHT_UP", "+Y UP", "NW LEFT_UP",
+      "-X LEFT", "SW LEFT_DOWN", "-Y DOWN", "SE RIGHT_DOWN"};
+  return entry_sector_user >= 1 && entry_sector_user <= 8
+             ? names[entry_sector_user - 1]
+             : "INVALID";
+}
+
 }  // namespace
 
 class Stage3EgoMissionNode {
  public:
   Stage3EgoMissionNode() : node_(), private_node_("~") {
     loadConfig();
+    logEntryGateSectorDefinitions();
     setupRos();
     state_entered_ = ros::Time::now();
     mission_started_ = state_entered_;
@@ -125,14 +135,49 @@ class Stage3EgoMissionNode {
     timer_ = node_.createTimer(ros::Duration(1.0 / loop_rate_),
                                &Stage3EgoMissionNode::timerCallback, this);
     ROS_WARN("[STAGE3_TASK] control=%s sectors=%d layers=%zu "
-             "inspection_height=%.2f radius=%.2f entry_sector=%d "
+             "inspection_height=%.2f radius=%.2f "
+             "entry_sector_user=%d entry_sector_index=%d "
              "recovery_max=%.2f virtual_ceil=%.2f; no MAVROS publisher",
              enable_control_ ? "true" : "false", sector_count_,
              inspection_heights_.size(), inspection_height_, route_.radius,
-             entry_sector_, recovery_height_max_, virtual_ceil_height_);
+             entry_sector_user_, entry_sector_index_,
+             recovery_height_max_, virtual_ceil_height_);
   }
 
  private:
+  void logEntryGateSectorDefinitions() const {
+    ROS_WARN("[STAGE3_TASK] ENTRY_GATE map sectors: CCW from +X, "
+             "user numbering 1..8, width=45deg");
+    for (int user_sector = 1; user_sector <= 8; ++user_sector) {
+      const double center_deg = (user_sector - 1) * 45.0;
+      double lower_deg = center_deg - 22.5;
+      double upper_deg = center_deg + 22.5;
+      if (lower_deg < 0.0) lower_deg += 360.0;
+      if (upper_deg >= 360.0) upper_deg -= 360.0;
+      if (lower_deg > upper_deg) {
+        ROS_WARN("[STAGE3_TASK] ENTRY_GATE sector %d: %-13s center=%.1fdeg "
+                 "range=[%.1f,360) U [0,%.1f]deg",
+                 user_sector, entrySectorDirectionName(user_sector),
+                 center_deg, lower_deg, upper_deg);
+      } else {
+        ROS_WARN("[STAGE3_TASK] ENTRY_GATE sector %d: %-13s center=%.1fdeg "
+                 "range=[%.1f,%.1f]deg",
+                 user_sector, entrySectorDirectionName(user_sector),
+                 center_deg, lower_deg, upper_deg);
+      }
+    }
+    const double selected_center_deg =
+        static_cast<double>(entry_sector_user_ - 1) * 45.0;
+    double selected_lower_deg = selected_center_deg - 22.5;
+    double selected_upper_deg = selected_center_deg + 22.5;
+    if (selected_lower_deg < 0.0) selected_lower_deg += 360.0;
+    if (selected_upper_deg >= 360.0) selected_upper_deg -= 360.0;
+    ROS_WARN("[STAGE3_TASK] configured ENTRY_GATE sector=%d direction=%s "
+             "center=%.1fdeg range=[%.1f,%.1f]deg; cross-sector fallback=false",
+             entry_sector_user_, entrySectorDirectionName(entry_sector_user_),
+             selected_center_deg, selected_lower_deg, selected_upper_deg);
+  }
+
   void loadConfig() {
     private_node_.param("enable_control", enable_control_, false);
     private_node_.param<std::string>("planning_frame", planning_frame_,
@@ -292,16 +337,23 @@ class Stage3EgoMissionNode {
                         start_angle_deg_);
     private_node_.param("mission/approach_segment_length", approach_segment_length_,
                         6.0);
-    private_node_.param("entry_gate/entry_sector", entry_sector_,
-                        inspection_start_sector_);
-    private_node_.param("entry_gate/radius", fixed_entry_gate_radius_,
+    private_node_.param("first_waypoint/angular_tolerance_deg",
+                        first_waypoint_angle_tolerance_deg_, 5.0);
+    private_node_.param("first_waypoint/distance_tolerance",
+                        first_waypoint_distance_tolerance_, 3.0);
+    private_node_.param("entry_gate/entry_sector", entry_sector_user_, 1);
+    entry_sector_index_ = entry_sector_user_ - 1;
+    private_node_.param("entry_gate/preferred_radius",
+                        entry_gate_config_.preferred_radius,
                         route_.radius + 2.5);
-    private_node_.param("entry_gate/height", fixed_entry_gate_height_,
-                        inspection_height_);
     private_node_.param("entry_gate/minimum_radius",
                         entry_gate_config_.minimum_radius, route_.radius + 2.0);
     private_node_.param("entry_gate/maximum_radius",
                         entry_gate_config_.maximum_radius, route_.radius + 10.0);
+    private_node_.param("entry_gate/angular_sample_step_deg",
+                        entry_gate_config_.angular_sample_step_deg, 7.5);
+    private_node_.param("entry_gate/radial_sample_step",
+                        entry_gate_config_.radial_sample_step, 1.0);
     private_node_.param("entry_gate/maximum_horizontal_distance",
                         entry_gate_config_.maximum_horizontal_distance, 60.0);
     private_node_.param("entry_gate/minimum_clearance",
@@ -311,13 +363,21 @@ class Stage3EgoMissionNode {
     private_node_.param("entry_gate/corridor_sample_step",
                         entry_gate_config_.corridor_sample_step, 0.5);
     private_node_.param("entry_gate/clearance_weight",
-                        entry_gate_config_.clearance_weight, 0.1);
+                        entry_gate_config_.clearance_weight, 0.2);
     private_node_.param("entry_gate/distance_weight",
-                        entry_gate_config_.distance_weight, 1.0);
+                        entry_gate_config_.distance_weight, 0.1);
+    private_node_.param("entry_gate/sector_center_weight",
+                        entry_gate_config_.sector_center_weight, 4.0);
+    private_node_.param("entry_gate/preferred_radius_weight",
+                        entry_gate_config_.preferred_radius_weight, 4.0);
+    private_node_.param("entry_gate/first_waypoint_weight",
+                        entry_gate_config_.first_waypoint_weight, 0.8);
     private_node_.param("entry_gate/blocked_corridor_penalty",
-                        entry_gate_config_.blocked_corridor_penalty, 5.0);
+                        entry_gate_config_.blocked_corridor_penalty, 8.0);
     private_node_.param("entry_gate/maximum_segment_length",
                         entry_gate_segment_length_, 6.0);
+    private_node_.param("entry_gate/prefer_safe_overflight",
+                        prefer_safe_overflight_, true);
     private_node_.param("entry_gate/target_timeout",
                         entry_gate_target_timeout_, 90.0);
     private_node_.param("entry_gate/maximum_relocations",
@@ -335,7 +395,7 @@ class Stage3EgoMissionNode {
     private_node_.param("staging/minimum_channel_hold",
                         minimum_channel_hold_, 5.0);
     private_node_.param("staging/maximum_channel_switches",
-                        max_entry_gate_relocations_, 2);
+                        max_ascent_channel_switches_, 0);
     private_node_.param("staging/use_configured_xy",
                         use_configured_staging_xy_, false);
     private_node_.param("staging/x", configured_staging_x_, 0.0);
@@ -345,7 +405,9 @@ class Stage3EgoMissionNode {
     private_node_.param("mission/sector_radius_half_width", sector_radius_half_width_,
                         4.0);
     private_node_.param("mission/sector_height_half_width", sector_height_half_width_,
-                        1.0);
+                        3.0);
+    private_node_.param("mission/maximum_temporary_descent",
+                        maximum_temporary_descent_, 3.0);
     private_node_.param("mission/target_replacement_margin",
                         target_replacement_margin_, 2.0);
 
@@ -355,10 +417,25 @@ class Stage3EgoMissionNode {
                         0.4);
     private_node_.param("candidate/unknown_is_hard_constraint",
                         filter_config_.unknown_is_hard_constraint, false);
+    private_node_.param("candidate/known_obstacle_is_hard_constraint",
+                        filter_config_.known_obstacle_is_hard_constraint,
+                        true);
     private_node_.param("candidate/corridor_sample_step",
                         filter_config_.corridor_sample_step, 0.5);
     private_node_.param("candidate/blocked_corridor_penalty",
                         filter_config_.blocked_corridor_penalty, 5.0);
+    private_node_.param("candidate/score_clearance_weight",
+                        filter_config_.score_clearance_weight, 0.2);
+    private_node_.param("candidate/score_radius_weight",
+                        filter_config_.score_radius_weight, 6.0);
+    private_node_.param("candidate/score_sector_weight",
+                        filter_config_.score_sector_weight, 4.0);
+    private_node_.param("candidate/score_height_weight",
+                        filter_config_.score_height_weight, 14.0);
+    private_node_.param("candidate/score_distance_weight",
+                        filter_config_.score_distance_weight, 0.1);
+    private_node_.param("candidate/score_continuity_weight",
+                        filter_config_.score_continuity_weight, 0.2);
     private_node_.param("recovery/radial_step", recovery_config_.radial_step, 3.0);
     private_node_.param("recovery/tangent_step", recovery_config_.tangent_step, 4.0);
     private_node_.param("recovery/maximum_radius", recovery_config_.maximum_radius,
@@ -371,6 +448,9 @@ class Stage3EgoMissionNode {
     route_.height = inspection_height_;
     route_.waypoint_count = sector_count_;
     route_.start_angle_rad = start_angle_deg_ * kPi / 180.0;
+    recovery_config_.maximum_radius = std::min(
+        recovery_config_.maximum_radius,
+        route_.radius + sector_radius_half_width_);
     if (!parseDirection(direction_, &route_.direction))
       throw std::runtime_error("invalid mission/direction");
     if (!parseDirection(recovery_direction_, &recovery_config_.direction))
@@ -385,7 +465,7 @@ class Stage3EgoMissionNode {
     private_node_.param("candidate/radius_offsets_m", radius_offsets,
                         std::vector<double>{0.0, 2.0, 4.0});
     private_node_.param("candidate/height_offsets_m", height_offsets,
-                        std::vector<double>{0.0, -1.0, 1.0});
+                        std::vector<double>{0.0, -1.0, -2.0, -3.0});
     for (double angle : angle_offsets)
       for (double radius : radius_offsets)
         for (double height : height_offsets)
@@ -411,17 +491,50 @@ class Stage3EgoMissionNode {
         recovery_config_.radial_step <= 0.0 || recovery_config_.tangent_step <= 0.0 ||
         recovery_config_.maximum_radius < route_.radius ||
         recovery_config_.maximum_radius <= 0.0 ||
+        !std::isfinite(entry_gate_config_.minimum_radius) ||
+        !std::isfinite(entry_gate_config_.maximum_radius) ||
+        !std::isfinite(entry_gate_config_.preferred_radius) ||
+        !std::isfinite(entry_gate_config_.angular_sample_step_deg) ||
+        !std::isfinite(entry_gate_config_.radial_sample_step) ||
+        !std::isfinite(entry_gate_config_.clearance_weight) ||
+        !std::isfinite(entry_gate_config_.distance_weight) ||
+        !std::isfinite(entry_gate_config_.sector_center_weight) ||
+        !std::isfinite(entry_gate_config_.preferred_radius_weight) ||
+        !std::isfinite(entry_gate_config_.first_waypoint_weight) ||
+        !std::isfinite(entry_gate_config_.blocked_corridor_penalty) ||
         entry_gate_config_.minimum_radius <= route_.tower_collision_radius ||
         entry_gate_config_.maximum_radius < entry_gate_config_.minimum_radius ||
+        entry_gate_config_.preferred_radius <
+            entry_gate_config_.minimum_radius ||
+        entry_gate_config_.preferred_radius >
+            entry_gate_config_.maximum_radius ||
+        entry_gate_config_.angular_sample_step_deg <= 0.0 ||
+        entry_gate_config_.angular_sample_step_deg > 22.5 ||
+        entry_gate_config_.radial_sample_step <= 0.0 ||
+        entry_gate_config_.clearance_weight < 0.0 ||
+        entry_gate_config_.distance_weight < 0.0 ||
+        entry_gate_config_.sector_center_weight < 0.0 ||
+        entry_gate_config_.preferred_radius_weight < 0.0 ||
+        entry_gate_config_.first_waypoint_weight < 0.0 ||
+        entry_gate_config_.blocked_corridor_penalty < 0.0 ||
         entry_gate_segment_length_ <= 0.0 ||
+        !std::isfinite(first_waypoint_angle_tolerance_deg_) ||
+        !std::isfinite(first_waypoint_distance_tolerance_) ||
+        first_waypoint_angle_tolerance_deg_ < 0.0 ||
+        first_waypoint_angle_tolerance_deg_ >= 22.5 ||
+        first_waypoint_distance_tolerance_ < 0.0 ||
+        maximum_temporary_descent_ < 1.0 ||
+        maximum_temporary_descent_ > 3.0 ||
+        sector_height_half_width_ + 1.0e-9 <
+            maximum_temporary_descent_ ||
         entry_gate_target_timeout_ <= 0.0 ||
         max_entry_gate_relocations_ < 0 ||
-        entry_sector_ < 0 || entry_sector_ >= sector_count_ ||
-        inspection_start_sector_ != entry_sector_ ||
-        transition_sector_ != entry_sector_ ||
-        !std::isfinite(fixed_entry_gate_radius_) ||
-        fixed_entry_gate_radius_ <= route_.tower_collision_radius ||
-        std::abs(fixed_entry_gate_height_ - inspection_height_) > 1.0e-6 ||
+        max_ascent_channel_switches_ != 0 ||
+        entry_sector_user_ < 1 || entry_sector_user_ > 8 ||
+        entry_sector_index_ != entry_sector_user_ - 1 ||
+        inspection_start_sector_ < 0 ||
+        inspection_start_sector_ >= sector_count_ ||
+        transition_sector_ < 0 || transition_sector_ >= sector_count_ ||
         inspection_heights_.empty() ||
         transition_step_heights_.empty() ||
         ascent_step_heights_.empty() ||
@@ -463,6 +576,17 @@ class Stage3EgoMissionNode {
         recovery_height_ < route_.minimum_height ||
         recovery_height_ > recovery_height_max_) {
       throw std::runtime_error("invalid stage3 height or recovery envelope");
+    }
+    if (offsets_.empty()) {
+      throw std::runtime_error("candidate offsets must not be empty");
+    }
+    for (const auto& offset : offsets_) {
+      if (!std::isfinite(offset.height_m) || offset.height_m > 1.0e-9 ||
+          offset.height_m < -maximum_temporary_descent_ - 1.0e-9) {
+        throw std::runtime_error(
+            "candidate height offsets must stay within the configured "
+            "downward envelope");
+      }
     }
     for (std::size_t index = 0; index < inspection_heights_.size(); ++index) {
       const double height = inspection_heights_[index];
@@ -867,7 +991,10 @@ class Stage3EgoMissionNode {
       entry_gate_locked_ = false;
       entry_gate_candidates_.clear();
       failed_entry_gate_positions_.clear();
+      unreachable_entry_gate_candidates_.clear();
       entry_gate_relocations_ = 0;
+      entry_gate_last_failure_.clear();
+      entry_gate_no_safe_candidate_hold_ = false;
       normal_return_attempted_ = false;
     }
 
@@ -1032,13 +1159,58 @@ class Stage3EgoMissionNode {
     return candidateInObservedSensorVolume(point) ? 0.0 : 1.0;
   }
 
-  bool lockFinalEntryGate(const ros::Time& now) {
-    if (!mapFresh(now)) return false;
+  CandidatePoint firstInspectionReference(int layer_index) const {
+    CandidatePoint first;
+    first.id = "FIRST_INSPECTION_REFERENCE";
+    first.layer_id = layer_index;
+    RouteConfig layer_route = route_;
+    layer_route.height = inspection_heights_[layer_index];
+    const auto references = buildInspectionSectors(
+        layer_route, sector_count_, 1, sector_angle_half_width_deg_,
+        sector_radius_half_width_, sector_height_half_width_,
+        std::vector<CandidateOffset>{{0.0, 0.0, 0.0}});
+    const double entry_angle =
+        entryGateSectorCenterAngleRad(entry_sector_user_);
+    const auto order =
+        directionalSectorOrder(entry_angle, references, route_.direction);
+    if (order.empty()) return first;
+    first.sector_id = references[order.front()].sector_id;
+    const double angle = references[order.front()].nominal_angle_rad;
+    first.x = route_.center_x + route_.radius * std::cos(angle);
+    first.y = route_.center_y + route_.radius * std::sin(angle);
+    first.z = inspection_heights_[layer_index];
+    return first;
+  }
+
+  bool lockLayerGate(int layer_index, const ros::Time& now) {
+    entry_gate_last_failure_.clear();
+    if (!mapFresh(now) || layer_index < 0 ||
+        layer_index >= static_cast<int>(inspection_heights_.size())) {
+      return false;
+    }
+    entry_gate_locked_ = false;
+    entry_gate_index_ = -1;
+    provisional_entry_gate_index_ = -1;
+    const double layer_height = inspection_heights_[layer_index];
+    EntryGateConfig layer_config = entry_gate_config_;
+    layer_config.inspection_height = layer_height;
+    const CandidatePoint first_inspection =
+        firstInspectionReference(layer_index);
     entry_gate_candidates_.clear();
-    entry_gate_candidates_.push_back(buildFixedEntryGate(
-        route_, sector_count_, entry_sector_, fixed_entry_gate_radius_,
-        fixed_entry_gate_height_));
+    entry_gate_candidates_ = buildEntryGateCandidates(
+        route_, entry_sector_user_, layer_config.minimum_radius,
+        layer_config.maximum_radius, layer_config.preferred_radius,
+        layer_config.angular_sample_step_deg,
+        layer_config.radial_sample_step, layer_height);
     for (auto& candidate : entry_gate_candidates_) {
+      candidate.layer_id = layer_index;
+      if (!entryGatePointInSector(
+              candidate, route_, entry_sector_user_)) {
+        candidate.accepted = false;
+        candidate.target_invalid = true;
+        candidate.rejection_reason = "ENTRY_GATE_SECTOR_ESCAPE";
+        continue;
+      }
       geometry_msgs::Point point;
       point.x = candidate.x;
       point.y = candidate.y;
@@ -1046,13 +1218,48 @@ class Stage3EgoMissionNode {
       const double unknown_ratio = candidateUnknownRatio(point);
       evaluateEntryGateCandidate(
           &candidate, route_, pointOf(odom_), home_position_,
-          planningMapPoints(), obstacles_, true, entry_gate_config_,
-          unknown_ratio, filter_config_.unknown_ratio_limit);
+          planningMapPoints(), obstacles_, true, layer_config,
+          unknown_ratio, filter_config_.unknown_ratio_limit,
+          &first_inspection);
+      if (unreachable_entry_gate_candidates_.count(candidate.id) > 0U) {
+        candidate.accepted = false;
+        candidate.planner_unreachable = true;
+        candidate.target_invalid = false;
+        candidate.rejection_reason = "PLANNER_UNREACHABLE";
+      }
+      const double radius = std::hypot(
+          candidate.x - route_.center_x, candidate.y - route_.center_y);
+      const double angle_deg =
+          std::atan2(candidate.y - route_.center_y,
+                     candidate.x - route_.center_x) *
+          180.0 / kPi;
+      const double center_error_deg =
+          std::abs(normalizeAngle(
+              std::atan2(candidate.y - route_.center_y,
+                         candidate.x - route_.center_x) -
+              entryGateSectorCenterAngleRad(entry_sector_user_))) *
+          180.0 / kPi;
+      const double first_waypoint_distance = std::hypot(
+          candidate.x - first_inspection.x,
+          candidate.y - first_inspection.y);
+      ROS_WARN("[STAGE3_TASK] ENTRY_GATE candidate layer=%d id=%s "
+               "sector=%d angle=%.1fdeg center_error=%.1fdeg radius=%.2f "
+               "first_waypoint_distance=%.2f clearance=%.2f score=%.3f "
+               "accepted=%s reason=%s",
+               layer_index, candidate.id.c_str(), entry_sector_user_,
+               angle_deg, center_error_deg, radius, first_waypoint_distance,
+               candidate.clearance, candidate.score,
+               candidate.accepted ? "true" : "false",
+               candidate.accepted
+                   ? (candidate.risk_reason.empty()
+                          ? "SAFE"
+                          : candidate.risk_reason.c_str())
+                   : candidate.rejection_reason.c_str());
       if (!candidate.accepted) {
-        ROS_ERROR("[STAGE3_TASK] fixed ENTRY_GATE rejected: id=%s "
-                  "reason=%s radius=%.9f xyz=(%.2f, %.2f, %.2f) "
-                  "clearance=%.3f unknown=%.3f",
-                  candidate.id.c_str(),
+        ROS_DEBUG("[STAGE3_TASK] layer gate candidate rejected: layer=%d "
+                  "user_sector=%d id=%s reason=%s radius=%.3f "
+                  "xyz=(%.2f, %.2f, %.2f) clearance=%.3f unknown=%.3f",
+                  layer_index, entry_sector_user_, candidate.id.c_str(),
                   candidate.rejection_reason.c_str(),
                   std::hypot(candidate.x - route_.center_x,
                              candidate.y - route_.center_y),
@@ -1060,39 +1267,133 @@ class Stage3EgoMissionNode {
                   candidate.clearance, candidate.unknown_ratio);
       }
     }
-    entry_gate_index_ = entry_gate_candidates_.front().accepted ? 0 : -1;
-    if (entry_gate_index_ < 0) return false;
+    entry_gate_index_ =
+        chooseBestEntryGateCandidate(entry_gate_candidates_);
+    if (entry_gate_index_ < 0) {
+      std::ostringstream reason;
+      reason << "ENTRY_GATE_SECTOR_" << entry_sector_user_
+             << "_NO_SAFE_CANDIDATE";
+      entry_gate_last_failure_ = reason.str();
+      ROS_ERROR_THROTTLE(
+          1.0,
+          "[STAGE3_TASK] %s: direction=%s layer=%d candidates=%zu; "
+          "cross-sector fallback is forbidden, entering HOLD",
+          entry_gate_last_failure_.c_str(),
+          entrySectorDirectionName(entry_sector_user_), layer_index,
+          entry_gate_candidates_.size());
+      return false;
+    }
     provisional_entry_gate_index_ = entry_gate_index_;
     provisional_entry_gate_ = entry_gate_candidates_[entry_gate_index_];
     entry_gate_locked_ = true;
-    ROS_WARN("[STAGE3_TASK] fixed ENTRY_GATE locked after safe-altitude map "
-             "dwell: %s sector=%d radius=%.2f xyz=(%.2f, %.2f, %.2f) "
-             "unknown_ratio=%.3f",
+    const double selected_radius = std::hypot(
+        provisional_entry_gate_.x - route_.center_x,
+        provisional_entry_gate_.y - route_.center_y);
+    const double first_waypoint_distance = std::hypot(
+        provisional_entry_gate_.x - first_inspection.x,
+        provisional_entry_gate_.y - first_inspection.y);
+    ROS_WARN("[STAGE3_TASK] ENTRY_GATE selected: layer=%d %s "
+             "user_sector=%d internal_index=%d direction=%s "
+             "radius=%.2f preferred_radius=%.2f "
+             "xyz=(%.3f, %.3f, %.3f) score=%.3f "
+             "first_waypoint_distance=%.3f unknown_ratio=%.3f; "
+             "previous-layer gate replaced",
+             layer_index,
              provisional_entry_gate_.id.c_str(),
-             entry_sector_, fixed_entry_gate_radius_,
+             entry_sector_user_, entry_sector_index_,
+             entrySectorDirectionName(entry_sector_user_),
+             selected_radius, layer_config.preferred_radius,
              provisional_entry_gate_.x, provisional_entry_gate_.y,
              provisional_entry_gate_.z,
+             provisional_entry_gate_.score, first_waypoint_distance,
              provisional_entry_gate_.unknown_ratio);
     return true;
   }
 
+  bool lockFinalEntryGate(const ros::Time& now) {
+    return lockLayerGate(0, now);
+  }
+
   bool startEntryGateTransit() {
     if (!have_odom_ || !entry_gate_locked_) return false;
-    // Publish only the configured safe endpoint. Straight interpolation
-    // points can land inside a crane voxel even when the final ENTRY_GATE is
-    // valid, which turns task-layer sampling into an unintended path
-    // constraint. EGO owns the static-obstacle path to this fixed gate.
-    entry_gate_transit_goals_.assign(1U, provisional_entry_gate_);
+    const geometry_msgs::Point current = pointOf(odom_);
+    geometry_msgs::Point gate;
+    gate.x = provisional_entry_gate_.x;
+    gate.y = provisional_entry_gate_.y;
+    gate.z = provisional_entry_gate_.z;
+    if (prefer_safe_overflight_ && mappedCorridorSafe(current, gate)) {
+      entry_gate_transit_goals_ = buildRollingApproachGoals(
+          current, provisional_entry_gate_, entry_gate_segment_length_);
+      for (std::size_t index = 0;
+           index + 1U < entry_gate_transit_goals_.size(); ++index) {
+        entry_gate_transit_goals_[index].id =
+            "ENTRY_OVERFLIGHT_" + std::to_string(index + 1U);
+      }
+      ROS_WARN("[STAGE3_TASK] fresh map confirms a clear high corridor; "
+               "ENTRY_GATE transit uses %zu bounded overflight goals at "
+               "z=%.2f",
+               entry_gate_transit_goals_.size(),
+               provisional_entry_gate_.z);
+    } else {
+      // If the high straight corridor is occupied, keep only the safe gate
+      // endpoint and let EGO bend around the local obstacle. This avoids
+      // forcing an interpolated waypoint into a crane/tree voxel.
+      entry_gate_transit_goals_.assign(1U, provisional_entry_gate_);
+      ROS_WARN("[STAGE3_TASK] high straight corridor is not fully clear; "
+               "ENTRY_GATE endpoint remains locked and EGO owns the local "
+               "detour");
+    }
     entry_gate_transit_index_ = 0U;
     ascent_goal_attempts_ = 0;
     have_sent_goal_ = false;
     arrival_since_ = ros::Time(0);
     coverage_wait_started_ = ros::Time(0);
+    entry_gate_relocation_pending_ = false;
+    entry_gate_no_safe_candidate_hold_ = false;
     transition(MissionState::kEntryGateTransit,
-               "safe altitude reached; final ENTRY_GATE locked for "
-               "EGO-planned transit without task-layer straight-line "
-               "intermediate targets");
+               "safe altitude reached; high-corridor ENTRY_GATE transit "
+               "prepared");
     return true;
+  }
+
+  bool relocateEntryGateWithinConfiguredSector(
+      const ros::Time& now, const std::string& cause) {
+    if (entry_gate_locked_) {
+      const bool newly_rejected =
+          unreachable_entry_gate_candidates_
+              .insert(provisional_entry_gate_.id)
+              .second;
+      if (newly_rejected) {
+        failed_entry_gate_positions_.push_back(provisional_entry_gate_);
+        ++entry_gate_relocations_;
+      }
+      ROS_ERROR("[STAGE3_TASK] ENTRY_GATE candidate %s rejected as "
+                "planner-unreachable after bounded attempts: %s "
+                "(sector=%d relocation=%d/%d)",
+                provisional_entry_gate_.id.c_str(), cause.c_str(),
+                entry_sector_user_, entry_gate_relocations_,
+                max_entry_gate_relocations_);
+    }
+    entry_gate_locked_ = false;
+    have_sent_goal_ = false;
+    arrival_since_ = ros::Time(0);
+    if (entry_gate_relocations_ <= max_entry_gate_relocations_ &&
+        lockLayerGate(0, now) && startEntryGateTransit()) {
+      ROS_WARN("[STAGE3_TASK] ENTRY_GATE relocated inside configured sector %d; "
+               "no neighboring sector was evaluated",
+               entry_sector_user_);
+      return true;
+    }
+    std::ostringstream reason;
+    reason << "ENTRY_GATE_SECTOR_" << entry_sector_user_
+           << "_NO_SAFE_REACHABLE_CANDIDATE";
+    entry_gate_last_failure_ = reason.str();
+    entry_gate_no_safe_candidate_hold_ = true;
+    entry_gate_recheck_time_ = now;
+    ROS_ERROR("[STAGE3_TASK] %s after %d rejected candidates; "
+              "cross-sector fallback is forbidden and mission remains HOLD",
+              entry_gate_last_failure_.c_str(), entry_gate_relocations_);
+    return false;
   }
 
   bool mapFresh(const ros::Time& now) const {
@@ -1103,6 +1404,13 @@ class Stage3EgoMissionNode {
 
   const std::vector<geometry_msgs::Point>& planningMapPoints() const {
     return occupancy_points_.empty() ? cloud_points_ : occupancy_points_;
+  }
+
+  const std::vector<StaticObstacle>& hardPlanningObstacles() const {
+    static const std::vector<StaticObstacle> no_coarse_obstacles;
+    return filter_config_.known_obstacle_is_hard_constraint
+               ? obstacles_
+               : no_coarse_obstacles;
   }
 
   void publishCandidateDebug(const ros::Time& now) {
@@ -1149,12 +1457,6 @@ class Stage3EgoMissionNode {
     if (sectors_.size() != static_cast<std::size_t>(sector_count_)) {
       return false;
     }
-    const auto start = std::find_if(
-        sectors_.begin(), sectors_.end(), [this](const Sector& sector) {
-          return sector.sector_id == inspection_start_sector_;
-        });
-    if (start == sectors_.end()) return false;
-    std::rotate(sectors_.begin(), start, sectors_.end());
     for (auto& sector : sectors_) {
       sector.layer_id = layer_index;
       for (auto& candidate : sector.candidates) {
@@ -1164,8 +1466,7 @@ class Stage3EgoMissionNode {
     }
     route_.height = inspection_heights_[layer_index];
     current_layer_ = layer_index;
-    lap_visit_sequence_ = buildClosedLapVisitSequence(
-        static_cast<std::size_t>(sector_limit_), inspection_laps_);
+    lap_visit_sequence_.clear();
     visit_cursor_ = 0U;
     current_sector_ = 0U;
     current_lap_ = 1;
@@ -1173,55 +1474,247 @@ class Stage3EgoMissionNode {
     completed_laps_ = 0;
     have_last_inspection_target_ = false;
     planner_unreachable_candidates_.clear();
-    ROS_WARN("[STAGE3_TASK] inspection layer %d prepared: height=%.2f "
-             "start_sector=%d sequence=%d->...->%d",
-             current_layer_, route_.height, inspection_start_sector_,
-             inspection_start_sector_, inspection_start_sector_);
-    return !lap_visit_sequence_.empty();
+    active_target_ = CandidatePoint();
+    active_goal_kind_ = GoalKind::kSector;
+    have_sent_goal_ = false;
+    arrival_since_ = ros::Time(0);
+    current_target_plan_attempt_ = 0;
+    sector_retry_pending_ = false;
+    recovery_step_ = 0U;
+    initial_waypoint_pending_ = true;
+    ROS_WARN("[STAGE3_TASK] inspection layer %d prepared: height=%.2f; "
+             "legacy inspection_start_sector=%d ignored until ENTRY_GATE "
+             "directional ordering is evaluated",
+             current_layer_, route_.height, inspection_start_sector_);
+    return true;
   }
 
-  bool lockFixedInitialSector(const ros::Time& now,
-                              bool require_transition_xy = false) {
+  bool firstWaypointTowerCorridorSafe(
+      const geometry_msgs::Point& from,
+      const CandidatePoint& candidate) const {
+    StaticObstacle tower;
+    tower.id = route_.tower_name;
+    tower.x = route_.center_x;
+    tower.y = route_.center_y;
+    tower.radius = route_.tower_collision_radius;
+    tower.z_min = route_.minimum_height;
+    tower.z_max = virtual_ceil_height_;
+    geometry_msgs::Point target;
+    target.x = candidate.x;
+    target.y = candidate.y;
+    target.z = candidate.z;
+    return lineCorridorSafe(
+        from, target, {}, {tower},
+        filter_config_.minimum_clearance + filter_config_.cloud_inflation,
+        filter_config_.corridor_sample_step);
+  }
+
+  bool lockDirectionalInitialSector(const ros::Time& now,
+                                    bool skip_current_sector = false) {
     if (sectors_.empty() || !mapFresh(now)) return false;
     const geometry_msgs::Point current = pointOf(odom_);
-    Sector& safe_sector = sectors_.front();
-    safe_sector.state = SectorState::kEvaluating;
-    safe_sector.locked_index = -1;
-    for (auto& candidate : safe_sector.candidates) {
-      geometry_msgs::Point candidate_point;
-      candidate_point.x = candidate.x;
-      candidate_point.y = candidate.y;
-      candidate_point.z = candidate.z;
-      evaluateCandidate(&candidate, safe_sector, current, planningMapPoints(),
-                        obstacles_, true, filter_config_, nullptr,
-                        candidateUnknownRatio(candidate_point));
+    CandidatePoint entry_reference = provisional_entry_gate_;
+    entry_reference.z = inspection_heights_[current_layer_];
+    const double entry_angle = normalizeAngle(std::atan2(
+        entry_reference.y - route_.center_y,
+        entry_reference.x - route_.center_x));
+    const char* direction_name =
+        route_.direction == OrbitDirection::kCounterClockwise
+            ? "counter_clockwise"
+            : "clockwise";
+    ROS_WARN("[STAGE3_TASK] FIRST_WAYPOINT ENTRY_GATE layer=%d "
+             "xyz=(%.3f, %.3f, %.3f) polar=%.3fdeg direction=%s",
+             current_layer_, entry_reference.x, entry_reference.y,
+             entry_reference.z, entry_angle * 180.0 / kPi, direction_name);
+
+    const int skipped_sector_id =
+        skip_current_sector && current_sector_ < sectors_.size()
+            ? sectors_[current_sector_].sector_id
+            : -1;
+    const auto order =
+        directionalSectorOrder(entry_angle, sectors_, route_.direction);
+    std::vector<Sector> direction_ordered;
+    direction_ordered.reserve(sectors_.size());
+    for (std::size_t index : order) {
+      direction_ordered.push_back(std::move(sectors_[index]));
     }
-    int selected = -1;
-    if (require_transition_xy) {
-      for (std::size_t index = 0; index < safe_sector.candidates.size();
-           ++index) {
-        const auto& candidate = safe_sector.candidates[index];
+    sectors_ = std::move(direction_ordered);
+
+    int selected_order_index = -1;
+    int selected_candidate_index = -1;
+    for (std::size_t order_index = 0; order_index < sectors_.size();
+         ++order_index) {
+      Sector& sector = sectors_[order_index];
+      sector.state = SectorState::kEvaluating;
+      sector.locked_index = -1;
+      const double nominal_angle = sector.nominal_angle_rad;
+      double direction_delta = directedAngularDifference(
+          entry_angle, nominal_angle, route_.direction);
+      const double nominal_x =
+          route_.center_x + sector.nominal_radius * std::cos(nominal_angle);
+      const double nominal_y =
+          route_.center_y + sector.nominal_radius * std::sin(nominal_angle);
+      const double nominal_distance =
+          std::hypot(nominal_x - entry_reference.x,
+                     nominal_y - entry_reference.y);
+      const double absolute_angle_error =
+          std::abs(normalizeAngle(nominal_angle - entry_angle));
+      if (absolute_angle_error <=
+              first_waypoint_angle_tolerance_deg_ * kPi / 180.0 &&
+          nominal_distance <= first_waypoint_distance_tolerance_) {
+        direction_delta = 0.0;
+      }
+      const bool forward_half =
+          direction_delta <= kPi + 1.0e-9;
+      bool tower_corridor_blocked = false;
+      bool planner_unreachable = false;
+      std::string rejection_summary;
+      for (auto& candidate : sector.candidates) {
+        geometry_msgs::Point candidate_point;
+        candidate_point.x = candidate.x;
+        candidate_point.y = candidate.y;
+        candidate_point.z = candidate.z;
+        evaluateCandidate(&candidate, sector, current, planningMapPoints(),
+                          obstacles_, true, filter_config_, nullptr,
+                          candidateUnknownRatio(candidate_point));
+        if (planner_unreachable_candidates_.count(candidate.id) > 0U) {
+          candidate.accepted = false;
+          candidate.planner_unreachable = true;
+          candidate.target_invalid = false;
+          candidate.rejection_reason = "PLANNER_UNREACHABLE";
+          planner_unreachable = true;
+        } else if (candidate.accepted) {
+          const double candidate_angle = normalizeAngle(std::atan2(
+              candidate.y - route_.center_y,
+              candidate.x - route_.center_x));
+          double candidate_delta = directedAngularDifference(
+              entry_angle, candidate_angle, route_.direction);
+          const double candidate_distance =
+              std::hypot(candidate.x - entry_reference.x,
+                         candidate.y - entry_reference.y);
+          if (std::abs(normalizeAngle(candidate_angle - entry_angle)) <=
+                  first_waypoint_angle_tolerance_deg_ * kPi / 180.0 &&
+              candidate_distance <= first_waypoint_distance_tolerance_) {
+            candidate_delta = 0.0;
+          }
+          if (candidate_delta > kPi + 1.0e-9) {
+            candidate.accepted = false;
+            candidate.target_invalid = true;
+            candidate.rejection_reason =
+                "FIRST_WAYPOINT_REVERSE_DIRECTION";
+          }
+        }
         if (candidate.accepted &&
-            std::hypot(candidate.x - layer_transition_anchor_.x,
-                       candidate.y - layer_transition_anchor_.y) < 1.0e-6) {
-          selected = static_cast<int>(index);
-          break;
+            !firstWaypointTowerCorridorSafe(current, candidate)) {
+          candidate.accepted = false;
+          candidate.target_invalid = true;
+          candidate.rejection_reason = "FIRST_LEG_TOWER_KEEP_OUT";
+          tower_corridor_blocked = true;
+        }
+        if (!candidate.accepted && rejection_summary.empty() &&
+            !candidate.rejection_reason.empty()) {
+          rejection_summary = candidate.rejection_reason;
         }
       }
-    } else {
-      selected = chooseBestCandidate(
-          safe_sector, nullptr, target_replacement_margin_);
+      const int candidate_index = chooseBestCandidate(
+          sector, nullptr, target_replacement_margin_);
+      const bool skipped = sector.sector_id == skipped_sector_id;
+      const bool safe = candidate_index >= 0 && forward_half && !skipped;
+      const CandidatePoint* candidate =
+          candidate_index >= 0 ? &sector.candidates[candidate_index] : nullptr;
+      double logged_angle = nominal_angle;
+      double logged_direction_delta = direction_delta;
+      const double candidate_distance =
+          candidate == nullptr
+              ? nominal_distance
+              : std::hypot(candidate->x - entry_reference.x,
+                           candidate->y - entry_reference.y);
+      if (candidate != nullptr) {
+        logged_angle = normalizeAngle(std::atan2(
+            candidate->y - route_.center_y,
+            candidate->x - route_.center_x));
+        logged_direction_delta = directedAngularDifference(
+            entry_angle, logged_angle, route_.direction);
+        if (std::abs(normalizeAngle(logged_angle - entry_angle)) <=
+                first_waypoint_angle_tolerance_deg_ * kPi / 180.0 &&
+            candidate_distance <= first_waypoint_distance_tolerance_) {
+          logged_direction_delta = 0.0;
+        }
+      }
+      std::string safety = "NO_ACCEPTED_ENDPOINT";
+      if (!forward_half) {
+        safety = "REJECT_REVERSE_OR_OPPOSITE_SIDE";
+      } else if (skipped) {
+        safety = "PLANNER_UNREACHABLE_FROM_ENTRY";
+      } else if (candidate != nullptr) {
+        safety = "SAFE_PENDING_EGO_REACHABILITY";
+      } else if (!rejection_summary.empty()) {
+        safety = "REJECT_" + rejection_summary;
+      }
+      ROS_WARN("[STAGE3_TASK] FIRST_WAYPOINT candidate waypoint=%d "
+               "internal_index=%d angle=%.3fdeg direction_delta=%.3fdeg "
+               "distance=%.3fm clearance=%.3fm endpoint=%s "
+               "tower_corridor=%s planner=%s target=%s",
+               sector.sector_id + 1, sector.sector_id,
+               logged_angle * 180.0 / kPi,
+               logged_direction_delta * 180.0 / kPi, candidate_distance,
+               candidate == nullptr ? -1.0 : candidate->clearance,
+               safety.c_str(),
+               tower_corridor_blocked ? "BLOCKED" : "SAFE",
+               planner_unreachable ? "UNREACHABLE" : "PENDING_OR_CLEAR",
+               candidate == nullptr ? "none" : candidate->id.c_str());
+      if (selected_order_index < 0 && safe) {
+        selected_order_index = static_cast<int>(order_index);
+        selected_candidate_index = candidate_index;
+      }
     }
-    if (selected < 0) return false;
-    safe_sector.locked_index = selected;
+
+    if (selected_order_index < 0 || selected_candidate_index < 0) {
+      entry_gate_last_failure_ =
+          "NO_DIRECTIONAL_SAFE_REACHABLE_FIRST_WAYPOINT";
+      ROS_ERROR("[STAGE3_TASK] %s layer=%d; reverse/opposite-side "
+                "fallback is forbidden",
+                entry_gate_last_failure_.c_str(), current_layer_);
+      return false;
+    }
+    std::rotate(sectors_.begin(),
+                sectors_.begin() + selected_order_index,
+                sectors_.end());
+    Sector& safe_sector = sectors_.front();
+    safe_sector.locked_index = selected_candidate_index;
     safe_sector.state = SectorState::kTargetLocked;
-    active_target_ = safe_sector.candidates[selected];
+    active_target_ = safe_sector.candidates[selected_candidate_index];
+    transition_sector_ = safe_sector.sector_id;
+    lap_visit_sequence_ = buildClosedLapVisitSequence(
+        static_cast<std::size_t>(sector_limit_), inspection_laps_);
+    visit_cursor_ = 0U;
+    current_sector_ = 0U;
+    current_lap_ = 1;
+    waypoint_in_lap_ = 1;
+    completed_laps_ = 0;
     current_target_plan_attempt_ = 0;
+    have_last_inspection_target_ = false;
+    have_sent_goal_ = false;
+    arrival_since_ = ros::Time(0);
+    if (skipped_sector_id >= 0) {
+      for (const auto& sector : sectors_) {
+        if (sector.sector_id != skipped_sector_id) continue;
+        for (const auto& candidate : sector.candidates) {
+          planner_unreachable_candidates_.erase(candidate.id);
+        }
+      }
+    }
     publishCandidateDebug(now);
-    ROS_WARN("[STAGE3_TASK] fixed first waypoint locked: layer=%d "
-             "sector_id=%d target=%s xyz=(%.2f, %.2f, %.2f) "
-             "distance_from_current=%.3f m",
-             current_layer_, safe_sector.sector_id,
+    std::ostringstream execution_order;
+    for (std::size_t index = 0; index < sectors_.size(); ++index) {
+      if (index > 0U) execution_order << "->";
+      execution_order << (sectors_[index].sector_id + 1)
+                      << "(i" << sectors_[index].sector_id << ')';
+    }
+    ROS_WARN("[STAGE3_TASK] FIRST_WAYPOINT selected waypoint=%d "
+             "internal_index=%d target=%s xyz=(%.2f, %.2f, %.2f) "
+             "distance_from_current=%.3fm",
+             safe_sector.sector_id + 1, safe_sector.sector_id,
              active_target_.id.c_str(), active_target_.x, active_target_.y,
              active_target_.z,
              std::sqrt((current.x - active_target_.x) *
@@ -1230,9 +1723,15 @@ class Stage3EgoMissionNode {
                            (current.y - active_target_.y) +
                        (current.z - active_target_.z) *
                            (current.z - active_target_.z)));
+    ROS_WARN("[STAGE3_TASK] FIRST_WAYPOINT reordered execution sequence "
+             "layer=%d direction=%s order=%s",
+             current_layer_, direction_name, execution_order.str().c_str());
+    ROS_WARN("[STAGE3_TASK] first waypoint remains pending actual EGO "
+             "reachability; failures advance only in %s direction",
+             direction_name);
     transition(MissionState::kTargetLocked,
-               "configured first inspection sector locked");
-    return true;
+               "ENTRY_GATE directional first inspection waypoint locked");
+    return !lap_visit_sequence_.empty();
   }
 
   bool evaluateSector(const ros::Time& now) {
@@ -1397,24 +1896,43 @@ class Stage3EgoMissionNode {
     }
     RecoveryConfig clockwise = recovery_config_;
     clockwise.direction = OrbitDirection::kClockwise;
+    clockwise.recovery_height = std::max(
+        route_.minimum_height,
+        sector.nominal_height - maximum_temporary_descent_);
     RecoveryConfig counter_clockwise = recovery_config_;
     counter_clockwise.direction = OrbitDirection::kCounterClockwise;
+    counter_clockwise.recovery_height = clockwise.recovery_height;
     const RecoveryTargets clockwise_targets = makeRecoveryTargets(
         route_, pointOf(odom_), sector, clockwise, locked);
     const RecoveryTargets counter_clockwise_targets = makeRecoveryTargets(
         route_, pointOf(odom_), sector, counter_clockwise, locked);
+    static const std::vector<StaticObstacle> no_coarse_obstacles;
+    const auto& recovery_obstacles =
+        filter_config_.known_obstacle_is_hard_constraint
+            ? obstacles_
+            : no_coarse_obstacles;
     const RecoveryAssessment clockwise_assessment = assessRecoveryTargets(
-        pointOf(odom_), clockwise_targets, planningMapPoints(), obstacles_,
+        pointOf(odom_), clockwise_targets, planningMapPoints(),
+        recovery_obstacles,
         filter_config_.minimum_clearance,
         filter_config_.corridor_sample_step);
     const RecoveryAssessment counter_clockwise_assessment = assessRecoveryTargets(
-        pointOf(odom_), counter_clockwise_targets, planningMapPoints(), obstacles_,
+        pointOf(odom_), counter_clockwise_targets, planningMapPoints(),
+        recovery_obstacles,
         filter_config_.minimum_clearance,
         filter_config_.corridor_sample_step);
-    if (!clockwise_assessment.endpoints_safe &&
-        !counter_clockwise_assessment.endpoints_safe) return false;
-    const bool choose_clockwise = clockwise_assessment.endpoints_safe &&
-        (!counter_clockwise_assessment.endpoints_safe ||
+    const bool clockwise_local =
+        clockwise_assessment.endpoints_safe &&
+        recoveryTargetsStayInSector(
+            clockwise_targets, sector, maximum_temporary_descent_);
+    const bool counter_clockwise_local =
+        counter_clockwise_assessment.endpoints_safe &&
+        recoveryTargetsStayInSector(
+            counter_clockwise_targets, sector,
+            maximum_temporary_descent_);
+    if (!clockwise_local && !counter_clockwise_local) return false;
+    const bool choose_clockwise = clockwise_local &&
+        (!counter_clockwise_local ||
          clockwise_assessment.score > counter_clockwise_assessment.score);
     recovery_targets_ = choose_clockwise ? clockwise_targets
                                          : counter_clockwise_targets;
@@ -1424,9 +1942,10 @@ class Stage3EgoMissionNode {
     const RecoveryAssessment& selected_assessment = choose_clockwise
                                                         ? clockwise_assessment
                                                         : counter_clockwise_assessment;
-    ROS_WARN("[STAGE3_TASK] recovery selected %s; blocked straight corridors=%d "
-             "(soft risk only), re-entry=%s",
+    ROS_WARN("[STAGE3_TASK] sector-local recovery selected %s at z=%.2f; "
+             "blocked straight corridors=%d (soft risk only), re-entry=%s",
              choose_clockwise ? "clockwise" : "counter_clockwise",
+             recovery_targets_.r1.z,
              selected_assessment.blocked_corridors,
              recovery_targets_.reentry.id.c_str());
     recovery_step_ = 0;
@@ -1545,7 +2064,7 @@ class Stage3EgoMissionNode {
     geometry_msgs::Point bottom = top;
     bottom.z = layer_transition_goals_.back().z;
     if (!lineCorridorSafe(
-            top, bottom, planningMapPoints(), obstacles_,
+            top, bottom, planningMapPoints(), hardPlanningObstacles(),
             filter_config_.minimum_clearance +
                 filter_config_.cloud_inflation,
             filter_config_.corridor_sample_step)) {
@@ -1584,7 +2103,7 @@ class Stage3EgoMissionNode {
     to.y = target.y;
     to.z = target.z;
     if (!lineCorridorSafe(
-            from, to, planningMapPoints(), obstacles_,
+            from, to, planningMapPoints(), hardPlanningObstacles(),
             filter_config_.minimum_clearance +
                 filter_config_.cloud_inflation,
             filter_config_.corridor_sample_step)) {
@@ -1598,17 +2117,24 @@ class Stage3EgoMissionNode {
   bool startNormalReturn(const std::string& reason,
                          bool include_exit_gate = true) {
     if (successful_ingress_goals_.empty() ||
-        (include_exit_gate && !entry_gate_locked_)) {
+        (include_exit_gate &&
+         (!entry_gate_locked_ || provisional_entry_gate_.layer_id !=
+                                      current_layer_))) {
       return false;
     }
     normal_return_goals_.clear();
     if (include_exit_gate) {
-      CandidatePoint exit_gate =
-          entry_gate_candidates_[entry_gate_index_];
-      exit_gate.id = "EXIT_GATE";
+      CandidatePoint exit_gate = provisional_entry_gate_;
+      std::ostringstream id;
+      id << "EXIT_GATE_L" << current_layer_ << "_Z"
+         << inspection_heights_[current_layer_];
+      exit_gate.id = id.str();
       exit_gate.require_arrival_yaw = false;
       exit_gate.face_tower = true;
       normal_return_goals_.push_back(exit_gate);
+      ROS_WARN("[STAGE3_TASK] final-layer EXIT_GATE selected: layer=%d "
+               "xyz=(%.2f, %.2f, %.2f); no previous-layer gate retained",
+               current_layer_, exit_gate.x, exit_gate.y, exit_gate.z);
     }
     for (auto iterator = successful_ingress_goals_.rbegin();
          iterator != successful_ingress_goals_.rend(); ++iterator) {
@@ -1649,7 +2175,7 @@ class Stage3EgoMissionNode {
     to.y = target.y;
     to.z = target.z;
     const bool straight_clear = lineCorridorSafe(
-        from, to, planningMapPoints(), obstacles_,
+        from, to, planningMapPoints(), hardPlanningObstacles(),
         filter_config_.minimum_clearance +
             filter_config_.cloud_inflation,
         filter_config_.corridor_sample_step);
@@ -1886,6 +2412,8 @@ class Stage3EgoMissionNode {
           state_ == MissionState::kEntryGateTransit) {
         entry_gate_failure_pending_ = true;
         ascent_retry_pending_ = true;
+        entry_gate_relocation_pending_ =
+            state_ == MissionState::kEntryGateTransit;
         ++ascent_goal_attempts_;
       } else if (state_ == MissionState::kNormalReturn) {
         normal_return_failure_pending_ = true;
@@ -1977,6 +2505,11 @@ class Stage3EgoMissionNode {
                    ros::Duration(safe_altitude_map_dwell_)) {
           if (lockFinalEntryGate(now) && startEntryGateTransit()) {
             coverage_wait_started_ = ros::Time(0);
+          } else if (!entry_gate_last_failure_.empty()) {
+            entry_gate_failure_pending_ = true;
+            ascent_retry_pending_ = false;
+            entry_gate_no_safe_candidate_hold_ = true;
+            requestHold(entry_gate_last_failure_);
           } else if (now - coverage_wait_started_ >=
                      ros::Duration(coverage_wait_timeout_)) {
             entry_gate_failure_pending_ = true;
@@ -2038,9 +2571,10 @@ class Stage3EgoMissionNode {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = false;
           requestHold(entry_reason);
-        } else if (!lockFixedInitialSector(now)) {
+        } else if (!lockDirectionalInitialSector(now)) {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = false;
+          entry_gate_relocation_pending_ = false;
           requestHold("CONFIGURED_FIRST_WAYPOINT_UNSAFE_OR_UNREACHABLE");
         }
       } else if (!have_sent_goal_) {
@@ -2052,6 +2586,7 @@ class Stage3EgoMissionNode {
               ros::Duration(coverage_wait_timeout_)) {
             entry_gate_failure_pending_ = true;
             ascent_retry_pending_ = true;
+            entry_gate_relocation_pending_ = true;
             ++ascent_goal_attempts_;
             requestHold(astra_custom_msgs::PlannerStatus::MAP_STALE +
                         std::string(" during ENTRY_GATE transit"));
@@ -2059,6 +2594,7 @@ class Stage3EgoMissionNode {
         } else if (!mappedEndpointClear(target)) {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = false;
+          entry_gate_relocation_pending_ = true;
           requestHold("ENTRY_GATE_TARGET_OCCUPIED");
         } else {
           const std::string static_risk = staticEndpointRisk(target);
@@ -2090,17 +2626,20 @@ class Stage3EgoMissionNode {
         if (plannerFailure(now, &failure)) {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = true;
+          entry_gate_relocation_pending_ = true;
           ++ascent_goal_attempts_;
           requestHold("ENTRY_GATE transit planner failure: " + failure);
         } else if (noProgressTimedOut(now)) {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = true;
+          entry_gate_relocation_pending_ = true;
           ++ascent_goal_attempts_;
           requestHold("ENTRY_GATE transit no progress");
         } else if (now - goal_sent_ >
                    ros::Duration(entry_gate_target_timeout_)) {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = true;
+          entry_gate_relocation_pending_ = true;
           ++ascent_goal_attempts_;
           requestHold("ENTRY_GATE transit target timeout");
         }
@@ -2113,6 +2652,11 @@ class Stage3EgoMissionNode {
         }
       } else if (evaluateSector(now)) {
         publishGoal(active_target_, GoalKind::kSector);
+      } else if (initial_waypoint_pending_ &&
+                 lockDirectionalInitialSector(now, true)) {
+        ROS_WARN("[STAGE3_TASK] first waypoint planner-unreachable; "
+                 "advanced to the next safe waypoint in the configured "
+                 "orbit direction");
       } else {
         requestHold("no safe candidate in sector");
       }
@@ -2126,6 +2670,7 @@ class Stage3EgoMissionNode {
         if (arrival_since_.isZero()) arrival_since_ = now;
         if (now - arrival_since_ >= ros::Duration(arrival_hold_duration_)) {
           sectors_[current_sector_].state = SectorState::kCovered;
+          initial_waypoint_pending_ = false;
           last_inspection_target_ = active_target_;
           have_last_inspection_target_ = true;
           ++visited_sector_count_;
@@ -2144,11 +2689,16 @@ class Stage3EgoMissionNode {
                 layer_transition_retry_pending_ = false;
                 requestHold(transition_reason);
               }
+            } else if (startNormalReturn(
+                           "final closed inspection layer completed; "
+                           "current-layer EXIT_GATE selected",
+                           true)) {
+              // startNormalReturn performs the state transition.
             } else if (buildReturnEgress()) {
               transition(
                   MissionState::kReturnEgress,
-                  "final closed inspection layer completed; "
-                  "tower-exterior high return selected");
+                  "current-layer EXIT_GATE unavailable; bounded "
+                  "tower-exterior fallback selected");
             } else {
               requestReturnOrLand(
                   "safe RETURN_EGRESS could not be initialized after "
@@ -2199,12 +2749,14 @@ class Stage3EgoMissionNode {
     } else if (state_ == MissionState::kLayerTransition) {
       if (layer_transition_index_ >= layer_transition_goals_.size()) {
         const int next_layer = current_layer_ + 1;
-        if (!buildInspectionLayer(next_layer) ||
-            !lockFixedInitialSector(now, true)) {
+        if (!lockLayerGate(next_layer, now) ||
+            !buildInspectionLayer(next_layer) ||
+            !lockDirectionalInitialSector(now)) {
           layer_transition_failure_pending_ = true;
           layer_transition_retry_pending_ = false;
-          requestHold(
-              "LOWER_LAYER_FIRST_WAYPOINT_NOT_SAFE_AT_FIXED_XY");
+          requestHold(entry_gate_last_failure_.empty()
+                          ? "LOWER_LAYER_GATE_OR_FIRST_WAYPOINT_NOT_SAFE"
+                          : entry_gate_last_failure_);
         }
       } else if (!have_sent_goal_) {
         const CandidatePoint& target =
@@ -2255,7 +2807,27 @@ class Stage3EgoMissionNode {
       }
     } else if (state_ == MissionState::kHolding) {
       if (now - state_entered_ >= ros::Duration(failure_hold_duration_)) {
-        if (layer_transition_failure_pending_) {
+        if (entry_gate_no_safe_candidate_hold_) {
+          if (entry_gate_recheck_time_.isZero() ||
+              now - entry_gate_recheck_time_ >=
+                  ros::Duration(safe_altitude_map_dwell_)) {
+            entry_gate_recheck_time_ = now;
+            if (lockLayerGate(0, now) && startEntryGateTransit()) {
+              entry_gate_no_safe_candidate_hold_ = false;
+              entry_gate_failure_pending_ = false;
+              entry_gate_relocation_pending_ = false;
+              ROS_WARN("[STAGE3_TASK] fresh map exposed a safe reachable "
+                       "ENTRY_GATE candidate inside sector %d; leaving HOLD",
+                       entry_sector_user_);
+            } else {
+              ROS_ERROR_THROTTLE(
+                  1.0,
+                  "[STAGE3_TASK] %s; no other sector will be searched, "
+                  "mission remains HOLD",
+                  entry_gate_last_failure_.c_str());
+            }
+          }
+        } else if (layer_transition_failure_pending_) {
           layer_transition_failure_pending_ = false;
           const bool retry_same_target =
               layer_transition_retry_pending_ &&
@@ -2288,6 +2860,9 @@ class Stage3EgoMissionNode {
                            : MissionState::kSegmentedClimb);
             transition(retry_state,
                        "bounded retry of unchanged locked ascent target");
+          } else if (entry_gate_relocation_pending_) {
+            entry_gate_relocation_pending_ = false;
+            relocateEntryGateWithinConfiguredSector(now, failure_reason_);
           } else {
             requestReturnOrLand(
                 "fixed vertical ascent/ENTRY_GATE recovery exhausted; "
@@ -2584,6 +3159,7 @@ class Stage3EgoMissionNode {
       cancel_service_, resume_service_, return_service_, land_service_;
   bool enable_control_{false};
   bool use_configured_staging_xy_{false};
+  bool prefer_safe_overflight_{true};
   double loop_rate_{20.0}, input_timeout_{0.7},
       entry_fcu_state_timeout_{2.0}, map_timeout_{0.7},
       planning_timeout_{10.0}, goal_timeout_{180.0};
@@ -2600,16 +3176,19 @@ class Stage3EgoMissionNode {
   double failure_hold_duration_{2.0}, recovery_target_timeout_{60.0}, overall_timeout_{2400.0}, report_period_{0.2};
   int consecutive_plan_failure_limit_{3}, planner_unreachable_attempt_limit_{2},
       max_recovery_attempts_{2}, max_entry_gate_relocations_{3},
+      max_ascent_channel_switches_{0},
       max_return_egress_retries_{2},
       max_normal_return_retries_{2}, sector_count_{8}, sector_limit_{1},
       layer_count_{1}, inspection_laps_{1};
   double inspection_height_{30.0}, recovery_height_max_{40.0}, virtual_ceil_height_{45.0}, transit_height_{4.0};
   double observation_radius_offset_{5.0}, observation_angle_deg_{-67.5}, approach_segment_length_{6.0};
   double sector_angle_half_width_deg_{12.0}, sector_radius_half_width_{4.0}, sector_height_half_width_{1.0};
+  double maximum_temporary_descent_{3.0};
   double target_replacement_margin_{2.0}, recovery_height_{35.0}, start_angle_deg_{-67.5};
   double entry_gate_segment_length_{6.0}, entry_gate_target_timeout_{90.0};
-  double fixed_entry_gate_radius_{15.0}, fixed_entry_gate_height_{26.0},
-      layer_transition_target_timeout_{90.0};
+  double first_waypoint_angle_tolerance_deg_{5.0},
+      first_waypoint_distance_tolerance_{3.0};
+  double layer_transition_target_timeout_{90.0};
   double staging_height_{4.0}, climb_height_step_{3.0},
       minimum_channel_hold_{5.0};
   double configured_staging_x_{0.0}, configured_staging_y_{0.0};
@@ -2636,6 +3215,7 @@ class Stage3EgoMissionNode {
   std::vector<geometry_msgs::Point> cloud_points_, occupancy_points_;
   std::unordered_map<std::int64_t, double> coverage_rays_;
   std::unordered_set<std::string> planner_unreachable_candidates_;
+  std::unordered_set<std::string> unreachable_entry_gate_candidates_;
   std::vector<std::size_t> lap_visit_sequence_;
   std::size_t current_sector_{0}, approach_index_{0}, recovery_step_{0},
       entry_gate_transit_index_{0}, return_egress_index_{0},
@@ -2647,7 +3227,8 @@ class Stage3EgoMissionNode {
       completed_laps_{0}, waypoint_in_lap_{0}, candidate_relocations_{0},
       lap_candidate_relocations_{0}, lap_planning_failures_{0},
       lap_recoveries_{0};
-  int entry_sector_{0}, inspection_start_sector_{0}, transition_sector_{0},
+  int entry_sector_user_{1}, entry_sector_index_{0},
+      inspection_start_sector_{0}, transition_sector_{0},
       current_layer_{0}, completed_layer_count_{0},
       layer_transition_attempts_{0};
   int entry_gate_index_{-1};
@@ -2659,7 +3240,7 @@ class Stage3EgoMissionNode {
   GoalKind active_goal_kind_{GoalKind::kEntryGate};
   MissionState state_{MissionState::kWaitInputs};
   MissionState state_before_hold_{MissionState::kWaitInputs};
-  std::string bridge_state_, failure_reason_;
+  std::string bridge_state_, failure_reason_, entry_gate_last_failure_;
   nav_msgs::Odometry odom_;
   quadrotor_msgs::PositionCommand command_;
   astra_custom_msgs::PlannerStatus planner_status_;
@@ -2668,10 +3249,13 @@ class Stage3EgoMissionNode {
   bool have_odom_{false}, have_command_{false}, have_cloud_{false}, have_occupancy_{false}, have_planner_status_{false},
       have_bridge_state_{false}, have_sent_goal_{false};
   bool have_home_position_{false}, entry_gate_failure_pending_{false},
+      entry_gate_relocation_pending_{false},
+      entry_gate_no_safe_candidate_hold_{false},
       return_egress_failure_pending_{false},
       normal_return_failure_pending_{false}, sector_retry_pending_{false},
       ascent_retry_pending_{false}, normal_return_attempted_{false},
       entry_gate_locked_{false}, have_last_inspection_target_{false},
+      initial_waypoint_pending_{false},
       layer_transition_failure_pending_{false},
       layer_transition_retry_pending_{false},
       have_fcu_state_{false}, have_extended_state_{false};
@@ -2681,7 +3265,8 @@ class Stage3EgoMissionNode {
       coverage_received_, fcu_state_received_, extended_state_received_;
   ros::Time state_entered_, mission_started_, goal_sent_, arrival_since_,
       last_report_, bridge_state_entered_, coverage_wait_started_,
-      landing_requested_time_, channel_selected_time_, last_progress_time_;
+      landing_requested_time_, channel_selected_time_, last_progress_time_,
+      entry_gate_recheck_time_;
   double best_goal_distance_{std::numeric_limits<double>::infinity()};
   std::uint32_t trajectory_baseline_{0};
   std::string planner_target_baseline_;

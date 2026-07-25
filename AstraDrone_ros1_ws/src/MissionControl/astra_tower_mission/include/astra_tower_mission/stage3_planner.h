@@ -80,15 +80,21 @@ struct EntryGateConfig {
   double inspection_height{30.0};
   double minimum_height{2.0};
   double maximum_height{45.0};
+  double preferred_radius{16.0};
   double minimum_clearance{2.0};
   double cloud_inflation{0.4};
   double corridor_sample_step{0.5};
   double minimum_radius{16.0};
   double maximum_radius{24.0};
   double maximum_horizontal_distance{60.0};
-  double clearance_weight{0.1};
-  double distance_weight{1.0};
-  double blocked_corridor_penalty{5.0};
+  double angular_sample_step_deg{7.5};
+  double radial_sample_step{1.0};
+  double clearance_weight{0.2};
+  double distance_weight{0.1};
+  double sector_center_weight{4.0};
+  double preferred_radius_weight{4.0};
+  double first_waypoint_weight{0.8};
+  double blocked_corridor_penalty{8.0};
 };
 
 struct Sector {
@@ -119,14 +125,17 @@ struct CandidateFilterConfig {
   double cloud_inflation{0.4};
   double unknown_ratio_limit{0.25};
   bool unknown_is_hard_constraint{true};
+  bool known_obstacle_is_hard_constraint{true};
   double corridor_sample_step{0.5};
   double tower_extra_clearance{0.0};
-  double score_clearance_weight{1.0};
-  double score_nominal_weight{1.0};
-  double score_distance_weight{0.25};
-  double score_continuity_weight{0.5};
+  double score_clearance_weight{0.2};
+  double score_radius_weight{6.0};
+  double score_sector_weight{4.0};
+  double score_height_weight{14.0};
+  double score_distance_weight{0.1};
+  double score_continuity_weight{0.2};
   double score_unknown_weight{1.0};
-  double blocked_corridor_penalty{5.0};
+  double blocked_corridor_penalty{6.0};
   double small_angle_offset_deg{5.0};
   double small_radius_offset_m{2.0};
   double small_height_offset_m{1.0};
@@ -185,15 +194,26 @@ int chooseBestCandidate(const Sector& sector,
 
 std::vector<CandidatePoint> buildEntryGateCandidates(
     const RouteConfig& route,
-    const std::vector<double>& angle_offsets_deg,
-    const std::vector<double>& radius_offsets_m,
+    int entry_sector_user,
+    double minimum_radius,
+    double maximum_radius,
+    double preferred_radius,
+    double angular_sample_step_deg,
+    double radial_sample_step,
     double inspection_height);
 
 CandidatePoint buildFixedEntryGate(const RouteConfig& route,
                                    int sector_count,
-                                   int entry_sector,
+                                   int entry_sector_user,
                                    double gate_radius,
                                    double gate_height);
+
+double entryGateSectorCenterAngleRad(int entry_sector_user);
+
+bool entryGatePointInSector(const CandidatePoint& candidate,
+                            const RouteConfig& route,
+                            int entry_sector_user,
+                            double tolerance_rad = 1.0e-9);
 
 bool evaluateEntryGateCandidate(
     CandidatePoint* candidate,
@@ -205,7 +225,8 @@ bool evaluateEntryGateCandidate(
     bool map_fresh,
     const EntryGateConfig& config,
     double unknown_ratio = 0.0,
-    double unknown_ratio_limit = 1.0);
+    double unknown_ratio_limit = 1.0,
+    const CandidatePoint* first_inspection_target = nullptr);
 
 int chooseBestEntryGateCandidate(const std::vector<CandidatePoint>& candidates);
 
@@ -228,6 +249,15 @@ std::vector<std::size_t> buildClosedLapVisitSequence(
     std::size_t waypoint_count,
     int inspection_laps);
 
+double directedAngularDifference(double entry_angle_rad,
+                                 double waypoint_angle_rad,
+                                 OrbitDirection direction);
+
+std::vector<std::size_t> directionalSectorOrder(
+    double entry_angle_rad,
+    const std::vector<Sector>& sectors,
+    OrbitDirection direction);
+
 void rotateSectorsToNearest(const geometry_msgs::Point& current,
                             std::vector<Sector>* sectors);
 
@@ -248,6 +278,10 @@ RecoveryAssessment assessRecoveryTargets(
     const std::vector<StaticObstacle>& obstacles,
     double inflation,
     double sample_step);
+
+bool recoveryTargetsStayInSector(const RecoveryTargets& targets,
+                                 const Sector& sector,
+                                 double maximum_descent);
 
 bool returnOrLandingTimedOut(bool landing_active,
                              double return_elapsed,
