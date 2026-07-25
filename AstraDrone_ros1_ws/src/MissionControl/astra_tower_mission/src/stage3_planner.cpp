@@ -84,12 +84,12 @@ std::vector<Sector> buildInspectionSectors(
     Sector sector;
     sector.sector_id = index;
     sector.layer_id = 0;
-    sector.nominal_angle_rad = normalizeAngle(route.start_angle_rad +
-                                               (route.direction ==
-                                                        OrbitDirection::kCounterClockwise
-                                                    ? 1.0
-                                                    : -1.0) *
-                                                   index * step);
+    // Standard waypoint numbers are fixed counter-clockwise in the map:
+    // waypoint 1 is start_angle_rad, waypoint 2 is one positive angular
+    // step later, and so on. Flight direction only reorders these fixed
+    // waypoints; it must not change their map angle or number.
+    sector.nominal_angle_rad =
+        normalizeAngle(route.start_angle_rad + index * step);
     sector.nominal_radius = route.radius;
     sector.nominal_height = route.height;
     sector.center_x = route.center_x;
@@ -450,6 +450,11 @@ std::vector<CandidatePoint> buildEntryGateCandidates(
           route.camera_yaw_offset_rad);
       candidate.require_arrival_yaw = true;
       candidate.face_tower = true;
+      // ENTRY_GATE preference is lexicographic: the sector center is used
+      // whenever it is safe, and angular relocation is considered only after
+      // all candidates at a smaller center offset have been rejected.
+      candidate.priority = static_cast<int>(
+          std::lround(std::abs(angle_offset) * 1000.0));
       candidates.push_back(candidate);
     }
   }
@@ -632,11 +637,13 @@ bool evaluateEntryGateCandidate(
 int chooseBestEntryGateCandidate(
     const std::vector<CandidatePoint>& candidates) {
   int best = -1;
-  double best_score = -1.0e9;
   for (std::size_t index = 0; index < candidates.size(); ++index) {
-    if (candidates[index].accepted && candidates[index].score > best_score) {
+    if (!candidates[index].accepted) continue;
+    if (best < 0 ||
+        candidates[index].priority < candidates[best].priority ||
+        (candidates[index].priority == candidates[best].priority &&
+         candidates[index].score > candidates[best].score)) {
       best = static_cast<int>(index);
-      best_score = candidates[index].score;
     }
   }
   return best;
@@ -733,6 +740,57 @@ std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
     previous_height = height;
   }
   return goals;
+}
+
+std::vector<CandidatePoint> buildLayerTransitionGoals(
+    const CandidatePoint& from,
+    const CandidatePoint& to,
+    double maximum_vertical_step,
+    double same_xy_tolerance,
+    const std::string& id_prefix) {
+  if (!std::isfinite(from.x) || !std::isfinite(from.y) ||
+      !std::isfinite(from.z) || !std::isfinite(to.x) ||
+      !std::isfinite(to.y) || !std::isfinite(to.z) ||
+      !std::isfinite(maximum_vertical_step) ||
+      !std::isfinite(same_xy_tolerance) ||
+      maximum_vertical_step <= 0.0 || same_xy_tolerance < 0.0 ||
+      std::abs(to.z - from.z) < 1.0e-6) {
+    return {};
+  }
+  const bool same_xy =
+      std::hypot(to.x - from.x, to.y - from.y) <= same_xy_tolerance;
+  const std::size_t segment_count = static_cast<std::size_t>(
+      std::max(1.0, std::ceil(std::abs(to.z - from.z) /
+                              maximum_vertical_step)));
+  std::vector<CandidatePoint> goals;
+  goals.reserve(segment_count);
+  for (std::size_t index = 1U; index <= segment_count; ++index) {
+    const double ratio =
+        static_cast<double>(index) / static_cast<double>(segment_count);
+    CandidatePoint goal = to;
+    std::ostringstream id;
+    id << id_prefix << '_' << (index - 1U) << "_L" << to.layer_id
+       << "_Z" << (from.z + (to.z - from.z) * ratio);
+    goal.id = id.str();
+    goal.x = same_xy ? from.x : from.x + (to.x - from.x) * ratio;
+    goal.y = same_xy ? from.y : from.y + (to.y - from.y) * ratio;
+    goal.z = from.z + (to.z - from.z) * ratio;
+    goals.push_back(goal);
+  }
+  return goals;
+}
+
+std::vector<int> buildLayerVisitSequence(std::size_t layer_count,
+                                         int planned_cycles) {
+  if (layer_count == 0U || planned_cycles < 1) return {};
+  std::vector<int> sequence;
+  sequence.reserve(layer_count * static_cast<std::size_t>(planned_cycles));
+  for (int cycle = 0; cycle < planned_cycles; ++cycle) {
+    for (std::size_t layer = 0U; layer < layer_count; ++layer) {
+      sequence.push_back(static_cast<int>(layer));
+    }
+  }
+  return sequence;
 }
 
 std::vector<std::size_t> buildClosedLapVisitSequence(

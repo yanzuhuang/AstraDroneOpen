@@ -12,9 +12,10 @@ usage() {
     cat <<'EOF'
 用法：
   stage3_ego.sh [--gui] [--rviz] [--world FILE] [--report FILE]
-                [--sector-limit 1..8] [--bag FILE] [--attach]
+                [--sector-limit 1..8] [--cycles N] [--bag FILE] [--attach]
   stage3_ego.sh --control [--gui] [--rviz] [--world FILE]
-                [--report FILE] [--sector-limit 1..8] [--bag FILE] [--attach]
+                [--report FILE] [--sector-limit 1..8] [--cycles N]
+                [--bag FILE] [--attach]
   stage3_ego.sh --stop
 
 查看完整动态仿真（会自动解锁、起飞和执行任务）：
@@ -85,7 +86,7 @@ run_component() {
             wait_topic /mavros/state "MAVROS/PX4" 180
             wait_topic /Odometry "FAST-LIO odometry" 180
             wait_topic /cloud_registered "FAST-LIO cloud" 60
-            if [[ "$5" == true ]]; then
+            if [[ "$6" == true ]]; then
                 for _ in {1..60}; do
                     if rosnode ping -c 1 /stage3_evidence_recorder \
                         >/dev/null 2>&1; then
@@ -100,7 +101,7 @@ run_component() {
             fi
             exec roslaunch astra_tower_mission stage3_ego.launch \
                 enable_control:="$1" rviz:="$2" report_file:="$3" \
-                sector_limit:="$4"
+                sector_limit:="$4" planned_cycles:="$5"
             ;;
         *)
             echo "未知内部组件：$component" >&2
@@ -124,6 +125,7 @@ attach=false
 stop=false
 report_file=""
 sector_limit=8
+planned_cycles=1
 bag_file=""
 
 while [[ "$#" -gt 0 ]]; do
@@ -150,6 +152,14 @@ while [[ "$#" -gt 0 ]]; do
                 exit 2
             }
             sector_limit="$2"; shift 2
+            ;;
+        --cycles)
+            [[ "$#" -ge 2 ]] || { echo "--cycles 缺少值" >&2; exit 2; }
+            [[ "$2" =~ ^[1-9][0-9]*$ ]] || {
+                echo "--cycles 必须是正整数" >&2
+                exit 2
+            }
+            planned_cycles="$2"; shift 2
             ;;
         --attach) attach=true; shift ;;
         --stop) stop=true; shift ;;
@@ -296,9 +306,9 @@ if [[ -n "$bag_file" ]]; then
     printf -v recorder_command '%q --component recorder %q' \
         "$script_path" "$bag_file"
 fi
-printf -v integration_command '%q --component integration %q %q %q %q %q' \
+printf -v integration_command '%q --component integration %q %q %q %q %q %q' \
     "$script_path" "$enable_control" "$rviz" "$report_file" "$sector_limit" \
-    "$record_bag"
+    "$planned_cycles" "$record_bag"
 
 tmux new-session -d -s "$session_name" -n px4_gazebo "$px4_command"
 tmux set-option -t "$session_name" @stage3_bag_file "$bag_file"
@@ -309,7 +319,7 @@ fi
 tmux new-window -d -t "$session_name:" -n integration "$integration_command"
 tmux select-window -t "$session_name:integration"
 
-echo "阶段三已启动：control=$enable_control sector_limit=$sector_limit"
+echo "阶段三已启动：control=$enable_control sector_limit=$sector_limit cycles=$planned_cycles"
 echo "证据 CSV：$report_file"
 [[ "$record_bag" == true ]] && echo "完整 rosbag：$bag_file"
 echo "查看日志：tmux attach -t $session_name"

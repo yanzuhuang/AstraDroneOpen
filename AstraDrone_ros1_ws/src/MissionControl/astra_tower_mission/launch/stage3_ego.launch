@@ -3,6 +3,7 @@
   <arg name="rviz" default="false"/>
   <arg name="report_file" default="/tmp/astra_stage3_latest.csv"/>
   <arg name="sector_limit" default="8"/>
+  <arg name="planned_cycles" default="1"/>
   <arg name="task_config" default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
   <arg name="bridge_config" default="$(find ego_gazebo_bridge)/config/stage3_ego.yaml"/>
   <arg name="filtered_cloud_topic" default="/stage3/cloud_registered_filtered"/>
@@ -49,6 +50,7 @@
     <param name="enable_control" value="$(arg enable_control)"/>
     <param name="report_file" value="$(arg report_file)"/>
     <param name="mission/sector_limit" value="$(arg sector_limit)"/>
+    <param name="mission/planned_cycles" value="$(arg planned_cycles)"/>
     <param name="topics/occupancy_inflate" value="$(arg stamped_occupancy_topic)"/>
   </node>
 </launch>

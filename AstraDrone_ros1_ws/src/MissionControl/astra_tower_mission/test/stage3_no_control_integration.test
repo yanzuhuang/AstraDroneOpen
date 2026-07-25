@@ -10,36 +10,38 @@
     <param name="tower/center/y" value="0.0"/>
     <param name="tower/collision_radius" value="2.0"/>
     <param name="mission/radius" value="8.0"/>
-    <param name="mission/inspection_height" value="5.0"/>
-    <rosparam param="mission/inspection_heights">[5.0, 3.0]</rosparam>
-    <param name="mission/transit_height" value="4.0"/>
+    <param name="mission/inspection_height" value="26.0"/>
+    <rosparam param="mission/inspection_heights">[26.0, 22.0]</rosparam>
+    <param name="mission/transit_height" value="26.0"/>
     <param name="mission/minimum_height" value="2.0"/>
-    <param name="mission/maximum_height" value="10.0"/>
-    <param name="mission/recovery_height_max" value="8.0"/>
-    <param name="mission/virtual_ceil_height" value="10.0"/>
-    <param name="mission/start_angle_deg" value="-67.5"/>
+    <param name="mission/maximum_height" value="45.0"/>
+    <param name="mission/recovery_height_max" value="40.0"/>
+    <param name="mission/virtual_ceil_height" value="45.0"/>
+    <param name="mission/start_angle_deg" value="0.0"/>
     <param name="mission/direction" value="$(arg direction)"/>
     <param name="mission/observation_angle_deg" value="0.0"/>
     <param name="mission/observation_radius_offset" value="3.0"/>
     <param name="mission/sector_limit" value="1"/>
     <param name="mission/inspection_laps" value="1"/>
+    <param name="mission/planned_cycles" value="2"/>
     <param name="entry_gate/entry_sector" value="7"/>
-    <param name="entry_gate/minimum_radius" value="9.0"/>
-    <param name="entry_gate/maximum_radius" value="16.0"/>
-    <param name="entry_gate/preferred_radius" value="11.0"/>
+    <param name="entry_gate/minimum_radius" value="15.0"/>
+    <param name="entry_gate/maximum_radius" value="15.0"/>
+    <param name="entry_gate/preferred_radius" value="15.0"/>
     <param name="entry_gate/maximum_segment_length" value="6.0"/>
     <rosparam param="candidate/angle_offsets_deg">[0.0]</rosparam>
     <rosparam param="candidate/radius_offsets_m">[0.0]</rosparam>
     <rosparam param="candidate/height_offsets_m">[0.0]</rosparam>
     <param name="staging/height" value="4.0"/>
     <param name="staging/climb_height_step" value="1.0"/>
-    <rosparam param="staging/ascent_step_heights">[5.0]</rosparam>
-    <rosparam param="layer_transition/step_heights">[3.0]</rosparam>
+    <rosparam param="staging/ascent_step_heights">[10.0, 18.0, 26.0]</rosparam>
+    <param name="layer_transition/maximum_vertical_step" value="2.0"/>
+    <param name="layer_transition/same_xy_tolerance" value="0.10"/>
     <param name="coverage/unknown_ratio_limit" value="0.90"/>
     <param name="coverage/wait_timeout" value="2.0"/>
-    <param name="recovery/recovery_height" value="7.0"/>
+    <param name="recovery/recovery_height" value="30.0"/>
     <param name="return_egress/orbit_radius" value="12.0"/>
-    <param name="return_egress/transit_height" value="7.0"/>
+    <param name="return_egress/transit_height" value="38.0"/>
     <param name="failure_hold_duration" value="0.2"/>
     <param name="arrival_hold_duration" value="0.1"/>
     <param name="input_timeout" value="1.0"/>

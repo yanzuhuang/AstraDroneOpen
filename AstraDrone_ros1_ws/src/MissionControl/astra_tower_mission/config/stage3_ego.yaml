@@ -23,8 +23,13 @@ mission:
   sector_limit: 8
   # A lap is strictly waypoint 1 -> ... -> waypoint 8 -> waypoint 1.
   inspection_laps: 1
+  # One cycle executes 26 m -> 22 m. Set 2 for the bounded
+  # 26 -> 22 -> 26 -> 22 loop validation; layer waypoint data is retained.
+  planned_cycles: 1
   layer_count: 2
-  start_angle_deg: -67.5
+  # Standard waypoint numbering is fixed in the map:
+  # 1=0°, 2=45°, ..., 7=270°, 8=315°.
+  start_angle_deg: 0.0
   inspection_start_sector: 3
   transition_sector: 3
   direction: counter_clockwise
@@ -44,13 +49,6 @@ mission:
   maximum_temporary_descent: 3.0
   target_replacement_margin: 2.0
 
-first_waypoint:
-  # A gate nearly coincident with a ring waypoint may use that waypoint.
-  # Otherwise the first waypoint is the next one in the configured orbit
-  # direction; fixed inspection_start_sector is not used for entry selection.
-  angular_tolerance_deg: 5.0
-  distance_tolerance: 3.0
-
 entry_gate:
   # User-facing map sectors are fixed and independent of the inspection-route
   # start angle: 1=+X, 2=NE, 3=+Y, 4=NW, 5=-X, 6=SW, 7=-Y, 8=SE.
@@ -58,7 +56,7 @@ entry_gate:
   entry_sector: 7
   preferred_radius: 15.0
   minimum_radius: 15.0
-  maximum_radius: 18.0
+  maximum_radius: 15.0
   angular_sample_step_deg: 7.5
   radial_sample_step: 1.0
   maximum_horizontal_distance: 60.0
@@ -100,7 +98,11 @@ staging:
   minimum_channel_hold: 5.0
 
 layer_transition:
-  step_heights: [24.0, 22.0]
+  # Segment both descent and ascent by vertical change. If the two layer
+  # start waypoints share XY within tolerance, every segment keeps the upper
+  # XY exactly; otherwise XY is interpolated for a smooth diagonal transfer.
+  maximum_vertical_step: 2.0
+  same_xy_tolerance: 0.25
   target_timeout: 90.0
 
 # The simulated FAST-LIO cloud is hit-only, so missing returns cannot prove a
@@ -210,9 +212,9 @@ goal_timeout: 180.0
 return_timeout: 300.0
 landing_timeout: 90.0
 return_egress:
-  # Never send a long chord from the inspection ring directly to home. First
-  # climb/withdraw radially, follow a tower-exterior arc, then hand the short
-  # home-side radial segment to the bridge's normal EGO return.
+  # Failure fallback only. Normal completion reaches the final layer's
+  # EXIT_GATE and then lets EGO plan directly to the bridge's 4 m home hover,
+  # avoiding a task-commanded climb to this conservative fallback height.
   orbit_radius: 24.0
   transit_height: 38.0
   maximum_angle_step_deg: 30.0
@@ -239,7 +241,7 @@ max_recovery_attempts: 2
 # to the locked sector; keep the retry finite but physically achievable.
 recovery_target_timeout: 180.0
 normal_return:
-  # Normal completion retries the saved ingress path before RETURN_EGRESS.
+  # Failure recovery only. Normal completion never replays the 26 m ingress.
   maximum_retries: 2
 overall_timeout: 2400.0
 report_period: 0.2

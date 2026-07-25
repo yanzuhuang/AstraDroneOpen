@@ -4,7 +4,110 @@
 Noetic、Gazebo Classic、PX4 SITL、MAVROS、FAST-LIO 和 EGO-Planner 单机仿真；
 不包含动态障碍预测、多机、相机检测、Cloud/QGIS、真机或 PX4/EGO 核心升级。
 
-## 2026-07-24 两层分层巡塔（当前实现）
+## 2026-07-26 圈层切换、可循环巡检与直接返航（当前实现）
+
+### 根因与修复
+
+2026-07-25 的控制 CSV 证明，异常升高不是 EGO 单独制造的：
+
+1. 旧层间逻辑在 26 m 闭环后先结束上层，再单独准备下层；22 m 首航点既是
+   过渡终点，又可能在下层初始化后再次发布。状态改变与替换目标不在同一回调
+   内，规划器存在继续跟随旧活动目标或重复首点的时间窗。
+2. 旧正常返航反向回放 `successful_ingress_goals_`。该集合包含 26 m
+   `ENTRY_GATE` 和进场/上升通道，所以 22 m `EXIT_GATE` 后任务本身明确发布
+   了 26 m 目标；备用 `RETURN_EGRESS` 还可能升到 38 m。这是返航前主动
+   爬升的直接原因，不是 home 目标继承错误。
+3. 任务、bridge 和 EGO 没有同时向 MAVROS 发布控制：任务只发布任务目标，
+   bridge 独占 `/mavros/setpoint_raw/local`。问题是同一任务状态机内的活动
+   目标生命周期和发布时间，不是多个 MAVROS 控制器竞争。
+
+当前实现把圈层静态数据、圈层运行状态和当前活动目标分开：
+
+- `layer_sector_data_` 永久保留每个高度的完整航点候选；运行完成情况另存到
+  `layer_sector_runtime_`，结束圈层不会清空 26 m 数据。
+- 每层独立保存 `ENTRY_GATE`、`EXIT_GATE` 和首航点锚点；通过
+  `mission/planned_cycles` 生成显式访问序列。两次循环为
+  `[26,22,26,22]`，具备 22→26 的重新进入能力。
+- 当前层必须回到记录的首航点闭环。状态切到 `LAYER_TRANSITION` 的同一回调
+  立即发布下一层首航点方向的第一个替换目标，不再留下旧目标发布窗口。
+- 两层首航点 XY 距离不超过
+  `layer_transition/same_xy_tolerance` 时，按同一 XY 分段竖直切换；否则
+  在 `layer_transition/maximum_vertical_step` 约束下对 XYZ 线性插值，
+  允许 EGO 生成连续斜向轨迹。该函数同时支持下降和上升。
+- 到达下一层首航点后直接将它计为该层第一个巡检点，从下一个点继续，不重复
+  发布首点。
+- 最后一层闭环后进入 `GO_TO_EXIT_GATE`，只发布当前层的 `EXIT_GATE`。
+  确认到达后直接请求 bridge 的 EGO home 目标；正常成功路径不再反向回放
+  26 m ingress，也不调用 38 m `RETURN_EGRESS`。后两者仅保留为故障退化
+  能力，不把“禁止上升”写成规划器硬约束。
+
+当前成功路径为：
+
+```text
+INSPECT_LAYER_26（首点闭环）
+→ LAYER_TRANSITION_26_TO_22（同 XY 时竖直，否则斜向）
+→ INSPECT_LAYER_22（过渡终点同时计作首点，再闭环）
+→ GO_TO_EXIT_GATE（22 m）
+→ RETURN_HOME（bridge 的 home + 4 m EGO 目标）
+→ HOME_HOVER → AUTO.LAND → DONE
+```
+
+循环次数为 2 时，中间状态序列是：
+
+```text
+26 → 22 → 26 → 22 → GO_TO_EXIT_GATE → RETURN_HOME
+```
+
+### 启动与循环测试
+
+单循环完整控制与证据录制：
+
+```bash
+cd /home/yanzu/AstraDroneOpen
+scripts/run_sh/stage3_ego.sh --control --sector-limit 8 --cycles 1 \
+  --bag /tmp/stage3_layer_return_fix_20260725.bag
+```
+
+两循环控制入口只需把参数改为 `--cycles 2`。快速状态机/轨迹逻辑回归不解锁
+PX4，测试 launch 内固定 `planned_cycles=2`：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws/devel/setup.bash
+rostest astra_tower_mission stage3_no_control_integration.test
+```
+
+该集成测试使用实际 26/22 m 参数、单扇区快速闭环并模拟 odom 到达，验证
+三次层间切换 `26→22→26→22`、最终
+`GO_TO_EXIT_GATE→RETURN_HOME`、未进入 `NORMAL_RETURN/RETURN_EGRESS`
+且任务节点没有 MAVROS publisher。规划器单测另覆盖同 XY 竖直、不同 XY
+斜向和圈层访问序列不破坏原始数据。
+
+### 2026-07-26 完整 Gazebo/PX4/EGO 实飞证据
+
+- bag：`/tmp/stage3_layer_return_fix_20260725.bag`
+- CSV：`/tmp/astra_stage3_evidence/control_20260726_000024.csv`
+- 分析：`/tmp/stage3_layer_return_fix_20260725.analysis.json`
+- 三维轨迹/高度图：
+  `/tmp/stage3_layer_return_fix_20260725.trajectory.png`
+- bag SHA-256：
+  `db4a149abc9bbaff6e58d4d18dde436d30ec9f3b0d076c781b084bbb60d60a01`
+
+离线分析结果为 `passed=true`：1057.423 s、1,512,598 条消息，两层均按
+`6→7→0→1→2→3→4→5→6` 完整闭环。26→22 m 命令端 XY 完全相同，实际
+过渡从 `(-10.263,7.300,25.885)` 到 `(-10.088,7.149,22.198)`，相对命令
+XY 最大偏差 0.222 m、最大相邻采样上升 0.0038 m；没有回到其他 26 m 航点，
+也没有高度回弹。22 m `EXIT_GATE` 到达后 home 目标为
+`(0.017,-0.016,3.998)`；实际返航从 22.017 m 开始，最高 22.074 m，仅
+0.057 m 控制收敛量，随后连续下降，没有主动回升到 26 m。
+
+planner 全程无 collision/emergency、最大连续规划失败为 0；跟踪误差
+max/mean/P95 为 0.317/0.056/0.099 m，采样最小占据净空 1.126 m，朝塔 yaw
+误差 max/P95 为 0.0197/0.0132 rad。raw `type_mask=0`，唯一 MAVROS 控制
+发布者为 `/ego_mavros_bridge`；最终 task/bridge `DONE`、`armed=false`、
+`ON_GROUND`。最终三包回归为 `200 tests, 0 errors, 0 failures, 0 skipped`。
+
+## 2026-07-24 两层分层巡塔（历史基线）
 
 当前默认任务已由旧 30 m 单层闭环更新为固定入口的 26/22 m 两层闭环：
 

@@ -23,6 +23,7 @@ class Stage3NoControlIntegration(unittest.TestCase):
         self.state = ""
         self.states = []
         self.goal_count = 0
+        self.goal_positions = []
         self.trajectory_id = 0
         self.failure_injected = False
         self.sector_failure_goal_count = 0
@@ -41,6 +42,7 @@ class Stage3NoControlIntegration(unittest.TestCase):
         self.ascent_positions = []
         self.layer_transition_positions = []
         self.normal_return_positions = []
+        self.exit_gate_positions = []
         self.face_tower_modes = []
         self.mavros_setpoints = 0
         self.position = [12.0, 0.0, 4.0]
@@ -105,6 +107,11 @@ class Stage3NoControlIntegration(unittest.TestCase):
         with self.lock:
             self.goal_count += 1
             self.trajectory_id += 1
+            self.goal_positions.append((
+                message.pose.position.x,
+                message.pose.position.y,
+                message.pose.position.z,
+            ))
             state = self.state
             if state == "ENTRY_GATE_TRANSIT":
                 self.approach_goal_count += 1
@@ -137,6 +144,12 @@ class Stage3NoControlIntegration(unittest.TestCase):
                 ))
             if state == "NORMAL_RETURN":
                 self.normal_return_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
+            if state == "GO_TO_EXIT_GATE":
+                self.exit_gate_positions.append((
                     message.pose.position.x,
                     message.pose.position.y,
                     message.pose.position.z,
@@ -276,12 +289,13 @@ class Stage3NoControlIntegration(unittest.TestCase):
             self.assertLessEqual(selected_angle, 292.5)
             self.assertAlmostEqual(
                 math.hypot(selected_entry[0], selected_entry[1]),
-                11.0, places=2)
+                15.0, places=2)
             self.assertGreaterEqual(self.cancel_calls, 2)
             self.assertGreaterEqual(self.tracking_disable_calls, 2)
             self.assertGreaterEqual(self.resume_calls, 1)
             self.assertEqual(self.return_calls, 1)
-            self.assertIn("NORMAL_RETURN", self.states)
+            self.assertNotIn("NORMAL_RETURN", self.states)
+            self.assertIn("GO_TO_EXIT_GATE", self.states)
             self.assertNotIn("RETURN_EGRESS", self.states)
             self.assertIn("LAYER_TRANSITION", self.states)
             self.assertEqual(self.states.count("STAGING_POINT"), 1)
@@ -289,33 +303,30 @@ class Stage3NoControlIntegration(unittest.TestCase):
             self.assertEqual(len(self.recovery_goal_heights), 0)
             self.assertEqual(
                 [round(item[2], 2) for item in self.ascent_positions],
-                [5.0],
+                [10.0, 18.0, 26.0],
             )
-            self.assertEqual(
-                [round(item[2], 2)
-                 for item in self.layer_transition_positions],
-                [3.0],
-            )
-            self.assertEqual(
-                len({(round(item[0], 3), round(item[1], 3))
-                     for item in self.layer_transition_positions}),
-                1,
-            )
-            self.assertGreaterEqual(len(self.normal_return_positions), 1)
-            self.assertEqual(
-                round(self.normal_return_positions[0][2], 2), 3.0)
+            self.assertGreaterEqual(
+                self.states.count("LAYER_TRANSITION"), 3)
+            self.assertEqual(len(self.normal_return_positions), 0)
+            final_layer_gate_positions = [
+                item for item in self.goal_positions
+                if abs(item[2] - 22.0) < 0.05 and
+                abs(math.hypot(item[0], item[1]) - 15.0) < 0.1
+            ]
+            self.assertGreaterEqual(len(final_layer_gate_positions), 1)
             self.assertLessEqual(
                 max(math.hypot(item[0], item[1])
-                    for item in self.normal_return_positions),
-                12.1,
+                    for item in final_layer_gate_positions),
+                15.1,
             )
             self.assertIn(True, self.face_tower_modes)
             self.assertEqual(self.mavros_setpoints, 0)
             direction = rospy.get_param(
                 "/tower_mission/mission/direction")
-            expected_angle = (
-                292.5 if direction == "counter_clockwise" else 247.5)
-            for layer_height in (5.0, 3.0):
+            expected_fallback_angle = (
+                315.0 if direction == "counter_clockwise" else 225.0)
+            for layer_height, expected_angle in (
+                    (26.0, 270.0), (22.0, expected_fallback_angle)):
                 layer_positions = [
                     item for item in self.inspection_positions
                     if abs(item[2] - layer_height) < 0.05
@@ -328,7 +339,7 @@ class Stage3NoControlIntegration(unittest.TestCase):
                 self.assertAlmostEqual(first_angle, expected_angle, places=1)
             upper_unique_angles = []
             for item in self.inspection_positions:
-                if abs(item[2] - 5.0) >= 0.05:
+                if abs(item[2] - 26.0) >= 0.05:
                     continue
                 angle = (
                     math.degrees(math.atan2(item[1], item[0])) + 360.0
@@ -337,8 +348,6 @@ class Stage3NoControlIntegration(unittest.TestCase):
                         abs(angle - upper_unique_angles[-1]) > 0.1):
                     upper_unique_angles.append(angle)
             self.assertGreaterEqual(len(upper_unique_angles), 2)
-            expected_fallback_angle = (
-                337.5 if direction == "counter_clockwise" else 202.5)
             self.assertAlmostEqual(
                 upper_unique_angles[1], expected_fallback_angle, places=1)
 

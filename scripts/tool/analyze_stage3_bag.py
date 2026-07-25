@@ -147,6 +147,9 @@ def audit(
     return_egress_targets = []
     ascent_odom_positions = []
     transition_odom_positions = []
+    exit_gate_odom_positions = []
+    return_home_odom_positions = []
+    return_home_planning_goals = []
     tower_yaw_errors = []
     tower_center = None
     face_tower_active = False
@@ -272,6 +275,10 @@ def audit(
                     ascent_odom_positions.append(odom_position)
                 elif current_mission_state == "LAYER_TRANSITION":
                     transition_odom_positions.append(odom_position)
+                elif current_mission_state == "GO_TO_EXIT_GATE":
+                    exit_gate_odom_positions.append(odom_position)
+                elif current_mission_state == "RETURN_HOME":
+                    return_home_odom_positions.append(odom_position)
                 if (
                     face_tower_active
                     and tower_center is not None
@@ -331,6 +338,21 @@ def audit(
                 "/planning/pos_cmd",
             ):
                 frames[topic].add(message.header.frame_id)
+                if (
+                    topic == "/planning/goal"
+                    and current_mission_state == "RETURN_HOME"
+                ):
+                    position = message.pose.position
+                    return_home_planning_goals.append(
+                        {
+                            "time": round(timestamp, 3),
+                            "position": [
+                                float(position.x),
+                                float(position.y),
+                                float(position.z),
+                            ],
+                        }
+                    )
             elif topic == "/rosout":
                 text = message.msg
                 gate = re.search(
@@ -351,6 +373,22 @@ def audit(
                     r"target=(s\d+_c\d+)",
                     text,
                 )
+                first_selected = re.search(
+                    r"FIRST_WAYPOINT selected waypoint=\d+ "
+                    r"internal_index=(\d+).* target="
+                    r"((?:l\d+_)?s\d+_c\d+)",
+                    text,
+                )
+                closing_anchor = re.search(
+                    r"closing layer=(\d+) lap=\d+ at start anchor "
+                    r"waypoint=\d+.* target=((?:l\d+_)?s\d+_c\d+)",
+                    text,
+                )
+                transition_anchor = re.search(
+                    r"next-layer first waypoint confirmed by actual arrival: "
+                    r"layer=(\d+).* target=((?:l\d+_)?s\d+_c\d+)",
+                    text,
+                )
                 locked = re.search(
                     r"safe candidate locked: ((?:l\d+_)?s\d+_c\d+)", text
                 )
@@ -365,7 +403,47 @@ def audit(
                     r"([-+0-9.]+)\)",
                     text,
                 )
-                if fixed:
+                if transition_anchor:
+                    target_id = transition_anchor.group(2)
+                    match = re.search(r"(?:l(\d+)_)?s(\d+)_c\d+", target_id)
+                    sector_targets.append(
+                        {
+                            "time": round(timestamp, 3),
+                            "layer_id": int(transition_anchor.group(1)),
+                            "sector_id": int(match.group(2)),
+                            "target_id": target_id,
+                            "visit_index": current_sector_index,
+                        }
+                    )
+                elif closing_anchor:
+                    target_id = closing_anchor.group(2)
+                    match = re.search(r"(?:l(\d+)_)?s(\d+)_c\d+", target_id)
+                    sector_targets.append(
+                        {
+                            "time": round(timestamp, 3),
+                            "layer_id": int(closing_anchor.group(1)),
+                            "sector_id": int(match.group(2)),
+                            "target_id": target_id,
+                            "visit_index": current_sector_index,
+                        }
+                    )
+                elif first_selected:
+                    target_id = first_selected.group(2)
+                    match = re.search(r"(?:l(\d+)_)?s(\d+)_c\d+", target_id)
+                    sector_targets.append(
+                        {
+                            "time": round(timestamp, 3),
+                            "layer_id": (
+                                int(match.group(1))
+                                if match.group(1) is not None
+                                else 0
+                            ),
+                            "sector_id": int(first_selected.group(1)),
+                            "target_id": target_id,
+                            "visit_index": current_sector_index,
+                        }
+                    )
+                elif fixed:
                     sector_targets.append(
                         {
                             "time": round(timestamp, 3),
@@ -450,11 +528,18 @@ def audit(
     visits_by_layer = defaultdict(list)
     for item in sector_visits:
         visits_by_layer[item.get("layer_id", 0)].append(item)
-    expected_sector_sequence = [3, 4, 5, 6, 7, 0, 1, 2, 3]
     closed_layers = []
     for layer_id, visits in sorted(visits_by_layer.items()):
         ids = [item["sector_id"] for item in visits]
-        if ids == expected_sector_sequence:
+        if (
+            len(ids) == 9
+            and ids[0] == ids[-1]
+            and set(ids[:-1]) == set(range(8))
+            and all(
+                next_sector == (sector + 1) % 8
+                for sector, next_sector in zip(ids, ids[1:])
+            )
+        ):
             closed_layers.append(layer_id)
     closed_lap_count = len(closed_layers)
     closed_lap_valid = closed_layers == [0, 1]
@@ -487,8 +572,16 @@ def audit(
         (round(item["position"][0], 2), round(item["position"][1], 2))
         for item in layer_transition_targets
     }
+    transition_command_same_xy = len(transition_xy) == 1
     layer_transition_valid = (
-        transition_heights == [24.0, 22.0] and len(transition_xy) == 1
+        bool(transition_heights)
+        and transition_heights[-1] == 22.0
+        and all(
+            next_height <= height
+            for height, next_height in zip(
+                transition_heights, transition_heights[1:]
+            )
+        )
     )
     dynamic_lower_exit_gate_valid = (
         len(exit_gate_targets) == 1
@@ -542,8 +635,10 @@ def audit(
     bridge_state_names = [event["state"] for event in bridge_states]
     return_egress_selected = "RETURN_EGRESS" in mission_state_names
     direct_normal_return_selected = (
-        "NORMAL_RETURN" in mission_state_names
+        "GO_TO_EXIT_GATE" in mission_state_names
+        and "RETURN_HOME" in mission_state_names
         and dynamic_lower_exit_gate_valid
+        and "NORMAL_RETURN" not in mission_state_names
         and not return_egress_selected
     )
     home_hover_before_landing = (
@@ -552,6 +647,46 @@ def audit(
         and bridge_state_names.index("HOME_HOVER")
         < bridge_state_names.index("LANDING")
     )
+    transition_actual = None
+    if transition_odom_positions:
+        transition_z = [
+            float(position[2]) for position in transition_odom_positions
+        ]
+        transition_actual = {
+            "start": [
+                float(value) for value in transition_odom_positions[0]
+            ],
+            "end": [
+                float(value) for value in transition_odom_positions[-1]
+            ],
+            "minimum_z": min(transition_z),
+            "maximum_z": max(transition_z),
+            "maximum_upward_sample_step": max(
+                (
+                    next_z - z
+                    for z, next_z in zip(transition_z, transition_z[1:])
+                ),
+                default=0.0,
+            ),
+        }
+    return_home_actual = None
+    if return_home_odom_positions:
+        return_z = [
+            float(position[2]) for position in return_home_odom_positions
+        ]
+        return_home_actual = {
+            "start": [
+                float(value) for value in return_home_odom_positions[0]
+            ],
+            "end": [
+                float(value) for value in return_home_odom_positions[-1]
+            ],
+            "minimum_z": min(return_z),
+            "maximum_z": max(return_z),
+            "maximum_climb_above_start": (
+                max(return_z) - return_z[0]
+            ),
+        }
 
     missing_topics = [
         topic for topic in REQUIRED_TOPICS if topic_counts.get(topic, 0) == 0
@@ -592,11 +727,16 @@ def audit(
         "vertical_ascent_actual_max_xy_error": ascent_xy_error,
         "layer_transition_targets": layer_transition_targets,
         "layer_transition_valid": layer_transition_valid,
+        "layer_transition_command_same_xy": transition_command_same_xy,
         "layer_transition_actual_max_xy_error": transition_xy_error,
+        "layer_transition_actual": transition_actual,
         "exit_gate_targets": exit_gate_targets,
+        "exit_gate_actual_sample_count": len(exit_gate_odom_positions),
         "dynamic_lower_exit_gate_valid": dynamic_lower_exit_gate_valid,
         "normal_return_targets": normal_return_targets,
         "direct_normal_return_selected": direct_normal_return_selected,
+        "return_home_planning_goals": return_home_planning_goals,
+        "return_home_actual": return_home_actual,
         "tower_facing_yaw_error": {
             "count": len(tower_yaw_errors),
             "maximum": max(tower_yaw_errors) if tower_yaw_errors else None,
@@ -687,9 +827,13 @@ def audit(
         "actual_vertical_ascent_xy_stable": (
             ascent_xy_error is not None and ascent_xy_error < 0.5
         ),
-        "fixed_xy_layer_transition": layer_transition_valid,
+        "ordered_direct_layer_transition": layer_transition_valid,
         "actual_layer_transition_xy_stable": (
-            transition_xy_error is not None and transition_xy_error < 0.5
+            not transition_command_same_xy
+            or (
+                transition_xy_error is not None
+                and transition_xy_error < 0.5
+            )
         ),
         "tower_facing_yaw_stable": (
             bool(tower_yaw_errors)
@@ -698,6 +842,14 @@ def audit(
         "dynamic_lower_exit_gate": dynamic_lower_exit_gate_valid,
         "direct_normal_return_without_far_egress": (
             direct_normal_return_selected
+        ),
+        "return_home_does_not_command_layer_climb": (
+            bool(return_home_planning_goals)
+            and max(
+                goal["position"][2]
+                for goal in return_home_planning_goals
+            )
+            < 22.0
         ),
         "home_hover_precedes_auto_land": home_hover_before_landing,
         "no_planner_collision_or_emergency": not planner_flag_counts,

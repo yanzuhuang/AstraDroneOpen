@@ -245,6 +245,16 @@ std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
     const std::vector<double>& target_heights,
     const std::string& id_prefix);
 
+std::vector<CandidatePoint> buildLayerTransitionGoals(
+    const CandidatePoint& from,
+    const CandidatePoint& to,
+    double maximum_vertical_step,
+    double same_xy_tolerance,
+    const std::string& id_prefix);
+
+std::vector<int> buildLayerVisitSequence(std::size_t layer_count,
+                                         int planned_cycles);
+
 std::vector<std::size_t> buildClosedLapVisitSequence(
     std::size_t waypoint_count,
     int inspection_laps);
