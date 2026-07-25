@@ -11,8 +11,10 @@ tower:
   collision_radius: 6.41
 
 mission:
-  inspection_height: 26.0
-  inspection_heights: [26.0, 22.0]
+  # Single source for all inspection-layer heights. The mission node derives
+  # inspection_height, inspection_heights and the ascent endpoint from these.
+  inspection_top_height: &inspection_top_height 34.0
+  layer_offsets: [0.0, -4.0]
   recovery_height_max: 40.0
   virtual_ceil_height: 45.0
   radius: 12.5
@@ -23,10 +25,9 @@ mission:
   sector_limit: 8
   # A lap is strictly waypoint 1 -> ... -> waypoint 8 -> waypoint 1.
   inspection_laps: 1
-  # One cycle executes 26 m -> 22 m. Set 2 for the bounded
-  # 26 -> 22 -> 26 -> 22 loop validation; layer waypoint data is retained.
+  # One cycle executes top -> lower. Set 2 for the bounded
+  # top -> lower -> top -> lower loop validation; layer data is retained.
   planned_cycles: 1
-  layer_count: 2
   # Standard waypoint numbering is fixed in the map:
   # 1=0°, 2=45°, ..., 7=270°, 8=315°.
   start_angle_deg: 0.0
@@ -93,7 +94,7 @@ staging:
   y: 0.0
   height: 4.0
   climb_height_step: 3.0
-  ascent_step_heights: [10.0, 18.0, 26.0]
+  ascent_intermediate_heights: [10.0, 18.0]
   maximum_channel_switches: 0
   minimum_channel_hold: 5.0
 
@@ -171,6 +172,11 @@ recovery:
   maximum_radius: 16.5
   recovery_height: 38.0
   direction: counter_clockwise
+
+# EGO uses incoming goal z in Stage 3. Keep its required fallback parameter
+# tied to the same YAML scalar so it cannot conflict with the first layer.
+fsm:
+  manual_target_height: *inspection_top_height
 
 topics:
   odom: /Odometry

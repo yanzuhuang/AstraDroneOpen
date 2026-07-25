@@ -10,9 +10,8 @@
     <param name="tower/center/y" value="0.0"/>
     <param name="tower/collision_radius" value="2.0"/>
     <param name="mission/radius" value="8.0"/>
-    <param name="mission/inspection_height" value="26.0"/>
-    <rosparam param="mission/inspection_heights">[26.0, 22.0]</rosparam>
-    <param name="mission/transit_height" value="26.0"/>
+    <param name="mission/inspection_top_height" value="26.0"/>
+    <rosparam param="mission/layer_offsets">[0.0, -4.0]</rosparam>
     <param name="mission/minimum_height" value="2.0"/>
     <param name="mission/maximum_height" value="45.0"/>
     <param name="mission/recovery_height_max" value="40.0"/>
@@ -34,7 +33,7 @@
     <rosparam param="candidate/height_offsets_m">[0.0]</rosparam>
     <param name="staging/height" value="4.0"/>
     <param name="staging/climb_height_step" value="1.0"/>
-    <rosparam param="staging/ascent_step_heights">[10.0, 18.0, 26.0]</rosparam>
+    <rosparam param="staging/ascent_intermediate_heights">[10.0, 18.0]</rosparam>
     <param name="layer_transition/maximum_vertical_step" value="2.0"/>
     <param name="layer_transition/same_xy_tolerance" value="0.10"/>
     <param name="coverage/unknown_ratio_limit" value="0.90"/>

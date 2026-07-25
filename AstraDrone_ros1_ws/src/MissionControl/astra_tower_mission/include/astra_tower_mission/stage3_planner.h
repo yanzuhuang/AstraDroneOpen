@@ -245,6 +245,10 @@ std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
     const std::vector<double>& target_heights,
     const std::string& id_prefix);
 
+std::vector<double> deriveInspectionHeights(
+    double inspection_top_height,
+    const std::vector<double>& layer_offsets);
+
 std::vector<CandidatePoint> buildLayerTransitionGoals(
     const CandidatePoint& from,
     const CandidatePoint& to,

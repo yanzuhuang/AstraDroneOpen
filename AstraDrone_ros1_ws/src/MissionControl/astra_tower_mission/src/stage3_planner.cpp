@@ -742,6 +742,28 @@ std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
   return goals;
 }
 
+std::vector<double> deriveInspectionHeights(
+    double inspection_top_height,
+    const std::vector<double>& layer_offsets) {
+  if (!std::isfinite(inspection_top_height) || layer_offsets.empty()) {
+    return {};
+  }
+  if (!std::isfinite(layer_offsets.front()) ||
+      std::abs(layer_offsets.front()) > 1.0e-9) {
+    return {};
+  }
+  std::vector<double> heights;
+  heights.reserve(layer_offsets.size());
+  for (double offset : layer_offsets) {
+    const double height = inspection_top_height + offset;
+    if (!std::isfinite(offset) || !std::isfinite(height)) {
+      return {};
+    }
+    heights.push_back(height);
+  }
+  return heights;
+}
+
 std::vector<CandidatePoint> buildLayerTransitionGoals(
     const CandidatePoint& from,
     const CandidatePoint& to,

@@ -325,10 +325,14 @@ class Stage3NoControlIntegration(unittest.TestCase):
                 "/tower_mission/mission/direction")
             expected_fallback_angle = (
                 315.0 if direction == "counter_clockwise" else 225.0)
+            standard_route_positions = [
+                item for item in self.goal_positions
+                if abs(math.hypot(item[0], item[1]) - 8.0) < 0.1
+            ]
             for layer_height, expected_angle in (
                     (26.0, 270.0), (22.0, expected_fallback_angle)):
                 layer_positions = [
-                    item for item in self.inspection_positions
+                    item for item in standard_route_positions
                     if abs(item[2] - layer_height) < 0.05
                 ]
                 self.assertGreaterEqual(len(layer_positions), 1)
@@ -338,7 +342,7 @@ class Stage3NoControlIntegration(unittest.TestCase):
                 ) % 360.0
                 self.assertAlmostEqual(first_angle, expected_angle, places=1)
             upper_unique_angles = []
-            for item in self.inspection_positions:
+            for item in standard_route_positions:
                 if abs(item[2] - 26.0) >= 0.05:
                     continue
                 angle = (

@@ -316,12 +316,15 @@ class Stage3EgoMissionNode {
     private_node_.param("tower/center/y", route_.center_y, 19.7104);
     private_node_.param("tower/collision_radius", route_.tower_collision_radius,
                         6.41);
-    private_node_.param("mission/inspection_height", inspection_height_, 30.0);
-    private_node_.param("mission/inspection_heights", inspection_heights_,
-                        std::vector<double>{inspection_height_});
-    if (!inspection_heights_.empty()) {
-      inspection_height_ = inspection_heights_.front();
+    std::vector<double> layer_offsets;
+    if (!private_node_.getParam("mission/inspection_top_height",
+                                inspection_height_) ||
+        !private_node_.getParam("mission/layer_offsets", layer_offsets)) {
+      throw std::runtime_error(
+          "mission/inspection_top_height and mission/layer_offsets are required");
     }
+    inspection_heights_ =
+        deriveInspectionHeights(inspection_height_, layer_offsets);
     private_node_.param("mission/recovery_height_max", recovery_height_max_, 40.0);
     private_node_.param("mission/virtual_ceil_height", virtual_ceil_height_, 45.0);
     private_node_.param("mission/radius", route_.radius, 14.0);
@@ -392,12 +395,10 @@ class Stage3EgoMissionNode {
                         max_entry_gate_relocations_, 3);
     private_node_.param("staging/height", staging_height_, transit_height_);
     private_node_.param("staging/climb_height_step", climb_height_step_, 3.0);
-    private_node_.param("staging/ascent_step_heights",
+    private_node_.param("staging/ascent_intermediate_heights",
                         ascent_step_heights_,
-                        std::vector<double>{10.0, 18.0, inspection_height_});
-    private_node_.param("layer_transition/step_heights",
-                        transition_step_heights_,
-                        std::vector<double>{24.0, 22.0});
+                        std::vector<double>{10.0, 18.0});
+    ascent_step_heights_.push_back(inspection_height_);
     private_node_.param("layer_transition/target_timeout",
                         layer_transition_target_timeout_, 90.0);
     private_node_.param("layer_transition/maximum_vertical_step",
@@ -607,7 +608,7 @@ class Stage3EgoMissionNode {
           height > route_.maximum_height ||
           (index > 0U && height >= inspection_heights_[index - 1U])) {
         throw std::runtime_error(
-            "mission/inspection_heights must be finite and strictly descending");
+            "derived inspection heights must be finite and strictly descending");
       }
     }
     double previous_ascent_height = staging_height_;
@@ -615,13 +616,13 @@ class Stage3EgoMissionNode {
       if (!std::isfinite(height) || height <= previous_ascent_height ||
           height > inspection_height_) {
         throw std::runtime_error(
-            "staging/ascent_step_heights must strictly ascend to the first layer");
+            "derived ascent heights must strictly ascend to the first layer");
       }
       previous_ascent_height = height;
     }
     if (std::abs(previous_ascent_height - inspection_height_) > 1.0e-6) {
       throw std::runtime_error(
-          "staging/ascent_step_heights must end at first inspection height");
+          "derived ascent heights must end at first inspection height");
     }
     layer_visit_sequence_ =
         buildLayerVisitSequence(inspection_heights_.size(), planned_cycles_);
@@ -3517,7 +3518,9 @@ class Stage3EgoMissionNode {
       max_return_egress_retries_{2},
       max_normal_return_retries_{2}, sector_count_{8}, sector_limit_{1},
       layer_count_{1}, inspection_laps_{1}, planned_cycles_{1};
-  double inspection_height_{30.0}, recovery_height_max_{40.0}, virtual_ceil_height_{45.0}, transit_height_{4.0};
+  double inspection_height_{std::numeric_limits<double>::quiet_NaN()},
+      recovery_height_max_{40.0}, virtual_ceil_height_{45.0},
+      transit_height_{4.0};
   double observation_radius_offset_{5.0}, observation_angle_deg_{-67.5}, approach_segment_length_{6.0};
   double sector_angle_half_width_deg_{12.0}, sector_radius_half_width_{4.0}, sector_height_half_width_{1.0};
   double maximum_temporary_descent_{3.0};
@@ -3535,8 +3538,7 @@ class Stage3EgoMissionNode {
   RecoveryConfig recovery_config_;
   ReturnEgressConfig return_egress_config_;
   std::vector<CandidateOffset> offsets_;
-  std::vector<double> inspection_heights_, ascent_step_heights_,
-      transition_step_heights_;
+  std::vector<double> inspection_heights_, ascent_step_heights_;
   EntryGateConfig entry_gate_config_;
   std::vector<StaticObstacle> obstacles_;
   std::vector<Sector> sectors_;

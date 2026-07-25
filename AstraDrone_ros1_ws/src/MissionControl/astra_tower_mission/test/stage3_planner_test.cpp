@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace astra_tower_mission {
 namespace {
@@ -1122,6 +1123,24 @@ TEST(Stage3Planner, LayerGateHeightIsRegeneratedForEachInspectionLayer) {
   EXPECT_EQ(upper.sector_id, 2);
   EXPECT_DOUBLE_EQ(upper.z, 26.0);
   EXPECT_DOUBLE_EQ(lower.z, 22.0);
+}
+
+TEST(Stage3Planner, InspectionHeightsComeFromTopAndLayerOffsets) {
+  const std::vector<double> baseline =
+      deriveInspectionHeights(26.0, {0.0, -4.0});
+  ASSERT_EQ(baseline.size(), 2U);
+  EXPECT_DOUBLE_EQ(baseline[0], 26.0);
+  EXPECT_DOUBLE_EQ(baseline[1], 22.0);
+
+  const std::vector<double> raised =
+      deriveInspectionHeights(34.0, {0.0, -4.0});
+  ASSERT_EQ(raised.size(), 2U);
+  EXPECT_DOUBLE_EQ(raised[0], 34.0);
+  EXPECT_DOUBLE_EQ(raised[1], 30.0);
+  EXPECT_TRUE(deriveInspectionHeights(
+      std::numeric_limits<double>::quiet_NaN(), {0.0, -4.0}).empty());
+  EXPECT_TRUE(deriveInspectionHeights(26.0, {}).empty());
+  EXPECT_TRUE(deriveInspectionHeights(26.0, {-1.0, -4.0}).empty());
 }
 
 TEST(Stage3Planner, BlockedLayerHeightUsesLocalDescentThenRestoresNominal) {
