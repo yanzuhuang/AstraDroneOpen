@@ -11,10 +11,11 @@ tower:
   collision_radius: 6.41
 
 mission:
-  inspection_height: 30.0
+  inspection_height: 26.0
+  inspection_heights: [26.0, 22.0]
   recovery_height_max: 40.0
   virtual_ceil_height: 45.0
-  radius: 14.0
+  radius: 12.5
   sector_count: 8
   # Production policy is eight sectors.  Staged validation overrides this to
   # one sector in the no-control/integration launch; never use that override
@@ -22,8 +23,10 @@ mission:
   sector_limit: 8
   # A lap is strictly waypoint 1 -> ... -> waypoint 8 -> waypoint 1.
   inspection_laps: 1
-  layer_count: 1
+  layer_count: 2
   start_angle_deg: -67.5
+  inspection_start_sector: 3
+  transition_sector: 3
   direction: counter_clockwise
   minimum_height: 2.0
   maximum_height: 45.0
@@ -33,24 +36,16 @@ mission:
   observation_angle_deg: -67.5
   approach_segment_length: 6.0
   sector_angle_half_width_deg: 12.0
-  sector_radius_half_width: 4.0
-  # The nominal target of every sector remains exactly 30 m.  The 38 m
-  # candidate is a last-resort fallback after all smaller endpoint changes
-  # fail their hard constraints or bounded EGO attempts.
-  sector_height_half_width: 8.0
+  sector_radius_half_width: 8.0
+  sector_height_half_width: 0.1
   target_replacement_margin: 2.0
 
 entry_gate:
-  # Candidate offsets are relative to mission/radius and start_angle_deg.
-  # No gate is selected at low altitude.  The vehicle first climbs on the
-  # locked home-local channel, dwells for mapping at 30 m, then evaluates and
-  # locks one gate for a segmented horizontal EGO transit.
-  # Wider angular coverage is required because the crane boom crosses the
-  # original -87.5..-47.5 degree gate fan at inspection height.
-  angle_offsets_deg: [-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0]
-  radius_offsets_m: [2.0, 4.0, 6.0]
-  minimum_radius: 16.0
-  maximum_radius: 24.0
+  entry_sector: 3
+  radius: 15.0
+  height: 26.0
+  minimum_radius: 15.0
+  maximum_radius: 15.0
   maximum_horizontal_distance: 60.0
   minimum_clearance: 2.0
   cloud_inflation: 0.4
@@ -64,23 +59,27 @@ entry_gate:
   distance_weight: 1.0
   blocked_corridor_penalty: 5.0
   maximum_segment_length: 6.0
-  target_timeout: 90.0
+  # At the unchanged 0.30 m/s mission speed, the approximately 34 m
+  # home-to-gate leg needs at least 113 s before planning detours.
+  target_timeout: 180.0
   # Compatibility key; the ascent-specific switch limit below is authoritative.
   maximum_relocations: 2
 
 staging:
-  # Primary ascent is captured home-hover XY. ENTRY_GATE selection is delayed
-  # until safe altitude. Nearby channels are tried only after a hard
-  # endpoint/path block or bounded EGO-unreachable result.
+  # The captured home-hover XY is immutable. A blocked vertical segment
+  # enters bounded HOLD/exit handling and never searches a lateral channel.
   use_configured_xy: false
   x: 0.0
   y: 0.0
   height: 4.0
   climb_height_step: 3.0
-  channel_offsets_x: [0.0, 3.0, -3.0, 0.0, 0.0]
-  channel_offsets_y: [0.0, 0.0, 0.0, 3.0, -3.0]
-  maximum_channel_switches: 2
+  ascent_step_heights: [10.0, 18.0, 26.0]
+  maximum_channel_switches: 0
   minimum_channel_hold: 5.0
+
+layer_transition:
+  step_heights: [24.0, 22.0]
+  target_timeout: 90.0
 
 # The simulated FAST-LIO cloud is hit-only, so missing returns cannot prove a
 # free voxel.  These bounds define candidate observability in the MID-360
@@ -100,12 +99,11 @@ coverage:
   sensor_max_elevation_deg: 52.2
 
 candidate:
-  # Generation order does not define selection.  After hard rejection, the
-  # task uses strict priority: nominal 30 m, small angle, small radius,
-  # 29..31 m, larger horizontal change, then 38 m.
-  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0]
-  radius_offsets_m: [0.0, 2.0, 4.0]
-  height_offsets_m: [0.0, -1.0, 1.0, 8.0]
+  # Layer height is fixed. Static obstacles may only move a candidate within
+  # its angular sector and radially outward from the 12.5 m nominal ring.
+  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0]
+  radius_offsets_m: [0.0, 2.0, 4.0, 6.0, 8.0]
+  height_offsets_m: [0.0]
   minimum_clearance: 2.0
   cloud_inflation: 0.4
   corridor_sample_step: 0.5
@@ -165,6 +163,9 @@ services:
   land: /ego_mavros_bridge/land
 
 input_timeout: 0.7
+# /mavros/state is event-driven with a nominal 1 Hz refresh. Keep this
+# independent from the high-rate odometry/planner freshness deadline.
+entry_fcu_state_timeout: 2.0
 map_timeout: 0.7
 planning_timeout: 10.0
 goal_timeout: 180.0
@@ -199,7 +200,9 @@ planner_unreachable_attempt_limit: 2
 emergency_stop_timeout: 6.0
 failure_hold_duration: 2.0
 max_recovery_attempts: 2
-recovery_target_timeout: 60.0
+# R1/R2 may climb 16 m at the unchanged 0.30 m/s speed before descending back
+# to the locked sector; keep the retry finite but physically achievable.
+recovery_target_timeout: 180.0
 normal_return:
   # Normal completion retries the saved ingress path before RETURN_EGRESS.
   maximum_retries: 2

@@ -4,19 +4,69 @@
 Noetic、Gazebo Classic、PX4 SITL、MAVROS、FAST-LIO 和 EGO-Planner 单机仿真；
 不包含动态障碍预测、多机、相机检测、Cloud/QGIS、真机或 PX4/EGO 核心升级。
 
+## 2026-07-24 两层分层巡塔（当前实现）
+
+当前默认任务已由旧 30 m 单层闭环更新为固定入口的 26/22 m 两层闭环：
+
+```text
+TAKEOFF_HOVER
+→ VERTICAL_ASCENT（home XY，10→18→26 m）
+→ TRANSIT_TO_ENTRY_GATE / ENTRY_CHECK（sector 3，R=15 m，Z=26 m）
+→ APPROACH_FIRST_WAYPOINT
+→ INSPECT_LAYER_26（3→4→5→6→7→0→1→2→3）
+→ LAYER_TRANSITION（sector 3 同 XY，26→24→22 m）
+→ INSPECT_LAYER_22（3→4→5→6→7→0→1→2→3）
+→ RETURN_EGRESS（R=24 m、Z=38 m 塔外弧到 HOME 径向门）
+→ RETURN_HOME → HOME_HOVER → PX4 AUTO.LAND
+```
+
+`mission/inspection_heights=[26.0,22.0]`、`inspection_radius=12.5`、
+`entry_gate/{entry_sector,radius,height}={3,15.0,26.0}`、
+`mission/{inspection_start_sector,transition_sector}={3,3}`、
+`staging/ascent_step_heights=[10.0,18.0,26.0]` 和
+`layer_transition/step_heights=[24.0,22.0]` 均集中在
+`astra_tower_mission/config/stage3_ego.yaml`。入口不再搜索其他侧或低空等待点；
+静态障碍仍只允许向名义 12.5 m 半径外侧选点。垂直柱体在下降前一次性检查
+占据、地图覆盖、塔 keep-out、吊机 OBB 与高度包络，失败只进入有界 HOLD。
+
+日常观看完整两层任务（启动 Gazebo GUI、RViz，不录 rosbag）：
+
+```bash
+cd /home/yanzu/AstraDroneOpen
+scripts/run_sh/stage3_ego.sh --control --sector-limit 8 --gui --rviz --attach
+```
+
+Gazebo 服务端默认启动；`--gui` 打开 Gazebo 窗口，`--rviz` 打开 RViz，且省略
+`--bag` 不会启动 rosbag recorder。需要证据包时再显式添加 `--bag FILE`。
+
+最终控制证据保存在忽略目录
+`AstraDrone_ros1_ws/log/stage3_two_layer/attempt8.bag`，自动分析为
+`attempt8_analysis.json` 且 `passed=true`。飞行历时 1709.341 s；两层均按
+`3→4→5→6→7→0→1→2→3` 闭环；实际直升最大 XY 偏差 0.357 m，层间下降最大
+XY 偏差 0.200 m；朝塔 yaw 最大误差 0.0214 rad、P95 0.0117 rad；跟踪误差
+最大 0.731 m、P95 0.207 m；采样最小占据净空 0.864 m。唯一控制发布者为
+`/ego_mavros_bridge`，raw `type_mask=0`；最终 task/bridge `DONE`、
+`armed=false`、`ON_GROUND`，HOME 落点水平误差约 0.309 m。
+最终三包回归为 `166 tests, 0 errors, 0 failures, 0 skipped`。
+
+实飞同时修复了三项旧参数/路径不一致：34 m 固定入口在 0.30 m/s 下使用
+180 s 有界超时；阶段三 MAVROS state/extended-state 以 2.0 s 判陈旧以匹配
+约 1 Hz 发布周期；RETURN_EGRESS 的圆弧终点按 HOME 实际径向计算，不再沿
+ENTRY_GATE 角度生成穿过吊机上方的长弦。速度、仿真倍率和动态避障范围均未改。
+
 2026-07-23 的旧版本曾按 `2 → 4 → 8` 扇区完成实际控制飞行；该历史
 8 扇区 bag 证明的是旧状态机的 8 个不重复目标、`RETURN_EGRESS` 和
 AUTO.LAND，不证明本页 2026-07-24 收尾设计的 `1→…→8→1` 闭环、分段直升、
 正常反向进场返航或 HOME_HOVER 落地门禁。
 
-2026-07-24 已按 bag 根因完成进场、HOLD、返航和落地状态机修复，并完成新的
-8 扇区控制验收。最终方案不再搜索低空水平等待点，而是在 home hover 捕获并
+本次两层改造前，2026-07-24 已按 bag 根因完成进场、HOLD、返航和落地状态机
+修复，并完成单层 8 扇区控制验收。该历史方案不再搜索低空水平等待点，而是在 home hover 捕获并
 锁定 XY，分 9 段近竖直上升到 30 m，驻留建图后只锁定一个 ENTRY_GATE，再
 水平转场。最终完整 bag 的离线分析为 `passed=true`。
 最新总表见
 [`阶段三任务完成与待办总结.md`](./阶段三任务完成与待办总结.md)。
 
-## 0. 2026-07-24 最终设计与验证结论
+## 0. 2026-07-24 单层历史设计与验证结论
 
 ### 0.1 bag 根因
 

@@ -189,6 +189,12 @@ std::vector<CandidatePoint> buildEntryGateCandidates(
     const std::vector<double>& radius_offsets_m,
     double inspection_height);
 
+CandidatePoint buildFixedEntryGate(const RouteConfig& route,
+                                   int sector_count,
+                                   int entry_sector,
+                                   double gate_radius,
+                                   double gate_height);
+
 bool evaluateEntryGateCandidate(
     CandidatePoint* candidate,
     const RouteConfig& route,
@@ -212,6 +218,11 @@ std::vector<CandidatePoint> buildVerticalClimbGoals(
     const CandidatePoint& staging_point,
     double entry_height,
     double height_step);
+
+std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
+    const CandidatePoint& reference,
+    const std::vector<double>& target_heights,
+    const std::string& id_prefix);
 
 std::vector<std::size_t> buildClosedLapVisitSequence(
     std::size_t waypoint_count,
@@ -248,7 +259,6 @@ std::vector<CandidatePoint> buildSafeReturnEgressGoals(
     const RouteConfig& route,
     const geometry_msgs::Point& current,
     const geometry_msgs::Point& home,
-    const CandidatePoint& return_gate,
     const std::vector<StaticObstacle>& obstacles,
     const ReturnEgressConfig& config);
 

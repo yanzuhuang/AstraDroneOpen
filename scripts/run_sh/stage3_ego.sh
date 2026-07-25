@@ -208,7 +208,8 @@ if [[ "$stop" == true ]]; then
             if [[ -f "$active_bag" ]]; then
                 echo "recorder 未完成最终重命名；保留原始 active 并重建索引……"
                 rosbag reindex "$active_bag"
-                [[ -f "${active_bag}.orig.active" ]] || {
+                reindex_backup="${active_bag%.active}.orig.active"
+                [[ -f "$reindex_backup" ]] || {
                     echo "rosbag reindex 未保留原始 active，拒绝继续。" >&2
                     exit 1
                 }

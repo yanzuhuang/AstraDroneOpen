@@ -514,18 +514,12 @@ TEST(Stage3Planner, FourSectorReturnUsesTowerExteriorArc) {
   home.x = 0.0;
   home.y = 0.0;
   home.z = 4.0;
-  CandidatePoint return_gate;
-  const double gate_angle = -37.5 * kPi / 180.0;
-  return_gate.x = route.center_x + 20.0 * std::cos(gate_angle);
-  return_gate.y = route.center_y + 20.0 * std::sin(gate_angle);
-  return_gate.z = 30.0;
-
   EXPECT_FALSE(lineCorridorSafe(current, home, {}, {crane, tower},
                                 2.0, 0.5));
 
   ReturnEgressConfig config;
   const auto goals = buildSafeReturnEgressGoals(
-      route, current, home, return_gate, {crane, tower}, config);
+      route, current, home, {crane, tower}, config);
   ASSERT_GT(goals.size(), 2U);
   EXPECT_TRUE(std::any_of(
       goals.begin(), goals.end(), [](const CandidatePoint& goal) {
@@ -546,6 +540,19 @@ TEST(Stage3Planner, FourSectorReturnUsesTowerExteriorArc) {
   EXPECT_DOUBLE_EQ(goals.back().x, home.x);
   EXPECT_DOUBLE_EQ(goals.back().y, home.y);
   EXPECT_DOUBLE_EQ(goals.back().z, config.transit_height);
+  const auto gate = std::find_if(
+      goals.begin(), goals.end(), [](const CandidatePoint& goal) {
+        return goal.id.find("RETURN_GATE") != std::string::npos;
+      });
+  ASSERT_NE(gate, goals.end());
+  const double home_angle =
+      std::atan2(home.y - route.center_y, home.x - route.center_x);
+  EXPECT_NEAR(gate->x,
+              route.center_x + config.orbit_radius * std::cos(home_angle),
+              1.0e-9);
+  EXPECT_NEAR(gate->y,
+              route.center_y + config.orbit_radius * std::sin(home_angle),
+              1.0e-9);
 }
 
 TEST(Stage3Planner, ReturnDoneRequiresHomeProximity) {
@@ -557,6 +564,85 @@ TEST(Stage3Planner, ReturnDoneRequiresHomeProximity) {
   landed.x = -10.68;
   landed.y = 16.67;
   EXPECT_FALSE(returnLandingNearHome(landed, home, 1.5));
+}
+
+TEST(Stage3Planner, FixedEntryGateSharesConfiguredSectorRadial) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.height = 26.0;
+  route.start_angle_rad = -67.5 * kPi / 180.0;
+  route.direction = OrbitDirection::kCounterClockwise;
+  const CandidatePoint gate =
+      buildFixedEntryGate(route, 8, 3, 15.0, 26.0);
+  const auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 8.0, 0.1, {{0.0, 0.0, 0.0}});
+  ASSERT_EQ(sectors.size(), 8U);
+  ASSERT_FALSE(gate.target_invalid);
+  EXPECT_EQ(gate.sector_id, 3);
+  EXPECT_NEAR(std::hypot(gate.x - route.center_x,
+                         gate.y - route.center_y),
+              15.0, 1.0e-9);
+  EXPECT_NEAR(
+      normalizeAngle(
+          std::atan2(gate.y - route.center_y,
+                     gate.x - route.center_x) -
+          sectors[3].nominal_angle_rad),
+      0.0, 1.0e-9);
+}
+
+TEST(Stage3Planner, FixedEntryGateAcceptsExactRadiusWithinFloatingTolerance) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.start_angle_rad = -67.5 * kPi / 180.0;
+  route.direction = OrbitDirection::kCounterClockwise;
+  route.minimum_height = 2.0;
+  route.maximum_height = 45.0;
+  route.tower_collision_radius = 6.41;
+  CandidatePoint gate =
+      buildFixedEntryGate(route, 8, 3, 15.0, 26.0);
+  EntryGateConfig config;
+  config.inspection_height = 26.0;
+  config.minimum_height = 2.0;
+  config.maximum_height = 45.0;
+  config.minimum_radius = 15.0;
+  config.maximum_radius = 15.0;
+  config.maximum_horizontal_distance = 60.0;
+  geometry_msgs::Point current;
+  geometry_msgs::Point home;
+  EXPECT_TRUE(evaluateEntryGateCandidate(
+      &gate, route, current, home, {}, {}, true, config, 0.0, 0.65));
+  EXPECT_TRUE(gate.accepted);
+}
+
+TEST(Stage3Planner, ExplicitVerticalGoalsKeepXYAndRequestedHeights) {
+  CandidatePoint reference;
+  reference.x = -4.0;
+  reference.y = 8.0;
+  reference.z = 4.0;
+  const auto ascent = buildVerticalGoalsAtHeights(
+      reference, {10.0, 18.0, 26.0}, "ASCENT");
+  ASSERT_EQ(ascent.size(), 3U);
+  EXPECT_DOUBLE_EQ(ascent[0].z, 10.0);
+  EXPECT_DOUBLE_EQ(ascent[1].z, 18.0);
+  EXPECT_DOUBLE_EQ(ascent[2].z, 26.0);
+  for (const auto& goal : ascent) {
+    EXPECT_DOUBLE_EQ(goal.x, reference.x);
+    EXPECT_DOUBLE_EQ(goal.y, reference.y);
+  }
+  reference.z = 26.0;
+  const auto descent = buildVerticalGoalsAtHeights(
+      reference, {24.0, 22.0}, "TRANSITION");
+  ASSERT_EQ(descent.size(), 2U);
+  EXPECT_DOUBLE_EQ(descent[0].z, 24.0);
+  EXPECT_DOUBLE_EQ(descent[1].z, 22.0);
+  for (const auto& goal : descent) {
+    EXPECT_DOUBLE_EQ(goal.x, reference.x);
+    EXPECT_DOUBLE_EQ(goal.y, reference.y);
+  }
 }
 
 TEST(Stage3Planner, ReturnEgressSkipsCloseRadialGoalAfterRebuild) {
@@ -573,16 +659,12 @@ TEST(Stage3Planner, ReturnEgressSkipsCloseRadialGoalAfterRebuild) {
   home.x = 0.0;
   home.y = -20.0;
   home.z = 4.0;
-  CandidatePoint gate;
-  gate.x = 0.0;
-  gate.y = -12.0;
-  gate.z = 10.0;
   ReturnEgressConfig config;
   config.orbit_radius = 12.0;
   config.transit_height = 10.0;
   config.minimum_goal_separation = 0.5;
   const auto goals =
-      buildSafeReturnEgressGoals(route, current, home, gate, {}, config);
+      buildSafeReturnEgressGoals(route, current, home, {}, config);
   ASSERT_FALSE(goals.empty());
   EXPECT_EQ(goals.front().id.find("_RADIAL"), std::string::npos);
 }

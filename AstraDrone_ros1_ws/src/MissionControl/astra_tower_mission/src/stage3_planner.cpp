@@ -387,6 +387,41 @@ std::vector<CandidatePoint> buildEntryGateCandidates(
   return candidates;
 }
 
+CandidatePoint buildFixedEntryGate(const RouteConfig& route,
+                                   int sector_count,
+                                   int entry_sector,
+                                   double gate_radius,
+                                   double gate_height) {
+  CandidatePoint candidate;
+  if (sector_count < 1 || entry_sector < 0 ||
+      entry_sector >= sector_count || !std::isfinite(gate_radius) ||
+      !std::isfinite(gate_height)) {
+    candidate.target_invalid = true;
+    candidate.rejection_reason = "INVALID_FIXED_ENTRY_GATE";
+    return candidate;
+  }
+  const double direction_sign =
+      route.direction == OrbitDirection::kCounterClockwise ? 1.0 : -1.0;
+  const double angle = normalizeAngle(
+      route.start_angle_rad +
+      direction_sign * entry_sector * 2.0 * kPi / sector_count);
+  std::ostringstream id;
+  id << "ENTRY_GATE_s" << entry_sector;
+  candidate.id = id.str();
+  candidate.sector_id = entry_sector;
+  candidate.layer_id = 0;
+  candidate.x = route.center_x + gate_radius * std::cos(angle);
+  candidate.y = route.center_y + gate_radius * std::sin(angle);
+  candidate.z = gate_height;
+  candidate.yaw = normalizeAngle(
+      std::atan2(route.center_y - candidate.y,
+                 route.center_x - candidate.x) -
+      route.camera_yaw_offset_rad);
+  candidate.require_arrival_yaw = true;
+  candidate.face_tower = true;
+  return candidate;
+}
+
 bool evaluateEntryGateCandidate(
     CandidatePoint* candidate, const RouteConfig& route,
     const geometry_msgs::Point& current_position,
@@ -419,7 +454,9 @@ bool evaluateEntryGateCandidate(
 
   const double radius = distance2d(candidate->x, candidate->y,
                                     route.center_x, route.center_y);
-  if (radius < config.minimum_radius || radius > config.maximum_radius) {
+  constexpr double kBoundaryTolerance = 1.0e-6;
+  if (radius < config.minimum_radius - kBoundaryTolerance ||
+      radius > config.maximum_radius + kBoundaryTolerance) {
     return reject("ENTRY_GATE_RADIUS");
   }
   const double home_distance = distance2d(candidate->x, candidate->y,
@@ -558,6 +595,34 @@ std::vector<CandidatePoint> buildVerticalClimbGoals(
     // and locked only after the map dwell that follows this target.
     goal.require_arrival_yaw = false;
     goals.push_back(goal);
+  }
+  return goals;
+}
+
+std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
+    const CandidatePoint& reference,
+    const std::vector<double>& target_heights,
+    const std::string& id_prefix) {
+  if (!std::isfinite(reference.x) || !std::isfinite(reference.y) ||
+      !std::isfinite(reference.z) || target_heights.empty()) {
+    return {};
+  }
+  std::vector<CandidatePoint> goals;
+  goals.reserve(target_heights.size());
+  double previous_height = reference.z;
+  for (std::size_t index = 0; index < target_heights.size(); ++index) {
+    const double height = target_heights[index];
+    if (!std::isfinite(height) ||
+        std::abs(height - previous_height) < 1.0e-6) {
+      return {};
+    }
+    CandidatePoint goal = reference;
+    std::ostringstream id;
+    id << id_prefix << '_' << index << "_Z" << height;
+    goal.id = id.str();
+    goal.z = height;
+    goals.push_back(goal);
+    previous_height = height;
   }
   return goals;
 }
@@ -730,7 +795,7 @@ bool returnOrLandingTimedOut(bool landing_active,
 
 std::vector<CandidatePoint> buildSafeReturnEgressGoals(
     const RouteConfig& route, const geometry_msgs::Point& current,
-    const geometry_msgs::Point& home, const CandidatePoint& return_gate,
+    const geometry_msgs::Point& home,
     const std::vector<StaticObstacle>& obstacles,
     const ReturnEgressConfig& config) {
   if (!std::isfinite(config.orbit_radius) ||
@@ -750,8 +815,8 @@ std::vector<CandidatePoint> buildSafeReturnEgressGoals(
   const double current_angle =
       std::atan2(current.y - route.center_y, current.x - route.center_x);
   const double home_angle =
-      std::atan2(return_gate.y - route.center_y,
-                 return_gate.x - route.center_x);
+      std::atan2(home.y - route.center_y,
+                 home.x - route.center_x);
   const double ccw_delta = std::fmod(
       home_angle - current_angle + 2.0 * kPi, 2.0 * kPi);
   const double cw_delta = ccw_delta > 0.0 ? ccw_delta - 2.0 * kPi : 0.0;

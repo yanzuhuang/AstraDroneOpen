@@ -43,6 +43,8 @@ REQUIRED_TOPICS = (
     "/tower_mission/current_target",
     "/tower_mission/current_sector",
     "/tower_mission/candidate_targets",
+    "/tower_mission/face_tower",
+    "/tower_mission/selected_tower_center",
     "/tf",
     "/tf_static",
     "/rosout",
@@ -60,6 +62,8 @@ READ_TOPICS = (
     "/ego_mavros_bridge/tracking_error",
     "/tower_mission/state",
     "/tower_mission/current_sector",
+    "/tower_mission/face_tower",
+    "/tower_mission/selected_tower_center",
     "/mavros/local_position/odom",
     "/mavros/local_position/pose",
     "/mavros/state",
@@ -135,6 +139,15 @@ def audit(
     current_sector_events = []
     sector_targets = []
     entry_gates = []
+    ascent_targets = []
+    layer_transition_targets = []
+    return_egress_targets = []
+    ascent_odom_positions = []
+    transition_odom_positions = []
+    tower_yaw_errors = []
+    tower_center = None
+    face_tower_active = False
+    current_mission_state = ""
     cancel_count = 0
     final_mavros = None
     final_extended = None
@@ -191,11 +204,18 @@ def audit(
                     ]
                 bridge_states.append(event)
             elif topic == "/tower_mission/state":
+                current_mission_state = message.data
                 mission_states.append(transition_event(timestamp, message.data))
             elif topic == "/tower_mission/current_sector":
                 current_sector_index = int(message.data)
                 current_sector_events.append(
                     {"time": round(timestamp, 3), "index": current_sector_index}
+                )
+            elif topic == "/tower_mission/face_tower":
+                face_tower_active = bool(message.data)
+            elif topic == "/tower_mission/selected_tower_center":
+                tower_center = np.array(
+                    [message.point.x, message.point.y], dtype=np.float64
                 )
             elif topic == "/planning/cancel":
                 cancel_count += 1
@@ -239,6 +259,54 @@ def audit(
                 latest_pose = np.array(
                     [position.x, position.y, position.z], dtype=np.float64
                 )
+            elif topic == "/Odometry":
+                frames[topic].add(message.header.frame_id)
+                position = message.pose.pose.position
+                odom_position = np.array(
+                    [position.x, position.y, position.z], dtype=np.float64
+                )
+                if current_mission_state == "SEGMENTED_CLIMB":
+                    ascent_odom_positions.append(odom_position)
+                elif current_mission_state == "LAYER_TRANSITION":
+                    transition_odom_positions.append(odom_position)
+                if (
+                    face_tower_active
+                    and tower_center is not None
+                    and current_mission_state
+                    in {
+                        "ENTRY_GATE_TRANSIT",
+                        "TARGET_LOCKED",
+                        "NAVIGATING",
+                        "EVALUATING",
+                        "LAYER_TRANSITION",
+                    }
+                ):
+                    orientation = message.pose.pose.orientation
+                    yaw = math.atan2(
+                        2.0
+                        * (
+                            orientation.w * orientation.z
+                            + orientation.x * orientation.y
+                        ),
+                        1.0
+                        - 2.0
+                        * (
+                            orientation.y * orientation.y
+                            + orientation.z * orientation.z
+                        ),
+                    )
+                    expected = math.atan2(
+                        tower_center[1] - position.y,
+                        tower_center[0] - position.x,
+                    )
+                    error = abs(
+                        math.atan2(
+                            math.sin(yaw - expected),
+                            math.cos(yaw - expected),
+                        )
+                    )
+                    if math.isfinite(error):
+                        tower_yaw_errors.append(error)
             elif topic == "/stage3/occupancy_inflate":
                 frames[topic].add(message.header.frame_id)
                 occupancy_index += 1
@@ -255,7 +323,6 @@ def audit(
                             occupancy_min_distance = distance
                             occupancy_min_time = timestamp
             elif topic in (
-                "/Odometry",
                 "/stage3/cloud_registered_filtered",
                 "/planning/goal",
                 "/planning/pos_cmd",
@@ -265,8 +332,9 @@ def audit(
                 text = message.msg
                 gate = re.search(
                     r"(?:ENTRY_GATE selected: |"
-                    r"ENTRY_GATE locked only after safe-altitude map dwell: )"
-                    r"(ENTRY_GATE_a\d+)",
+                    r"ENTRY_GATE locked only after safe-altitude map dwell: |"
+                    r"fixed ENTRY_GATE locked after safe-altitude map dwell: )"
+                    r"(ENTRY_GATE_(?:a\d+|s\d+))",
                     text,
                 )
                 if gate:
@@ -279,12 +347,34 @@ def audit(
                     text,
                 )
                 locked = re.search(
-                    r"safe candidate locked: (s\d+_c\d+)", text
+                    r"safe candidate locked: ((?:l\d+_)?s\d+_c\d+)", text
                 )
-                if initial:
+                fixed = re.search(
+                    r"fixed first waypoint locked: layer=(\d+) "
+                    r"sector_id=(\d+) target=((?:l\d+_)?s\d+_c\d+)",
+                    text,
+                )
+                goal = re.search(
+                    r"goal phase=\S+ layer=(\d+) sector=(-?\d+) "
+                    r"id=(\S+) xyz=\(([-+0-9.]+), ([-+0-9.]+), "
+                    r"([-+0-9.]+)\)",
+                    text,
+                )
+                if fixed:
                     sector_targets.append(
                         {
                             "time": round(timestamp, 3),
+                            "layer_id": int(fixed.group(1)),
+                            "sector_id": int(fixed.group(2)),
+                            "target_id": fixed.group(3),
+                            "visit_index": current_sector_index,
+                        }
+                    )
+                elif initial:
+                    sector_targets.append(
+                        {
+                            "time": round(timestamp, 3),
+                            "layer_id": 0,
                             "sector_id": int(initial.group(1)),
                             "target_id": initial.group(2),
                             "visit_index": current_sector_index,
@@ -292,14 +382,40 @@ def audit(
                     )
                 elif locked:
                     target_id = locked.group(1)
+                    match = re.search(
+                        r"(?:l(\d+)_)?s(\d+)_c\d+", target_id
+                    )
                     sector_targets.append(
                         {
                             "time": round(timestamp, 3),
-                            "sector_id": int(target_id.split("_")[0][1:]),
+                            "layer_id": (
+                                int(match.group(1))
+                                if match and match.group(1) is not None
+                                else 0
+                            ),
+                            "sector_id": int(match.group(2)),
                             "target_id": target_id,
                             "visit_index": current_sector_index,
                         }
                     )
+                if goal:
+                    event = {
+                        "time": round(timestamp, 3),
+                        "layer_id": int(goal.group(1)),
+                        "sector_id": int(goal.group(2)),
+                        "target_id": goal.group(3),
+                        "position": [
+                            float(goal.group(4)),
+                            float(goal.group(5)),
+                            float(goal.group(6)),
+                        ],
+                    }
+                    if "VERTICAL_ASCENT" in event["target_id"]:
+                        ascent_targets.append(event)
+                    elif event["target_id"].startswith("LAYER_TRANSITION_"):
+                        layer_transition_targets.append(event)
+                    elif event["target_id"].startswith("RETURN_"):
+                        return_egress_targets.append(event)
 
     sector_visits = []
     for target in sector_targets:
@@ -319,33 +435,92 @@ def audit(
         ).items()
         if count > 1
     ]
-    closed_lap_count = 0
-    closed_lap_valid = False
-    if sector_visits:
-        ids = [item["sector_id"] for item in sector_visits]
-        start_sector = ids[0]
-        cursor = 0
-        while cursor + 8 < len(ids):
-            expected = [
-                (start_sector + offset) % 8 for offset in range(8)
-            ] + [start_sector]
-            if ids[cursor:cursor + 9] != expected:
-                break
-            closed_lap_count += 1
-            cursor += 8
-        closed_lap_valid = (
-            closed_lap_count >= 1 and cursor == len(ids) - 1
+    visits_by_layer = defaultdict(list)
+    for item in sector_visits:
+        visits_by_layer[item.get("layer_id", 0)].append(item)
+    expected_sector_sequence = [3, 4, 5, 6, 7, 0, 1, 2, 3]
+    closed_layers = []
+    for layer_id, visits in sorted(visits_by_layer.items()):
+        ids = [item["sector_id"] for item in visits]
+        if ids == expected_sector_sequence:
+            closed_layers.append(layer_id)
+    closed_lap_count = len(closed_layers)
+    closed_lap_valid = closed_layers == [0, 1]
+
+    def unique_goal_positions(events):
+        unique = []
+        for event in events:
+            if not unique or unique[-1]["target_id"] != event["target_id"]:
+                unique.append(event)
+        return unique
+
+    ascent_targets = unique_goal_positions(ascent_targets)
+    layer_transition_targets = unique_goal_positions(
+        layer_transition_targets
+    )
+    ascent_heights = [round(item["position"][2], 2) for item in ascent_targets]
+    ascent_xy = {
+        (round(item["position"][0], 2), round(item["position"][1], 2))
+        for item in ascent_targets
+    }
+    vertical_ascent_valid = (
+        ascent_heights == [10.0, 18.0, 26.0] and len(ascent_xy) == 1
+    )
+    transition_heights = [
+        round(item["position"][2], 2) for item in layer_transition_targets
+    ]
+    transition_xy = {
+        (round(item["position"][0], 2), round(item["position"][1], 2))
+        for item in layer_transition_targets
+    }
+    layer_transition_valid = (
+        transition_heights == [24.0, 22.0] and len(transition_xy) == 1
+    )
+    ascent_xy_error = None
+    if ascent_targets and ascent_odom_positions:
+        reference = np.array(ascent_targets[0]["position"][:2])
+        ascent_xy_error = max(
+            float(np.linalg.norm(position[:2] - reference))
+            for position in ascent_odom_positions
         )
+    transition_xy_error = None
+    if layer_transition_targets and transition_odom_positions:
+        reference = np.array(layer_transition_targets[0]["position"][:2])
+        transition_xy_error = max(
+            float(np.linalg.norm(position[:2] - reference))
+            for position in transition_odom_positions
+        )
+    return_target_ids = [item["target_id"] for item in return_egress_targets]
+    return_gate = next(
+        (
+            item
+            for item in return_egress_targets
+            if item["target_id"].startswith("RETURN_GATE_")
+        ),
+        None,
+    )
+    return_overhead = next(
+        (
+            item
+            for item in return_egress_targets
+            if item["target_id"] == "RETURN_HOME_OVERHEAD"
+        ),
+        None,
+    )
+    return_home_radial_valid = (
+        any("_RADIAL" in target_id for target_id in return_target_ids)
+        and any("_ARC_" in target_id for target_id in return_target_ids)
+        and return_gate is not None
+        and return_overhead is not None
+        and math.hypot(
+            return_gate["position"][0] - return_overhead["position"][0],
+            return_gate["position"][1] - return_overhead["position"][1],
+        )
+        < 3.0
+    )
     mission_state_names = [event["state"] for event in mission_states]
     bridge_state_names = [event["state"] for event in bridge_states]
-    normal_return_preferred = (
-        "NORMAL_RETURN" in mission_state_names
-        and (
-            "RETURN_EGRESS" not in mission_state_names
-            or mission_state_names.index("NORMAL_RETURN")
-            < mission_state_names.index("RETURN_EGRESS")
-        )
-    )
+    return_egress_selected = "RETURN_EGRESS" in mission_state_names
     home_hover_before_landing = (
         "HOME_HOVER" in bridge_state_names
         and "LANDING" in bridge_state_names
@@ -377,13 +552,32 @@ def audit(
         "mission_states": mission_states,
         "bridge_states": bridge_states,
         "entry_gates": entry_gates,
+        "fixed_entry_gate_valid": (
+            len({item["id"] for item in entry_gates}) == 1
+            and bool(entry_gates)
+            and entry_gates[0]["id"] == "ENTRY_GATE_s3"
+        ),
+        "ascent_targets": ascent_targets,
+        "vertical_ascent_valid": vertical_ascent_valid,
+        "vertical_ascent_actual_max_xy_error": ascent_xy_error,
+        "layer_transition_targets": layer_transition_targets,
+        "layer_transition_valid": layer_transition_valid,
+        "layer_transition_actual_max_xy_error": transition_xy_error,
+        "tower_facing_yaw_error": {
+            "count": len(tower_yaw_errors),
+            "maximum": max(tower_yaw_errors) if tower_yaw_errors else None,
+            "p95": percentile(tower_yaw_errors, 95.0),
+        },
         "sector_targets": sector_targets,
         "sector_visits": sector_visits,
         "unique_sector_ids": unique_sector_ids,
         "repeated_sector_ids": repeated_sector_ids,
         "closed_lap_count": closed_lap_count,
+        "closed_layers": closed_layers,
         "closed_lap_valid": closed_lap_valid,
-        "normal_return_preferred": normal_return_preferred,
+        "return_egress_selected": return_egress_selected,
+        "return_egress_targets": return_egress_targets,
+        "return_home_radial_valid": return_home_radial_valid,
         "home_hover_before_landing": home_hover_before_landing,
         "current_sector_events": current_sector_events,
         "cancel_count": cancel_count,
@@ -452,7 +646,22 @@ def audit(
         and final_extended["landed_state"] == 1,
         "no_missing_required_topics": not missing_topics,
         "closed_lap_completed": closed_lap_valid,
-        "normal_return_precedes_fallback": normal_return_preferred,
+        "fixed_entry_gate": result["fixed_entry_gate_valid"],
+        "fixed_xy_vertical_ascent": vertical_ascent_valid,
+        "actual_vertical_ascent_xy_stable": (
+            ascent_xy_error is not None and ascent_xy_error < 0.5
+        ),
+        "fixed_xy_layer_transition": layer_transition_valid,
+        "actual_layer_transition_xy_stable": (
+            transition_xy_error is not None and transition_xy_error < 0.5
+        ),
+        "tower_facing_yaw_stable": (
+            bool(tower_yaw_errors)
+            and percentile(tower_yaw_errors, 95.0) < 0.35
+        ),
+        "tower_exterior_return_egress": (
+            return_egress_selected and return_home_radial_valid
+        ),
         "home_hover_precedes_auto_land": home_hover_before_landing,
         "no_planner_collision_or_emergency": not planner_flag_counts,
         "no_sustained_tracking_error": (

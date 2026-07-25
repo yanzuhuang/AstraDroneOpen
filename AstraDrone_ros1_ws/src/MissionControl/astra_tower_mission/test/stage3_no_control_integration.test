@@ -9,6 +9,7 @@
     <param name="tower/collision_radius" value="2.0"/>
     <param name="mission/radius" value="8.0"/>
     <param name="mission/inspection_height" value="5.0"/>
+    <rosparam param="mission/inspection_heights">[5.0, 3.0]</rosparam>
     <param name="mission/transit_height" value="4.0"/>
     <param name="mission/minimum_height" value="2.0"/>
     <param name="mission/maximum_height" value="10.0"/>
@@ -21,9 +22,13 @@
     <param name="mission/inspection_laps" value="1"/>
     <param name="entry_gate/minimum_radius" value="9.0"/>
     <param name="entry_gate/maximum_radius" value="16.0"/>
+    <param name="entry_gate/radius" value="11.0"/>
+    <param name="entry_gate/height" value="5.0"/>
     <param name="entry_gate/maximum_segment_length" value="6.0"/>
     <param name="staging/height" value="4.0"/>
     <param name="staging/climb_height_step" value="1.0"/>
+    <rosparam param="staging/ascent_step_heights">[5.0]</rosparam>
+    <rosparam param="layer_transition/step_heights">[3.0]</rosparam>
     <param name="coverage/unknown_ratio_limit" value="0.90"/>
     <param name="coverage/wait_timeout" value="2.0"/>
     <param name="recovery/recovery_height" value="7.0"/>

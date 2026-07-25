@@ -9,7 +9,7 @@ import rostest
 import sensor_msgs.point_cloud2 as point_cloud2
 from astra_custom_msgs.msg import PlannerStatus
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import PositionTarget
+from mavros_msgs.msg import PositionTarget, State
 from nav_msgs.msg import Odometry
 from quadrotor_msgs.msg import PositionCommand
 from sensor_msgs.msg import PointCloud2
@@ -36,6 +36,8 @@ class Stage3NoControlIntegration(unittest.TestCase):
         self.resume_calls = 0
         self.tracking_disable_calls = 0
         self.recovery_goal_heights = []
+        self.ascent_positions = []
+        self.layer_transition_positions = []
         self.face_tower_modes = []
         self.mavros_setpoints = 0
         self.position = [12.0, 0.0, 4.0]
@@ -48,6 +50,8 @@ class Stage3NoControlIntegration(unittest.TestCase):
             "/grid_map/occupancy_inflate", PointCloud2, queue_size=2)
         self.bridge_state_pub = rospy.Publisher(
             "/ego_mavros_bridge/state", String, queue_size=2, latch=True)
+        self.mavros_state_pub = rospy.Publisher(
+            "/mavros/state", State, queue_size=2, latch=True)
         self.command_pub = rospy.Publisher(
             "/planning/pos_cmd", PositionCommand, queue_size=10)
         self.status_pub = rospy.Publisher(
@@ -111,6 +115,18 @@ class Stage3NoControlIntegration(unittest.TestCase):
                     return
             if state == "RECOVERING":
                 self.recovery_goal_heights.append(message.pose.position.z)
+            if state == "SEGMENTED_CLIMB":
+                self.ascent_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
+            if state == "LAYER_TRANSITION":
+                self.layer_transition_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
             # After ENTRY_GATE succeeds, hold the first sector
             # target away from odom so a real PlannerStatus failure event
             # drives the separate HOLD/R1/R2 chain.
@@ -188,6 +204,12 @@ class Stage3NoControlIntegration(unittest.TestCase):
                                                      occupancy_points)
         self.occupancy_pub.publish(occupancy)
         self.bridge_state_pub.publish(String(data=bridge_state))
+        mavros_state = State()
+        mavros_state.header.stamp = now
+        mavros_state.connected = True
+        mavros_state.armed = True
+        mavros_state.mode = "OFFBOARD"
+        self.mavros_state_pub.publish(mavros_state)
 
         command = PositionCommand()
         command.header = odom.header
@@ -228,10 +250,26 @@ class Stage3NoControlIntegration(unittest.TestCase):
             self.assertGreaterEqual(self.tracking_disable_calls, 2)
             self.assertGreaterEqual(self.resume_calls, 1)
             self.assertEqual(self.return_calls, 1)
-            self.assertIn("NORMAL_RETURN", self.states)
-            self.assertNotIn("RETURN_EGRESS", self.states)
+            self.assertIn("RETURN_EGRESS", self.states)
+            self.assertNotIn("NORMAL_RETURN", self.states)
+            self.assertIn("LAYER_TRANSITION", self.states)
+            self.assertEqual(self.states.count("STAGING_POINT"), 1)
             self.assertEqual(self.sector_failure_goal_count, 2)
             self.assertEqual(len(self.recovery_goal_heights), 0)
+            self.assertEqual(
+                [round(item[2], 2) for item in self.ascent_positions],
+                [5.0],
+            )
+            self.assertEqual(
+                [round(item[2], 2)
+                 for item in self.layer_transition_positions],
+                [3.0],
+            )
+            self.assertEqual(
+                len({(round(item[0], 3), round(item[1], 3))
+                     for item in self.layer_transition_positions}),
+                1,
+            )
             self.assertIn(True, self.face_tower_modes)
             self.assertEqual(self.mavros_setpoints, 0)
 
