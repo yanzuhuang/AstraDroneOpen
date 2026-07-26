@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>astra_swarm_bringup</name>
+  <version>0.1.0</version>
+  <description>Unified dual PX4, MAVROS, FAST-LIO, EGO and swarm bringup.</description>
+  <maintainer email="maintainer@example.com">AstraDroneOpen Maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>mavros_msgs</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>astra_swarm_manager</exec_depend>
+  <exec_depend>astra_swarm_perception</exec_depend>
+  <exec_depend>astra_swarm_safety</exec_depend>
+  <exec_depend>astra_swarm_tf</exec_depend>
+  <exec_depend>astra_tower_mission</exec_depend>
+  <exec_depend>ego_gazebo_bridge</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>px4</exec_depend>
+  <exec_depend>rviz</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+</package>

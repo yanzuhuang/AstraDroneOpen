@@ -1,0 +1,66 @@
+<launch>
+  <arg name="gui" default="true"/>
+  <arg name="world" default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
+
+  <!-- PX4 rcS searches PATH for px4-rc.params after applying the airframe and
+       before starting EKF2. This keeps the reboot-required external-vision
+       height contract in the repository without modifying external PX4. -->
+  <env name="PATH"
+       value="$(find astra_swarm_bringup)/config:$(optenv PATH)"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="paused" value="false"/>
+    <arg name="verbose" value="false"/>
+  </include>
+
+  <group ns="uav1">
+    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+      <arg name="ID" value="0"/>
+      <arg name="vehicle" value="iris_mid360_0"/>
+      <arg name="x" value="0.0"/>
+      <arg name="y" value="0.0"/>
+      <arg name="z" value="0.06"/>
+      <arg name="mavlink_udp_port" value="14560"/>
+      <arg name="mavlink_tcp_port" value="4560"/>
+      <arg name="gst_udp_port" value="5600"/>
+      <arg name="video_uri" value="5600"/>
+      <arg name="mavlink_cam_udp_port" value="14530"/>
+      <arg name="interactive" value="false"/>
+    </include>
+    <include file="$(find mavros)/launch/px4.launch">
+      <arg name="fcu_url" value="udp://:14540@localhost:14580"/>
+      <arg name="gcs_url" value=""/>
+      <arg name="tgt_system" value="1"/>
+      <arg name="tgt_component" value="1"/>
+    </include>
+    <!-- Feed each estimator through its namespaced pose input. TF remains
+         available to ROS consumers, but MAVROS does not race a second TF
+         listener against two high-rate FAST-LIO trees. -->
+    <param name="mavros/vision_pose/tf/listen" value="false"/>
+  </group>
+
+  <group ns="uav2">
+    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+      <arg name="ID" value="1"/>
+      <arg name="vehicle" value="iris_mid360_1"/>
+      <arg name="x" value="2.0"/>
+      <arg name="y" value="0.0"/>
+      <arg name="z" value="0.06"/>
+      <arg name="mavlink_udp_port" value="14561"/>
+      <arg name="mavlink_tcp_port" value="4561"/>
+      <arg name="gst_udp_port" value="5601"/>
+      <arg name="video_uri" value="5601"/>
+      <arg name="mavlink_cam_udp_port" value="14531"/>
+      <arg name="interactive" value="false"/>
+    </include>
+    <include file="$(find mavros)/launch/px4.launch">
+      <arg name="fcu_url" value="udp://:14541@localhost:14581"/>
+      <arg name="gcs_url" value=""/>
+      <arg name="tgt_system" value="2"/>
+      <arg name="tgt_component" value="1"/>
+    </include>
+    <param name="mavros/vision_pose/tf/listen" value="false"/>
+  </group>
+</launch>

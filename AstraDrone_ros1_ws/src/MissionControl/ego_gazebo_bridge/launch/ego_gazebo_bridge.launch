@@ -15,6 +15,9 @@
   <arg name="mavros_frame" default="map"/>
   <arg name="odom_topic" default="/Odometry"/>
   <arg name="cloud_topic" default="/cloud_registered"/>
+  <arg name="position_command_topic" default="/planning/pos_cmd"/>
+  <arg name="planner_goal_topic" default="/planning/goal"/>
+  <arg name="traj_start_trigger_topic" default="/traj_start_trigger"/>
   <arg name="bridge_cloud_topic" default="$(arg cloud_topic)"/>
   <arg name="ego_cloud_topic" default="$(arg cloud_topic)"/>
   <arg name="filter_ground_cloud" default="false"/>
@@ -104,7 +107,7 @@
   </node>
 
   <node pkg="ego_planner" type="traj_server" name="traj_server" output="screen">
-    <remap from="/position_cmd" to="/planning/pos_cmd"/>
+    <remap from="/position_cmd" to="$(arg position_command_topic)"/>
     <remap from="/odom_world" to="$(arg odom_topic)"/>
     <param name="traj_server/time_forward" value="1.0"/>
     <param name="traj_server/frame_id" value="$(arg planning_frame)"/>
@@ -113,8 +116,8 @@
   <node pkg="waypoint_generator" type="waypoint_generator"
         name="waypoint_generator" output="screen">
     <remap from="~odom" to="$(arg odom_topic)"/>
-    <remap from="~goal" to="/planning/goal"/>
-    <remap from="~traj_start_trigger" to="/traj_start_trigger"/>
+    <remap from="~goal" to="$(arg planner_goal_topic)"/>
+    <remap from="~traj_start_trigger" to="$(arg traj_start_trigger_topic)"/>
     <param name="waypoint_type" value="manual-lonely-waypoint"/>
     <param name="frame_id" value="$(arg planning_frame)"/>
   </node>

@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>astra_swarm_perception</name>
+  <version>0.1.0</version>
+  <description>Peer-envelope filtering and optional world visualization cloud.</description>
+  <maintainer email="maintainer@example.com">AstraDroneOpen Maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>astra_swarm_msgs</depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+</package>

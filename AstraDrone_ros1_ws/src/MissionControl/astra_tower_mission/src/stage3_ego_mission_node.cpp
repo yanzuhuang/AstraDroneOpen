@@ -49,6 +49,7 @@ enum class MissionState {
   kEvaluate,
   kTargetLocked,
   kNavigate,
+  kWaitLayerPermission,
   kHolding,
   kRelocating,
   kRecovering,
@@ -71,6 +72,7 @@ const char* missionStateName(MissionState state) {
     case MissionState::kEvaluate: return "EVALUATING";
     case MissionState::kTargetLocked: return "TARGET_LOCKED";
     case MissionState::kNavigate: return "NAVIGATING";
+    case MissionState::kWaitLayerPermission: return "WAIT_TRANSITION_PERMISSION";
     case MissionState::kHolding: return "HOLDING";
     case MissionState::kRelocating: return "RELOCATING";
     case MissionState::kRecovering: return "RECOVERING";
@@ -308,6 +310,17 @@ class Stage3EgoMissionNode {
                                      "/ego_mavros_bridge/return_home");
     private_node_.param<std::string>("services/land", land_service_,
                                      "/ego_mavros_bridge/land");
+    private_node_.param("coordination/require_transition_permission",
+                        require_transition_permission_, false);
+    private_node_.param("coordination/require_landing_permission",
+                        require_landing_permission_, false);
+    private_node_.param<std::string>(
+        "coordination/transition_permission_topic",
+        transition_permission_topic_,
+        "/tower_mission/transition_permission");
+    private_node_.param<std::string>(
+        "coordination/landing_permission_topic",
+        landing_permission_topic_, "/tower_mission/landing_permission");
 
     private_node_.param<std::string>("tower/name", route_.tower_name,
                                      "radio_tower");
@@ -762,6 +775,16 @@ class Stage3EgoMissionNode {
     extended_state_sub_ = node_.subscribe(
         mavros_extended_state_topic_, 10,
         &Stage3EgoMissionNode::extendedStateCallback, this);
+    if (require_transition_permission_) {
+      transition_permission_sub_ = node_.subscribe(
+          transition_permission_topic_, 5,
+          &Stage3EgoMissionNode::transitionPermissionCallback, this);
+    }
+    if (require_landing_permission_) {
+      landing_permission_sub_ = node_.subscribe(
+          landing_permission_topic_, 5,
+          &Stage3EgoMissionNode::landingPermissionCallback, this);
+    }
     goal_pub_ = node_.advertise<geometry_msgs::PoseStamped>(goal_topic_, 1);
     state_pub_ = node_.advertise<std_msgs::String>(state_topic_, 5, true);
     target_pub_ = node_.advertise<geometry_msgs::PoseStamped>(target_topic_, 1,
@@ -802,6 +825,14 @@ class Stage3EgoMissionNode {
         !std::isfinite(msg->pose.pose.position.y) ||
         !std::isfinite(msg->pose.pose.position.z)) return;
     odom_ = *msg; have_odom_ = true; odom_received_ = ros::Time::now();
+  }
+
+  void transitionPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    transition_permission_ = msg->data;
+  }
+
+  void landingPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    landing_permission_ = msg->data;
   }
 
   void commandCallback(const quadrotor_msgs::PositionCommand::ConstPtr& msg) {
@@ -2983,11 +3014,19 @@ class Stage3EgoMissionNode {
             ++completed_layer_count_;
             if (current_layer_visit_index_ + 1U <
                 layer_visit_sequence_.size()) {
-              std::string transition_reason;
-              if (!startLayerTransition(now, &transition_reason)) {
-                layer_transition_failure_pending_ = true;
-                layer_transition_retry_pending_ = false;
-                requestHold(transition_reason);
+              if (require_transition_permission_ &&
+                  !transition_permission_) {
+                requestTracking(false);
+                transition(MissionState::kWaitLayerPermission,
+                           "closed layer complete at transition anchor; "
+                           "waiting for swarm interlock");
+              } else {
+                std::string transition_reason;
+                if (!startLayerTransition(now, &transition_reason)) {
+                  layer_transition_failure_pending_ = true;
+                  layer_transition_retry_pending_ = false;
+                  requestHold(transition_reason);
+                }
               }
             } else if (startExitGate(
                            now,
@@ -3044,6 +3083,15 @@ class Stage3EgoMissionNode {
         } else if (now - goal_sent_ > ros::Duration(goal_timeout_)) {
           sector_retry_pending_ = true;
           requestHold("planner_unreachable attempt: sector target timeout");
+        }
+      }
+    } else if (state_ == MissionState::kWaitLayerPermission) {
+      if (!require_transition_permission_ || transition_permission_) {
+        std::string transition_reason;
+        if (!startLayerTransition(now, &transition_reason)) {
+          layer_transition_failure_pending_ = true;
+          layer_transition_retry_pending_ = false;
+          requestHold(transition_reason);
         }
       }
     } else if (state_ == MissionState::kLayerTransition) {
@@ -3331,7 +3379,11 @@ class Stage3EgoMissionNode {
       }
     } else if (state_ == MissionState::kReturnHome) {
       if (bridge_state_ == "HOME_HOVER") {
-        if (landing_requested_time_.isZero()) {
+        if (require_landing_permission_ && !landing_permission_) {
+          ROS_INFO_THROTTLE(
+              2.0,
+              "[STAGE3_TASK] HOME_HOVER: waiting for swarm landing permission");
+        } else if (landing_requested_time_.isZero()) {
           if (!requestAutoLandAtHome(now) &&
               now - bridge_state_entered_ >=
                   ros::Duration(coverage_wait_timeout_)) {
@@ -3486,7 +3538,8 @@ class Stage3EgoMissionNode {
   ros::NodeHandle node_, private_node_;
   ros::Subscriber odom_sub_, command_sub_, cloud_sub_, occupancy_sub_,
       planner_status_sub_, bridge_state_sub_, fcu_state_sub_,
-      extended_state_sub_;
+      extended_state_sub_, transition_permission_sub_,
+      landing_permission_sub_;
   ros::Publisher goal_pub_, state_pub_, target_pub_, sector_pub_, candidates_pub_, progress_pub_, face_tower_pub_, tower_center_pub_;
   ros::ServiceClient tracking_client_, cancel_client_, resume_client_, return_client_, land_client_;
   ros::Timer timer_;
@@ -3494,8 +3547,13 @@ class Stage3EgoMissionNode {
       bridge_state_topic_, goal_topic_, state_topic_, target_topic_, sector_topic_, candidates_topic_,
       progress_topic_, face_tower_topic_, tower_center_topic_,
       mavros_state_topic_, mavros_extended_state_topic_, tracking_service_,
-      cancel_service_, resume_service_, return_service_, land_service_;
+      cancel_service_, resume_service_, return_service_, land_service_,
+      transition_permission_topic_, landing_permission_topic_;
   bool enable_control_{false};
+  bool require_transition_permission_{false};
+  bool require_landing_permission_{false};
+  bool transition_permission_{false};
+  bool landing_permission_{false};
   bool use_configured_staging_xy_{false};
   bool prefer_safe_overflight_{true};
   double loop_rate_{20.0}, input_timeout_{0.7},

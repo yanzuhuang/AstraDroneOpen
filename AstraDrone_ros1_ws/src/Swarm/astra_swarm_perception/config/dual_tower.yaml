@@ -1,0 +1,3 @@
+safety_envelope_radius: 1.2
+peer_timeout: 1.0
+maximum_age: 1.0

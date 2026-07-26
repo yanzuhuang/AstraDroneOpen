@@ -148,6 +148,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("auto_track_on_command",
                              config_.auto_track_on_command,
                              config_.auto_track_on_command);
+  private_node_handle_.param("require_start_permission",
+                             config_.require_start_permission,
+                             config_.require_start_permission);
   private_node_handle_.param("tower_yaw_override_enabled",
                              config_.tower_yaw_override_enabled,
                              config_.tower_yaw_override_enabled);
@@ -289,6 +292,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("tower_yaw_mode_topic",
                              config_.tower_yaw_mode_topic,
                              config_.tower_yaw_mode_topic);
+  private_node_handle_.param("start_permission_topic",
+                             config_.start_permission_topic,
+                             config_.start_permission_topic);
   private_node_handle_.getParam("control_topics/position",
                                 config_.position_control_topics);
   private_node_handle_.getParam("control_topics/raw_local",
@@ -410,6 +416,11 @@ void EgoMavrosBridge::setupRosInterfaces() {
         config_.tower_yaw_mode_topic, 1,
         &EgoMavrosBridge::towerYawModeCallback, this);
   }
+  if (config_.require_start_permission) {
+    start_permission_subscriber_ = node_handle_.subscribe<std_msgs::Bool>(
+        config_.start_permission_topic, 5,
+        &EgoMavrosBridge::startPermissionCallback, this);
+  }
 
   debug_setpoint_publisher_ =
       private_node_handle_.advertise<geometry_msgs::PoseStamped>(
@@ -457,6 +468,11 @@ void EgoMavrosBridge::extendedStateCallback(
   extended_state_ = *message;
   have_extended_state_ = true;
   last_extended_state_time_ = ros::Time::now();
+}
+
+void EgoMavrosBridge::startPermissionCallback(
+    const std_msgs::Bool::ConstPtr& message) {
+  start_permission_ = message->data;
 }
 
 void EgoMavrosBridge::mavrosPoseCallback(
@@ -1114,6 +1130,14 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
       std::string reason;
       if (baseInputsFresh(now, &reason) && !have_home_) {
         captureHomeIfSafe(&reason);
+      }
+      if (config_.require_start_permission && !start_permission_) {
+        ROS_INFO_THROTTLE(
+            2.0,
+            "[WAIT_INPUTS] flight inputs monitored; waiting for swarm "
+            "takeoff permission");
+        state_entered_time_ = now;
+        break;
       }
       if (flightPreflightValid(now, &reason)) {
         output_setpoint_ = home_pose_;

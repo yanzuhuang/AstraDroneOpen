@@ -52,6 +52,7 @@ struct BridgeConfig {
   bool enable_control{false};
   bool require_sim_time{true};
   bool auto_track_on_command{false};
+  bool require_start_permission{false};
   bool tower_yaw_override_enabled{false};
   double publish_rate{50.0};
   double prestream_duration{2.0};
@@ -106,6 +107,7 @@ struct BridgeConfig {
   std::string planning_cancel_topic{"/planning/cancel"};
   std::string tower_center_topic{"/tower_mission/selected_tower_center"};
   std::string tower_yaw_mode_topic{"/tower_mission/face_tower"};
+  std::string start_permission_topic{"/swarm/takeoff_permission"};
   std::vector<std::string> position_control_topics{
       "/mavros/setpoint_position/local",
       "/mavros/setpoint_position/global",
@@ -146,6 +148,7 @@ class EgoMavrosBridge {
   void towerCenterCallback(
       const geometry_msgs::PointStamped::ConstPtr& message);
   void towerYawModeCallback(const std_msgs::Bool::ConstPtr& message);
+  void startPermissionCallback(const std_msgs::Bool::ConstPtr& message);
 
   bool trackingService(std_srvs::SetBool::Request& request,
                        std_srvs::SetBool::Response& response);
@@ -209,6 +212,7 @@ class EgoMavrosBridge {
   ros::Subscriber goal_subscriber_;
   ros::Subscriber tower_center_subscriber_;
   ros::Subscriber tower_yaw_mode_subscriber_;
+  ros::Subscriber start_permission_subscriber_;
   ros::Publisher setpoint_publisher_;
   ros::Publisher debug_setpoint_publisher_;
   ros::Publisher state_publisher_;
@@ -257,6 +261,7 @@ class EgoMavrosBridge {
   bool tower_yaw_mode_{false};
   bool have_effective_yaw_{false};
   bool supervised_hold_{false};
+  bool start_permission_{false};
   TrajectoryGate trajectory_gate_;
 
   ros::Time last_fcu_state_time_;

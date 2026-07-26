@@ -1,0 +1,225 @@
+<launch>
+  <arg name="enable_control" default="false"/>
+  <arg name="start_sim" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="enable_cloud_fusion" default="false"/>
+  <arg name="rviz" default="false"/>
+  <param name="/use_sim_time" value="true"/>
+
+  <include if="$(arg start_sim)"
+           file="$(find astra_swarm_bringup)/launch/dual_px4_mavros.launch">
+    <arg name="gui" value="$(arg gui)"/>
+  </include>
+
+  <!-- Unified world to each vehicle-local control map. The planners remain
+       independent; only the swarm state is expressed in world coordinates. -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="world_to_uav1_map"
+        args="0 0 0 0 0 0 1 world uav1/map"/>
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="world_to_uav2_map"
+        args="2 0 0 0 0 0 1 world uav2/map"/>
+
+  <group ns="uav1">
+    <group>
+      <remap from="/livox/lidar" to="/uav0/livox/lidar"/>
+      <remap from="/livox/imu"
+             to="/iris_mid360_00/uav0/livox/imu"/>
+      <remap from="/Odometry" to="/uav1/fast_lio/Odometry_raw"/>
+      <remap from="/cloud_registered"
+             to="/uav1/fast_lio/cloud_registered_raw"/>
+      <remap from="/cloud_registered_body"
+             to="/uav1/fast_lio/cloud_registered_body_raw"/>
+      <remap from="/path" to="/uav1/fast_lio/path_raw"/>
+      <remap from="/Laser_map" to="/uav1/fast_lio/Laser_map_raw"/>
+      <remap from="/tf" to="/uav1/fast_lio/tf_raw"/>
+      <include file="$(find fast_lio)/launch/mapping_mid360.launch">
+        <arg name="rviz" value="false"/>
+      </include>
+    </group>
+
+    <node pkg="astra_swarm_tf" type="frame_adapter_node.py"
+          name="frame_adapter" output="screen" required="true">
+      <param name="frame_prefix" value="uav1"/>
+      <param name="odom_input" value="/uav1/fast_lio/Odometry_raw"/>
+      <param name="odom_output" value="/uav1/Odometry"/>
+      <param name="cloud_input"
+             value="/uav1/fast_lio/cloud_registered_raw"/>
+      <param name="cloud_output" value="/uav1/cloud_registered"/>
+      <param name="tf_input" value="/uav1/fast_lio/tf_raw"/>
+      <param name="tf_output" value="/tf"/>
+      <param name="mavros_pose_input"
+             value="/uav1/mavros/local_position/pose"/>
+      <param name="mavros_pose_output"
+             value="/uav1/mavros/local_position/pose_framed"/>
+      <param name="mavros_odom_output"
+             value="/uav1/mavros/odometry/out"/>
+    </node>
+
+    <node pkg="astra_swarm_perception" type="teammate_cloud_filter_node"
+          name="teammate_cloud_filter" output="screen" required="true">
+      <rosparam command="load"
+                file="$(find astra_swarm_perception)/config/dual_tower.yaml"/>
+      <param name="input_topic" value="/uav1/cloud_registered"/>
+      <param name="output_topic"
+             value="/uav1/cloud_registered_peer_filtered"/>
+      <param name="peer_state_topic" value="/uav2/swarm/state"/>
+      <param name="home_x" value="0.0"/>
+      <param name="home_y" value="0.0"/>
+      <param name="home_z" value="0.0"/>
+    </node>
+
+    <group ns="swarm">
+      <node pkg="astra_swarm_manager" type="swarm_state_publisher.py"
+            name="state_publisher" output="screen" required="true">
+        <param name="uav_id" value="1"/>
+        <param name="vehicle_namespace" value="/uav1"/>
+        <rosparam param="home_position">[0.0, 0.0, 0.0]</rosparam>
+        <param name="odom_topic" value="/uav1/Odometry"/>
+        <param name="target_topic"
+               value="/uav1/tower_mission/current_target"/>
+        <param name="mission_state_topic"
+               value="/uav1/tower_mission/state"/>
+        <param name="bridge_state_topic"
+               value="/uav1/ego_mavros_bridge/state"/>
+        <param name="mavros_state_topic" value="/uav1/mavros/state"/>
+        <param name="trajectory_prediction_horizon" value="4.0"/>
+        <param name="trajectory_prediction_period" value="0.25"/>
+        <param name="velocity_filter_alpha" value="0.25"/>
+        <param name="acceleration_filter_alpha" value="0.15"/>
+        <param name="maximum_prediction_speed" value="3.0"/>
+        <param name="maximum_prediction_acceleration" value="2.0"/>
+        <param name="heartbeat_timeout" value="1.0"/>
+      </node>
+    </group>
+  </group>
+
+  <group ns="uav2">
+    <group>
+      <remap from="/livox/lidar" to="/uav1/livox/lidar"/>
+      <remap from="/livox/imu"
+             to="/iris_mid360_11/uav1/livox/imu"/>
+      <remap from="/Odometry" to="/uav2/fast_lio/Odometry_raw"/>
+      <remap from="/cloud_registered"
+             to="/uav2/fast_lio/cloud_registered_raw"/>
+      <remap from="/cloud_registered_body"
+             to="/uav2/fast_lio/cloud_registered_body_raw"/>
+      <remap from="/path" to="/uav2/fast_lio/path_raw"/>
+      <remap from="/Laser_map" to="/uav2/fast_lio/Laser_map_raw"/>
+      <remap from="/tf" to="/uav2/fast_lio/tf_raw"/>
+      <include file="$(find fast_lio)/launch/mapping_mid360.launch">
+        <arg name="rviz" value="false"/>
+      </include>
+    </group>
+
+    <node pkg="astra_swarm_tf" type="frame_adapter_node.py"
+          name="frame_adapter" output="screen" required="true">
+      <param name="frame_prefix" value="uav2"/>
+      <param name="odom_input" value="/uav2/fast_lio/Odometry_raw"/>
+      <param name="odom_output" value="/uav2/Odometry"/>
+      <param name="cloud_input"
+             value="/uav2/fast_lio/cloud_registered_raw"/>
+      <param name="cloud_output" value="/uav2/cloud_registered"/>
+      <param name="tf_input" value="/uav2/fast_lio/tf_raw"/>
+      <param name="tf_output" value="/tf"/>
+      <param name="mavros_pose_input"
+             value="/uav2/mavros/local_position/pose"/>
+      <param name="mavros_pose_output"
+             value="/uav2/mavros/local_position/pose_framed"/>
+      <param name="mavros_odom_output"
+             value="/uav2/mavros/odometry/out"/>
+    </node>
+
+    <node pkg="astra_swarm_perception" type="teammate_cloud_filter_node"
+          name="teammate_cloud_filter" output="screen" required="true">
+      <rosparam command="load"
+                file="$(find astra_swarm_perception)/config/dual_tower.yaml"/>
+      <param name="input_topic" value="/uav2/cloud_registered"/>
+      <param name="output_topic"
+             value="/uav2/cloud_registered_peer_filtered"/>
+      <param name="peer_state_topic" value="/uav1/swarm/state"/>
+      <param name="home_x" value="2.0"/>
+      <param name="home_y" value="0.0"/>
+      <param name="home_z" value="0.0"/>
+    </node>
+
+    <group ns="swarm">
+      <node pkg="astra_swarm_manager" type="swarm_state_publisher.py"
+            name="state_publisher" output="screen" required="true">
+        <param name="uav_id" value="2"/>
+        <param name="vehicle_namespace" value="/uav2"/>
+        <rosparam param="home_position">[2.0, 0.0, 0.0]</rosparam>
+        <param name="odom_topic" value="/uav2/Odometry"/>
+        <param name="target_topic"
+               value="/uav2/tower_mission/current_target"/>
+        <param name="mission_state_topic"
+               value="/uav2/tower_mission/state"/>
+        <param name="bridge_state_topic"
+               value="/uav2/ego_mavros_bridge/state"/>
+        <param name="mavros_state_topic" value="/uav2/mavros/state"/>
+        <param name="trajectory_prediction_horizon" value="4.0"/>
+        <param name="trajectory_prediction_period" value="0.25"/>
+        <param name="velocity_filter_alpha" value="0.25"/>
+        <param name="acceleration_filter_alpha" value="0.15"/>
+        <param name="maximum_prediction_speed" value="3.0"/>
+        <param name="maximum_prediction_acceleration" value="2.0"/>
+        <param name="heartbeat_timeout" value="1.0"/>
+      </node>
+    </group>
+  </group>
+
+  <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+    <arg name="uav_ns" value="uav1"/>
+    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="planning_frame" value="uav1/camera_init"/>
+    <arg name="mavros_frame" value="uav1/map"/>
+    <arg name="inspection_top_height" value="34.0"/>
+    <arg name="tower_center_x" value="-10.0551"/>
+    <arg name="crane_center_x" value="2.7535"/>
+    <arg name="bridge_config"
+         value="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
+    <arg name="report_file" value="/tmp/astra_swarm_uav1.csv"/>
+  </include>
+
+  <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+    <arg name="uav_ns" value="uav2"/>
+    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="planning_frame" value="uav2/camera_init"/>
+    <arg name="mavros_frame" value="uav2/map"/>
+    <arg name="inspection_top_height" value="28.0"/>
+    <!-- UAV2 local map origin is world (2,0,0). -->
+    <arg name="tower_center_x" value="-12.0551"/>
+    <arg name="crane_center_x" value="0.7535"/>
+    <arg name="bridge_config"
+         value="$(find astra_swarm_bringup)/config/uav2_bridge.yaml"/>
+    <arg name="report_file" value="/tmp/astra_swarm_uav2.csv"/>
+  </include>
+
+  <node pkg="astra_swarm_safety" type="swarm_safety_node.py"
+        name="astra_swarm_safety" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find astra_swarm_safety)/config/dual_tower.yaml"/>
+  </node>
+  <node pkg="astra_swarm_bringup" type="px4_param_guard.py"
+        name="astra_swarm_px4_param_guard" output="screen" required="true">
+    <rosparam param="vehicle_namespaces">[/uav1, /uav2]</rosparam>
+    <param name="ekf2_hgt_ref" value="3"/>
+    <param name="ekf2_ev_ctrl" value="11"/>
+  </node>
+  <node pkg="astra_swarm_manager" type="swarm_manager_node.py"
+        name="astra_swarm_manager" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find astra_swarm_manager)/config/dual_tower.yaml"/>
+  </node>
+
+  <node if="$(arg enable_cloud_fusion)"
+        pkg="astra_swarm_perception" type="world_cloud_fusion_node"
+        name="world_cloud_fusion" output="screen">
+    <rosparam command="load"
+              file="$(find astra_swarm_perception)/config/dual_tower.yaml"/>
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz"
+        name="astra_swarm_rviz" output="screen"
+        args="-f world -d $(find astra_swarm_bringup)/config/dual_tower.rviz"/>
+</launch>

@@ -1,0 +1,9 @@
+#!/bin/sh
+#
+# Simulation-only external-vision estimator contract for both swarm PX4
+# instances. PX4 rcS sources this file after the vehicle airframe and before
+# EKF2 starts, which is required for the reboot-required height reference.
+
+param set EKF2_HGT_REF 3
+param set EKF2_EV_CTRL 11
+param set EKF2_GPS_CTRL 0
