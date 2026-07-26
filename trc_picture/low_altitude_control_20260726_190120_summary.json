@@ -1,0 +1,80 @@
+{
+  "world_path": "/home/yanzu/AstraDroneOpen/simulation/astra_gazebo_worlds/worksite.world",
+  "world_sha256": "30d66767bf74df347c92381fe0e6e33e7bb2de6f4658f315606ccde7ff0fa855",
+  "world_cylinders": [
+    {
+      "name": "moving_cylinder",
+      "x": 1.06603,
+      "y": 7.1393,
+      "z": 2.05,
+      "radius": 0.3
+    },
+    {
+      "name": "moving_cylinder_0",
+      "x": -0.462983,
+      "y": 3.62225,
+      "z": 2.05,
+      "radius": 0.3
+    },
+    {
+      "name": "moving_cylinder_1",
+      "x": -6.20012,
+      "y": 7.22345,
+      "z": 2.05015,
+      "radius": 0.3
+    }
+  ],
+  "tower_center": [
+    -10.0551,
+    19.7104
+  ],
+  "sample_count": 3638,
+  "duration_s": 479.39999999999964,
+  "final_state": "RETURN_HOME",
+  "actual_total_path_length_m": 133.8908833421451,
+  "ingress_actual_path_length_m": 9.701198187397093,
+  "ingress_planned_reference_length_m": 9.523068646604914,
+  "entry_gate_sector": 8,
+  "entry_gate_xyz": [
+    0.551502,
+    9.1038,
+    3.0
+  ],
+  "horizontal_path_was_available": true,
+  "vertical_escape_was_used": false,
+  "entry_actual_min_z_m": 3.04048,
+  "entry_actual_max_z_m": 3.20827,
+  "whole_flight_min_z_m": -0.0074622,
+  "whole_flight_max_z_m": 7.08062,
+  "maximum_ingress_replan_count": 0,
+  "entry_gate_reached": true,
+  "unique_orbit_target_count": 10,
+  "orbit_target_max_abs_z_error_m": 0.0,
+  "orbit_target_max_radius_error_m": 2.0,
+  "entry_velocity_yaw_mean_abs_error_deg": null,
+  "entry_velocity_yaw_p95_abs_error_deg": null,
+  "orbit_tower_yaw_mean_abs_error_deg": 1.8889729207563721,
+  "return_velocity_yaw_mean_abs_error_deg": null,
+  "maximum_observed_yaw_rate_deg_s": 122.79344986413243,
+  "closed_lap_completed": true,
+  "return_started": true,
+  "mission_done": true,
+  "mission_done_inferred_from_grounded_return": true,
+  "cylinder_gap_crossed": true,
+  "gap_pair": [
+    "moving_cylinder",
+    "moving_cylinder_0"
+  ],
+  "gap_crossing_xy": [
+    0.34082707097918435,
+    5.471181441483716
+  ],
+  "physical_surface_gap_m": 3.235038651261419,
+  "usable_gap_after_0_9m_each_side_m": 1.4350386512614188,
+  "crossing_minimum_surface_clearance_m": 1.5189389251777579,
+  "return_trace_sample_count": 439,
+  "return_mean_distance_to_ingress_m": 2.559726712638523,
+  "return_p95_distance_to_ingress_m": 7.571251656092009,
+  "return_reuse_ratio_within_1m": 0.489749430523918,
+  "return_basically_reused_ingress": false
+}

@@ -1,0 +1,38 @@
+# Bridge envelope for the independent 3 m low-altitude test.
+enable_control: false
+require_sim_time: true
+auto_track_on_command: false
+takeoff_height: 3.0
+return_height: 3.0
+takeoff_tolerance: 0.10
+hover_duration: 3.0
+# The 3-D fallback may climb over an obstacle, but it must never solve the
+# passage by diving into the near-ground band.
+min_relative_height: 2.0
+max_relative_height: 9.0
+max_horizontal_radius: 60.0
+cloud_timeout: 0.7
+planner_odom_timeout: 0.7
+command_timeout: 0.60
+fcu_state_timeout: 2.0
+extended_state_timeout: 2.0
+land_after_loss: 8.0
+alignment_position_tolerance: 0.75
+alignment_yaw_error_duration: 1.0
+virtual_ceil_height: 10.0
+planning_frame: camera_init
+mavros_frame: map
+command_topic: /planning/pos_cmd
+planner_odom_topic: /Odometry
+cloud_topic: /stage3_low/cloud_registered_filtered
+input_goal_topic: /move_base_simple/goal
+planner_goal_topic: /planning/goal
+setpoint_topic: /mavros/setpoint_raw/local
+planning_cancel_topic: /planning/cancel
+
+tower_yaw_override_enabled: true
+tower_camera_yaw_offset: 0.0
+forward_yaw_min_speed: 0.05
+tower_center_topic: /tower_mission/selected_tower_center
+tower_yaw_mode_topic: /tower_mission/face_tower
+max_yaw_rate: 0.5235987755982988

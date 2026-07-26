@@ -49,6 +49,68 @@ TEST(Stage3Planner, GoalInsideKnownObstacleIsRejected) {
   EXPECT_EQ(point.rejection_reason, "KNOWN_OBSTACLE_CLEARANCE");
 }
 
+TEST(Stage3Planner, LevelPathUsesLiveMapAndStaysAtConfiguredAltitude) {
+  geometry_msgs::Point start;
+  start.x = 0.0;
+  start.y = 0.0;
+  start.z = 3.0;
+  geometry_msgs::Point goal;
+  goal.x = 8.0;
+  goal.y = 0.0;
+  goal.z = 3.0;
+  std::vector<geometry_msgs::Point> obstacles;
+  for (double y = -1.2; y <= 1.2; y += 0.2) {
+    geometry_msgs::Point point;
+    point.x = 4.0;
+    point.y = y;
+    point.z = 3.0;
+    obstacles.push_back(point);
+  }
+  LevelPathConfig config;
+  config.additional_clearance = 0.4;
+  config.resolution = 0.2;
+  config.boundary_margin = 3.0;
+  config.maximum_segment_length = 2.0;
+  const LevelPathResult result =
+      planLevelPath(start, goal, obstacles, config);
+  ASSERT_TRUE(result.reachable) << result.reason;
+  ASSERT_GE(result.points.size(), 3U);
+  EXPECT_GT(result.occupied_cell_count, 0U);
+  bool bent_around_obstacle = false;
+  for (const auto& point : result.points) {
+    EXPECT_DOUBLE_EQ(point.z, 3.0);
+    bent_around_obstacle =
+        bent_around_obstacle || std::abs(point.y) > 1.6;
+  }
+  EXPECT_TRUE(bent_around_obstacle);
+  EXPECT_NEAR(result.points.front().x, start.x, 1.0e-9);
+  EXPECT_NEAR(result.points.back().x, goal.x, 1.0e-9);
+}
+
+TEST(Stage3Planner, LevelPathReportsNoHorizontalPassageThroughFullWall) {
+  geometry_msgs::Point start;
+  start.x = 0.0;
+  start.z = 3.0;
+  geometry_msgs::Point goal;
+  goal.x = 4.0;
+  goal.z = 3.0;
+  std::vector<geometry_msgs::Point> wall;
+  for (double y = -1.2; y <= 1.2; y += 0.1) {
+    geometry_msgs::Point point;
+    point.x = 2.0;
+    point.y = y;
+    point.z = 3.0;
+    wall.push_back(point);
+  }
+  LevelPathConfig config;
+  config.additional_clearance = 0.2;
+  config.resolution = 0.1;
+  config.boundary_margin = 1.0;
+  const LevelPathResult result = planLevelPath(start, goal, wall, config);
+  EXPECT_FALSE(result.reachable);
+  EXPECT_EQ(result.reason, "NO_LEVEL_PATH");
+}
+
 TEST(Stage3Planner, OrientedBoxUsesYawAndVerticalClearance) {
   StaticObstacle crane;
   crane.id = "crane";

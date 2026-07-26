@@ -351,234 +351,6 @@
       </link>
       <pose>10.3696 -24.5563 0 0 -0 0</pose>
     </model>
-    <model name='Oak_tree_5'>
-      <static>1</static>
-      <link name='link'>
-        <collision name='collision'>
-          <geometry>
-            <mesh>
-              <uri>model://Oak_tree/meshes/oak_tree.dae</uri>
-            </mesh>
-          </geometry>
-          <max_contacts>10</max_contacts>
-          <surface>
-            <contact>
-              <ode/>
-            </contact>
-            <bounce/>
-            <friction>
-              <torsional>
-                <ode/>
-              </torsional>
-              <ode/>
-            </friction>
-          </surface>
-        </collision>
-        <visual name='branch'>
-          <geometry>
-            <mesh>
-              <uri>model://Oak_tree/meshes/oak_tree.dae</uri>
-              <submesh>
-                <name>Branch</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <double_sided>1</double_sided>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Oak_tree/materials/scripts/</uri>
-              <uri>model://Oak_tree/materials/textures/</uri>
-              <name>OakTree/Branch</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Oak_tree/materials/textures/branch_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <visual name='bark'>
-          <geometry>
-            <mesh>
-              <uri>model://Oak_tree/meshes/oak_tree.dae</uri>
-              <submesh>
-                <name>Bark</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Oak_tree/materials/scripts/</uri>
-              <uri>model://Oak_tree/materials/textures/</uri>
-              <name>OakTree/Bark</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Oak_tree/materials/textures/bark_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <self_collide>0</self_collide>
-        <enable_wind>0</enable_wind>
-        <kinematic>0</kinematic>
-      </link>
-      <pose>28.518 -12.988 0 0 -0 0</pose>
-    </model>
-    <model name='Pine_Tree_3'>
-      <static>1</static>
-      <link name='link'>
-        <collision name='collision'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-            </mesh>
-          </geometry>
-          <max_contacts>10</max_contacts>
-          <surface>
-            <contact>
-              <ode/>
-            </contact>
-            <bounce/>
-            <friction>
-              <torsional>
-                <ode/>
-              </torsional>
-              <ode/>
-            </friction>
-          </surface>
-        </collision>
-        <visual name='branch'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-              <submesh>
-                <name>Branch</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <double_sided>1</double_sided>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Pine_Tree/materials/scripts/</uri>
-              <uri>model://Pine_Tree/materials/textures/</uri>
-              <name>PineTree/Branch</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Pine_Tree/materials/textures/branch_2_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <visual name='bark'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-              <submesh>
-                <name>Bark</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Pine_Tree/materials/scripts/</uri>
-              <uri>model://Pine_Tree/materials/textures/</uri>
-              <name>PineTree/Bark</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Pine_Tree/materials/textures/bark_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <self_collide>0</self_collide>
-        <enable_wind>0</enable_wind>
-        <kinematic>0</kinematic>
-      </link>
-      <pose>18.3644 -7.22322 0 0 -0 0</pose>
-    </model>
-    <model name='Pine_Tree_5'>
-      <static>1</static>
-      <link name='link'>
-        <collision name='collision'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-            </mesh>
-          </geometry>
-          <max_contacts>10</max_contacts>
-          <surface>
-            <contact>
-              <ode/>
-            </contact>
-            <bounce/>
-            <friction>
-              <torsional>
-                <ode/>
-              </torsional>
-              <ode/>
-            </friction>
-          </surface>
-        </collision>
-        <visual name='branch'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-              <submesh>
-                <name>Branch</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <double_sided>1</double_sided>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Pine_Tree/materials/scripts/</uri>
-              <uri>model://Pine_Tree/materials/textures/</uri>
-              <name>PineTree/Branch</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Pine_Tree/materials/textures/branch_2_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <visual name='bark'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-              <submesh>
-                <name>Bark</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Pine_Tree/materials/scripts/</uri>
-              <uri>model://Pine_Tree/materials/textures/</uri>
-              <name>PineTree/Bark</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Pine_Tree/materials/textures/bark_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <self_collide>0</self_collide>
-        <enable_wind>0</enable_wind>
-        <kinematic>0</kinematic>
-      </link>
-      <pose>4.71231 -14.3737 0 0 -0 0</pose>
-    </model>
     <model name='water_tower'>
       <static>1</static>
       <link name='link'>
@@ -616,10 +388,10 @@
       <pose>-18.3559 -29.7161 0 0 -0 0</pose>
     </model>
     <state world_name='default'>
-      <sim_time>10614 796000000</sim_time>
-      <real_time>44 715486095</real_time>
-      <wall_time>1784706168 624963267</wall_time>
-      <iterations>44613</iterations>
+      <sim_time>11360 279000000</sim_time>
+      <real_time>178 478305542</real_time>
+      <wall_time>1785058940 74108066</wall_time>
+      <iterations>173003</iterations>
       <model name='Oak_tree'>
         <pose>-10.7567 -7.4354 0 0 -0 0</pose>
         <scale>1 1 1</scale>
@@ -641,50 +413,20 @@
         </link>
       </model>
       <model name='Oak_tree_3'>
-        <pose>11.0897 -22.6832 0 0 -0 0</pose>
+        <pose>19.209 -21.327 0 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>11.0897 -22.6832 0 0 -0 0</pose>
-          <velocity>0 0 0 0 -0 0</velocity>
-          <acceleration>0 0 0 0 -0 0</acceleration>
-          <wrench>0 0 0 0 -0 0</wrench>
-        </link>
-      </model>
-      <model name='Oak_tree_5'>
-        <pose>21.3888 -13.2075 0 0 -0 0</pose>
-        <scale>1 1 1</scale>
-        <link name='link'>
-          <pose>21.3888 -13.2075 0 0 -0 0</pose>
-          <velocity>0 0 0 0 -0 0</velocity>
-          <acceleration>0 0 0 0 -0 0</acceleration>
-          <wrench>0 0 0 0 -0 0</wrench>
-        </link>
-      </model>
-      <model name='Pine_Tree_3'>
-        <pose>11.3847 -7.28731 0 0 -0 0</pose>
-        <scale>1 1 1</scale>
-        <link name='link'>
-          <pose>11.3847 -7.28731 0 0 -0 0</pose>
-          <velocity>0 0 0 0 -0 0</velocity>
-          <acceleration>0 0 0 0 -0 0</acceleration>
-          <wrench>0 0 0 0 -0 0</wrench>
-        </link>
-      </model>
-      <model name='Pine_Tree_5'>
-        <pose>4.71231 -14.3737 0 0 -0 0</pose>
-        <scale>1 1 1</scale>
-        <link name='link'>
-          <pose>4.71231 -14.3737 0 0 -0 0</pose>
+          <pose>19.209 -21.327 0 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
         </link>
       </model>
       <model name='Pine_Tree_6'>
-        <pose>10.609 -13.8439 0 0 -0 0</pose>
+        <pose>10.609 -11.4864 0 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>10.609 -13.8439 0 0 -0 0</pose>
+          <pose>10.609 -11.4864 0 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -710,6 +452,86 @@
           <wrench>0 0 0 0 -0 0</wrench>
         </link>
       </model>
+      <model name='moving_box'>
+        <pose>-3.71306 2.20823 1.55 1e-06 1e-06 -0.007284</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-3.71306 2.20823 1.55 1e-06 1e-06 -0.007284</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='moving_box_0'>
+        <pose>-2.55272 6.1001 1.60223 1e-06 1e-06 -0.007372</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-2.55272 6.1001 1.60223 1e-06 1e-06 -0.007372</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='moving_box_1'>
+        <pose>2.43443 2.09698 1.55 1e-06 1e-06 -0.006459</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>2.43443 2.09698 1.55 1e-06 1e-06 -0.006459</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='moving_box_2'>
+        <pose>3.85743 5.28404 1.49222 -1e-06 -1e-06 -0.00596</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>3.85743 5.28404 1.49222 -1e-06 -1e-06 -0.00596</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='moving_box_3'>
+        <pose>-6.21772 4.01413 1.55005 -1e-06 0.000156 -0.003969</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-6.21772 4.01413 1.55005 -1e-06 0.000156 -0.003969</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='moving_cylinder'>
+        <pose>1.06603 7.1393 2.05 0 1e-06 -0.01163</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>1.06603 7.1393 2.05 0 1e-06 -0.01163</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='moving_cylinder_0'>
+        <pose>-0.462983 3.62225 2.05 0 -2e-06 -0.114159</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-0.462983 3.62225 2.05 0 -2e-06 -0.114159</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='moving_cylinder_1'>
+        <pose>-6.20012 7.22345 2.05015 -0.000478 0.000198 -0.101848</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-6.20012 7.22345 2.05015 -0.000478 0.000198 -0.101848</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
       <model name='my_asphalt_plane'>
         <pose>-3.15809 -3.16301 0 0 -0 0</pose>
         <scale>1 1 1</scale>
@@ -721,13 +543,23 @@
         </link>
       </model>
       <model name='person_walking'>
-        <pose>2.97214 12.1274 0.05 -1e-06 -0 0.011668</pose>
+        <pose>2.97308 12.1274 0.049999 -2e-06 2e-06 0.033118</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>2.97214 12.1274 0.05 -1e-06 -0 0.011668</pose>
+          <pose>2.97308 12.1274 0.049999 -2e-06 2e-06 0.033118</pose>
           <velocity>0 0 0 0 -0 0</velocity>
-          <acceleration>-1.09759 -3.50849 2.40987 0.496854 -1.54034 -2.96207</acceleration>
-          <wrench>-87.8071 -280.679 192.789 0 -0 0</wrench>
+          <acceleration>0.933951 2.1446 -2.48527 -2.15408 0.98538 0.122167</acceleration>
+          <wrench>74.7161 171.568 -198.821 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='pulley_part'>
+        <pose>4.03877 15.6619 0.050024 0.000198 3.9e-05 2.9e-05</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>4.03877 15.6619 0.050024 0.000198 3.9e-05 2.9e-05</pose>
+          <velocity>0 -0 0.01 0 -0 0</velocity>
+          <acceleration>-1.37878 6.97671 24.655 2.63026 -1.51602 -5.9e-05</acceleration>
+          <wrench>-0.689391 3.48835 12.3275 0 -0 0</wrench>
         </link>
       </model>
       <model name='radio_tower'>
@@ -741,10 +573,10 @@
         </link>
       </model>
       <model name='telephone_pole'>
-        <pose>-24 19 -0.438872 0 -0 0</pose>
+        <pose>-21.958 19 -0.438872 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>-24 19 -0.438872 0 -0 0</pose>
+          <pose>-21.958 19 -0.438872 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -761,20 +593,20 @@
         </link>
       </model>
       <model name='telephone_pole_clone_0'>
-        <pose>-24 10 -0.448185 0 -0 0</pose>
+        <pose>-21.8672 10 -0.448185 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>-24 10 -0.448185 0 -0 0</pose>
+          <pose>-21.8672 10 -0.448185 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
         </link>
       </model>
       <model name='telephone_pole_clone_1'>
-        <pose>-24 28 -0.438872 0 -0 0</pose>
+        <pose>-22.0129 28 -0.438872 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>-24 28 -0.438872 0 -0 0</pose>
+          <pose>-22.0129 28 -0.438872 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -791,10 +623,10 @@
         </link>
       </model>
       <model name='water_tower'>
-        <pose>-6.40201 -18.7022 0 0 -0 0</pose>
+        <pose>6.29135 -17.758 0 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>-6.40201 -18.7022 0 0 -0 0</pose>
+          <pose>6.29135 -17.758 0 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -806,7 +638,7 @@
     </state>
     <gui fullscreen='0'>
       <camera name='user_camera'>
-        <pose>1.43351 -6.91816 8.7375 0 0.060055 1.43765</pose>
+        <pose>-0.147976 -10.0139 17.6439 0 0.8218 1.42288</pose>
         <view_controller>orbit</view_controller>
         <projection_type>perspective</projection_type>
       </camera>
@@ -1369,6 +1201,492 @@
         <kinematic>0</kinematic>
       </link>
       <pose>-21.0347 24.6252 -0.438872 0 -0 0</pose>
+    </model>
+    <model name='pulley_part'>
+      <link name='link'>
+        <inertial>
+          <pose>0 0 0.035145 0 -0 0</pose>
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.00191582</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>0.00191582</iyy>
+            <iyz>0</iyz>
+            <izz>0.00341991</izz>
+          </inertia>
+        </inertial>
+        <collision name='collision'>
+          <pose>0 0 0.035145 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.11696</radius>
+              <length>0.07029</length>
+            </cylinder>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <mesh>
+              <uri>model://pulley_part/meshes/pulley.dae</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <script>
+              <uri>model://arm_part/materials/scripts</uri>
+              <uri>model://arm_part/materials/textures</uri>
+              <name>ArmPart/Diffuse</name>
+            </script>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>4.03877 15.6619 0 0 -0 0</pose>
+    </model>
+    <model name='moving_box'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>15</mass>
+          <inertia>
+            <ixx>0.5</ixx>
+            <iyy>0.5</iyy>
+            <izz>0.5</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.9 1</ambient>
+            <diffuse>0.1 0.1 0.9 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-3.23572 2.21314 1.5 0 -0 0</pose>
+    </model>
+    <model name='moving_box_0'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>15</mass>
+          <inertia>
+            <ixx>0.5</ixx>
+            <iyy>0.5</iyy>
+            <izz>0.5</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.9 1</ambient>
+            <diffuse>0.1 0.1 0.9 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-3.43468 6.0229 1.5 0 -0 0</pose>
+    </model>
+    <model name='moving_box_1'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>15</mass>
+          <inertia>
+            <ixx>0.5</ixx>
+            <iyy>0.5</iyy>
+            <izz>0.5</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.9 1</ambient>
+            <diffuse>0.1 0.1 0.9 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>3.21245 2.1002 1.5 0 -0 0</pose>
+    </model>
+    <model name='moving_box_2'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>15</mass>
+          <inertia>
+            <ixx>0.5</ixx>
+            <iyy>0.5</iyy>
+            <izz>0.5</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.9 1</ambient>
+            <diffuse>0.1 0.1 0.9 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>3.31643 6.44097 1.5 0 -0 0</pose>
+    </model>
+    <model name='moving_cylinder'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>10</mass>
+          <inertia>
+            <ixx>0.1</ixx>
+            <iyy>0.1</iyy>
+            <izz>0.1</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <cylinder>
+              <radius>0.3</radius>
+              <length>4</length>
+            </cylinder>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <cylinder>
+              <radius>0.3</radius>
+              <length>4</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.9 0.1 0.1 1</ambient>
+            <diffuse>0.9 0.1 0.1 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>0.092927 6.32037 2 0 -0 0</pose>
+    </model>
+    <model name='moving_cylinder_0'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>10</mass>
+          <inertia>
+            <ixx>0.1</ixx>
+            <iyy>0.1</iyy>
+            <izz>0.1</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <cylinder>
+              <radius>0.3</radius>
+              <length>4</length>
+            </cylinder>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <cylinder>
+              <radius>0.3</radius>
+              <length>4</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.9 0.1 0.1 1</ambient>
+            <diffuse>0.9 0.1 0.1 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>0.011993 3.06451 2 0 -0 0</pose>
+    </model>
+    <model name='moving_cylinder_1'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>10</mass>
+          <inertia>
+            <ixx>0.1</ixx>
+            <iyy>0.1</iyy>
+            <izz>0.1</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <cylinder>
+              <radius>0.3</radius>
+              <length>4</length>
+            </cylinder>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <cylinder>
+              <radius>0.3</radius>
+              <length>4</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.9 0.1 0.1 1</ambient>
+            <diffuse>0.9 0.1 0.1 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-6.28611 7.19117 2 0 -0 0</pose>
+    </model>
+    <model name='moving_box_3'>
+      <static>1</static>
+      <link name='link'>
+        <inertial>
+          <mass>15</mass>
+          <inertia>
+            <ixx>0.5</ixx>
+            <iyy>0.5</iyy>
+            <izz>0.5</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+          <pose>0 0 0 0 -0 0</pose>
+        </inertial>
+        <collision name='collision'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <box>
+              <size>0.6 0.6 3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.9 1</ambient>
+            <diffuse>0.1 0.1 0.9 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-6.19053 4.02172 1.5 0 -0 0</pose>
     </model>
   </world>
 </sdf>

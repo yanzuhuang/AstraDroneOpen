@@ -170,6 +170,33 @@ struct ReturnEgressConfig {
   double minimum_goal_separation{0.5};
 };
 
+// A live-map, fixed-height path used only to establish whether a horizontal
+// ingress is available. The returned bends are local EGO goals, not a
+// pre-recorded avoidance route. If no path exists after bounded fresh-map
+// confirmations, the mission may release EGO to search in 3-D.
+struct LevelPathConfig {
+  double altitude{3.0};
+  double vertical_half_extent{0.7};
+  double additional_clearance{0.6};
+  double resolution{0.4};
+  double boundary_margin{6.0};
+  double maximum_segment_length{5.0};
+  std::size_t maximum_cell_count{250000U};
+};
+
+struct LevelPathResult {
+  bool reachable{false};
+  std::string reason;
+  std::vector<geometry_msgs::Point> points;
+  std::size_t occupied_cell_count{0U};
+};
+
+LevelPathResult planLevelPath(
+    const geometry_msgs::Point& start,
+    const geometry_msgs::Point& goal,
+    const std::vector<geometry_msgs::Point>& occupied_points,
+    const LevelPathConfig& config);
+
 std::vector<Sector> buildInspectionSectors(const RouteConfig& route,
                                             int sector_count,
                                             int layer_count,

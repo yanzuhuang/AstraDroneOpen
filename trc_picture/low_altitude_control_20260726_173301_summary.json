@@ -1,0 +1,23 @@
+{
+  "sample_count": 1654,
+  "duration_s": 172.29999999999927,
+  "final_state": "NAVIGATING",
+  "entry_sample_count": 515,
+  "horizontal_path_was_available": true,
+  "vertical_escape_was_used": true,
+  "horizontal_actual_max_abs_z_error_m": 0.2095600000000002,
+  "horizontal_planned_max_abs_z_error_m": 0.1383399999999999,
+  "entry_actual_min_z_m": 2.92524,
+  "entry_actual_max_z_m": 4.98832,
+  "entry_planned_min_z_m": 2.93871,
+  "entry_planned_max_z_m": 4.95403,
+  "maximum_ingress_replan_count": 4,
+  "entry_gate_reached": true,
+  "unique_orbit_target_count": 3,
+  "orbit_target_max_abs_z_error_m": 0.0,
+  "orbit_target_max_radius_error_m": 2.7951675253490293e-05,
+  "closed_lap_completed": false,
+  "return_started": false,
+  "mission_done": false,
+  "mission_done_inferred_from_grounded_return": false
+}
