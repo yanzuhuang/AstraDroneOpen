@@ -4,6 +4,113 @@
 Noetic、Gazebo Classic、PX4 SITL、MAVROS、FAST-LIO 和 EGO-Planner 单机仿真；
 不包含动态障碍预测、多机、相机检测、Cloud/QGIS、真机或 PX4/EGO 核心升级。
 
+## 当前正式入口：低空避障 `worksite.world`（2026-07-28）
+
+当前低空避障、ENTRY_GATE、绕塔、返航和降落统一使用：
+
+```text
+scripts/run_sh/stage3_low_altitude.sh
+```
+
+脚本默认且强制加载项目当前的：
+
+```text
+simulation/astra_gazebo_worlds/worksite.world
+```
+
+启动前确认没有旧的 Gazebo、PX4、MAVROS、FAST-LIO、EGO 或同名 tmux 会话。
+如果工作空间尚未构建，先按“环境准备”完成构建；已经存在两个 workspace 的
+`devel/setup.bash` 时，脚本会自动加载 ROS、仿真工作空间和主工作空间环境。
+
+### 实际起飞：打开 Gazebo 和 RViz
+
+```bash
+cd /home/yanzu/AstraDroneOpen
+source /opt/ros/noetic/setup.bash
+
+scripts/run_sh/stage3_low_altitude.sh \
+  --control \
+  --gui \
+  --rviz
+```
+
+参数含义：
+
+- `--control`：允许解锁、起飞至低空任务高度、执行避障/ENTRY_GATE/绕塔/返航
+  和降落；不带此参数时不会解锁或发布 MAVROS 控制 setpoint；
+- `--gui`：打开 Gazebo Classic 图形界面；
+- `--rviz`：启动 EGO bridge 的 RViz 配置，固定坐标系为规划 frame；
+- 不指定 `--world` 时使用当前 `worksite.world`，脚本拒绝替换为其他 world。
+
+启动脚本会通过 tmux 编排 PX4/Gazebo、FAST-LIO、证据 recorder 和任务集成
+窗口。默认会生成本轮 CSV 和 rosbag 到：
+
+```text
+/tmp/astra_stage3_low_evidence/
+```
+
+需要指定证据路径时可显式传入：
+
+```bash
+scripts/run_sh/stage3_low_altitude.sh \
+  --control --gui --rviz \
+  --report /tmp/astra_stage3_low_evidence/low_altitude.csv \
+  --bag /tmp/astra_stage3_low_evidence/low_altitude.bag
+```
+
+### 只检查链路：dry-run
+
+以下命令仍打开 Gazebo 和 RViz，但不解锁、不起飞：
+
+```bash
+cd /home/yanzu/AstraDroneOpen
+scripts/run_sh/stage3_low_altitude.sh --gui --rviz
+```
+
+### 查看日志和状态
+
+不使用旧脚本的 `--attach` 参数；启动后另开终端附着当前 tmux 会话：
+
+```bash
+tmux attach -t stage3_low_altitude
+```
+
+主要窗口为：
+
+```text
+px4_gazebo   fast_lio   recorder   integration
+```
+
+也可以单独查看关键状态：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/yanzu/AstraDroneOpen/simulation/sim_workspace/devel/setup.bash
+source /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws/devel/setup.bash
+
+rostopic echo /mavros/state
+rostopic echo /tower_mission/state
+rostopic echo /ego_mavros_bridge/state
+```
+
+完整任务应依次看到起飞、`ENTRY_GATE`、`NAVIGATING`、
+`GO_TO_EXIT_GATE`、`NORMAL_RETURN` 和 `DONE`；结束时应为
+`armed=false`、`ON_GROUND`。
+
+### 安全停止
+
+确认任务已经正常降落，或需要中止仿真时，另开终端执行：
+
+```bash
+cd /home/yanzu/AstraDroneOpen
+scripts/run_sh/stage3_low_altitude.sh --stop
+```
+
+该入口会先停止 recorder，再关闭本轮 tmux 仿真会话并完成 rosbag 收尾。
+
+> 本节是当前低空避障工作流。下文出现的 `stage3_ego.sh` 属于此前两层/历史
+> 阶段三验收记录；除非复现对应历史实验，否则不要用它替代本节入口。
+
 ## 2026-07-26 圈层切换、可循环巡检与直接返航（当前实现）
 
 ### 根因与修复

@@ -1,0 +1,6 @@
+低空避障已启动：control=false
+实际加载 world：/home/yanzu/AstraDroneOpen/simulation/astra_gazebo_worlds/worksite.world
+证据 CSV：/tmp/astra_stage3_low_evidence/dry_run_20260728_162652.csv
+证据 bag：/tmp/astra_stage3_low_evidence/dry_run_20260728_162652.bag
+查看日志：tmux attach -t stage3_low_altitude
+安全停止：/home/yanzu/AstraDroneOpen/scripts/run_sh/stage3_low_altitude.sh --stop

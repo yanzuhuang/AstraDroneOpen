@@ -111,6 +111,122 @@ TEST(Stage3Planner, LevelPathReportsNoHorizontalPassageThroughFullWall) {
   EXPECT_EQ(result.reason, "NO_LEVEL_PATH");
 }
 
+TEST(Stage3Planner, AlreadyInflatedMapIsNotProjectedAcrossHeightLayers) {
+  geometry_msgs::Point start;
+  start.z = 3.0;
+  geometry_msgs::Point goal;
+  goal.x = 4.0;
+  goal.z = 3.0;
+  std::vector<geometry_msgs::Point> overhead_wall;
+  for (double y = -2.0; y <= 2.0; y += 0.1) {
+    geometry_msgs::Point point;
+    point.x = 2.0;
+    point.y = y;
+    point.z = 3.5;
+    overhead_wall.push_back(point);
+  }
+  LevelPathConfig config;
+  config.vertical_half_extent = 0.2;
+  config.additional_clearance = 0.5;
+  config.resolution = 0.2;
+  config.boundary_margin = 1.0;
+  const LevelPathResult result =
+      planLevelPath(start, goal, overhead_wall, config);
+  ASSERT_TRUE(result.reachable) << result.reason;
+  EXPECT_EQ(result.occupied_cell_count, 0U);
+  EXPECT_NEAR(result.path_length, 4.0, 1.0e-9);
+}
+
+TEST(Stage3Planner, LevelPathPrefersSafeTowerSideAndKeepsExactGoal) {
+  geometry_msgs::Point start;
+  start.x = 0.0;
+  start.y = 0.0;
+  start.z = 3.0;
+  geometry_msgs::Point goal;
+  goal.x = 10.0;
+  goal.y = 0.0;
+  goal.z = 3.0;
+  std::vector<geometry_msgs::Point> obstacle;
+  for (double y = -1.2; y <= 1.2; y += 0.1) {
+    geometry_msgs::Point point;
+    point.x = 5.0;
+    point.y = y;
+    point.z = 3.0;
+    obstacle.push_back(point);
+  }
+  LevelPathConfig config;
+  config.additional_clearance = 0.4;
+  config.resolution = 0.2;
+  config.boundary_margin = 4.0;
+  config.use_tower_constraint = true;
+  config.tower_x = 5.0;
+  config.tower_y = -10.0;
+  config.tower_keep_out_radius = 1.0;
+  config.preferred_tower_radius = 8.0;
+  config.cost.tower_distance = 1.0;
+  const LevelPathResult result =
+      planLevelPath(start, goal, obstacle, config);
+  ASSERT_TRUE(result.reachable) << result.reason;
+  ASSERT_GE(result.points.size(), 3U);
+  EXPECT_LT(std::min_element(
+                result.points.begin(), result.points.end(),
+                [](const geometry_msgs::Point& left,
+                   const geometry_msgs::Point& right) {
+                  return left.y < right.y;
+                })
+                ->y,
+            -1.4);
+  EXPECT_NEAR(result.points.back().x, goal.x, 1.0e-9);
+  EXPECT_NEAR(result.points.back().y, goal.y, 1.0e-9);
+}
+
+TEST(Stage3Planner, LevelPathHasNoHistoryAcrossMapChanges) {
+  geometry_msgs::Point start;
+  start.x = 0.0;
+  start.z = 3.0;
+  geometry_msgs::Point goal;
+  goal.x = 8.0;
+  goal.z = 3.0;
+  geometry_msgs::Point obstacle;
+  obstacle.x = 4.0;
+  obstacle.z = 3.0;
+  LevelPathConfig config;
+  config.additional_clearance = 0.6;
+  config.resolution = 0.2;
+  config.boundary_margin = 2.0;
+  const LevelPathResult blocked =
+      planLevelPath(start, goal, {obstacle}, config);
+  ASSERT_TRUE(blocked.reachable) << blocked.reason;
+  const LevelPathResult clear = planLevelPath(start, goal, {}, config);
+  ASSERT_TRUE(clear.reachable) << clear.reason;
+  ASSERT_GE(clear.points.size(), 2U);
+  EXPECT_NEAR(clear.path_length, 8.0, 1.0e-9);
+  for (const auto& point : clear.points) {
+    EXPECT_NEAR(point.y, 0.0, 1.0e-9);
+  }
+}
+
+TEST(Stage3Planner, TowerKeepOutIsAHardConstraint) {
+  geometry_msgs::Point start;
+  start.x = -4.0;
+  start.z = 3.0;
+  geometry_msgs::Point goal;
+  goal.x = 4.0;
+  goal.z = 3.0;
+  LevelPathConfig config;
+  config.additional_clearance = 0.2;
+  config.resolution = 0.2;
+  config.boundary_margin = 4.0;
+  config.use_tower_constraint = true;
+  config.tower_keep_out_radius = 2.0;
+  config.preferred_tower_radius = 3.0;
+  const LevelPathResult result = planLevelPath(start, goal, {}, config);
+  ASSERT_TRUE(result.reachable) << result.reason;
+  for (const auto& point : result.points) {
+    EXPECT_GE(std::hypot(point.x, point.y), 2.0 - config.resolution);
+  }
+}
+
 TEST(Stage3Planner, OrientedBoxUsesYawAndVerticalClearance) {
   StaticObstacle crane;
   crane.id = "crane";

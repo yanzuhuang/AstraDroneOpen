@@ -40,27 +40,34 @@ mission:
 low_altitude:
   enabled: true
   height: 3.0
-  # Project all filtered obstacle returns that can intersect the vehicle at
-  # 3 m. The filtered cloud removes the ground band below 0.2 m; retaining
-  # the 0.2--5.8 m band keeps low boxes/cylinders consistent with the
-  # task-level 3-D endpoint clearance while still allowing a true horizontal
-  # passability decision.
-  vertical_half_extent: 2.8
+  # /grid_map/occupancy_inflate is already a 3-D vehicle-envelope map. Sample
+  # the requested flight plane with one voxel of vertical tolerance; projecting
+  # the old +/-2.8 m column onto 3 m duplicated vertical inflation and made
+  # overhead tree canopy look like a horizontal collision.
+  vertical_half_extent: 0.2
   # /grid_map/occupancy_inflate already contains EGO's 0.4 m vehicle
-  # inflation. Require a 0.7 m task-level margin so a grid path has one extra
-  # 0.2 m map cell beyond EGO's 0.5 m optimizer distance. This rejects
-  # marginal live-map channels while preserving about 1.0 m of usable width
-  # in the current cylinder gap; the vehicle radius is not added again.
-  additional_clearance: 0.7
+  # envelope. Add 0.5 m of operational margin, matching the optimizer's dist0
+  # without charging the vehicle radius a second time. At 0.2 m resolution
+  # this remains a conservative three-cell hard dilation.
+  additional_clearance: 0.5
   grid_resolution: 0.2
   boundary_margin: 8.0
+  # Retained only for offline reachability diagnostics. It is never used to
+  # split ENTRY_GATE or numbered waypoints into EGO mission goals.
   maximum_segment_length: 5.0
   altitude_tolerance: 0.35
   # Vertical escape requires distinct fresh-map no-path confirmations.
   no_path_confirmations: 3
   no_path_confirmation_period: 1.0
   maximum_ingress_replans: 12
-  maximum_orbit_replans: 12
+  # Safe cells are ranked by these generic live-map costs. Occupancy and the
+  # tower keep-out remain hard constraints independent of the weights.
+  path_score:
+    path_length_weight: 1.0
+    goal_deviation_weight: 0.03
+    tower_distance_weight: 0.08
+    turn_weight: 0.35
+    clearance_weight: 0.05
 
 entry_gate:
   # Existing map convention: 1=+X, 2=NE, 3=+Y, 4=NW, 5=-X, 6=SW,
@@ -77,6 +84,11 @@ entry_gate:
   # candidate clearance remains unchanged in stage3_ego.yaml.
   minimum_clearance: 1.0
   cloud_inflation: 0.4
+  # The subscribed map is already EGO-inflated. Use only the same 0.5 m
+  # operational margin for map points; cloud_inflation remains available for
+  # a raw-cloud fallback and for non-map coarse geometry.
+  map_points_are_inflated: true
+  map_additional_clearance: 0.5
   unknown_is_hard_constraint: false
   corridor_sample_step: 0.4
   clearance_weight: 0.2
@@ -121,19 +133,16 @@ coverage:
   sensor_max_elevation_deg: 52.2
 
 candidate:
-  # Every ENTRY_GATE and orbit waypoint remains exactly 3 m. Keep each
-  # nominal waypoint at the unchanged 12.5 m radius and exact 45 degree
-  # sector angle. If (and only if) fresh inflated occupancy rejects that
-  # endpoint, reuse the project's existing same-sector relocation envelope:
-  # the smallest radial/angle deviation that is actually clear wins. This is
-  # needed where the latest worksite tree canopy covers the full 270 degree
-  # radial line. No fixed obstacle-bypass route is encoded here, and
-  # chooseBestCandidate() always prefers the nominal point.
-  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0]
-  radius_offsets_m: [0.0, 2.0, 4.0]
+  # The eight numbered mission targets are immutable. Obstacles between them
+  # are handled by EGO local avoidance; the task layer does not relocate a
+  # numbered waypoint or replace it with an intermediate goal.
+  angle_offsets_deg: [0.0]
+  radius_offsets_m: [0.0]
   height_offsets_m: [0.0]
   minimum_clearance: 1.0
   cloud_inflation: 0.4
+  map_points_are_inflated: true
+  map_additional_clearance: 0.5
   corridor_sample_step: 0.4
   blocked_corridor_penalty: 6.0
   score_clearance_weight: 0.2
@@ -166,8 +175,8 @@ grid_map:
 
 # Preserve the validated EGO safety envelope while making every effective
 # clearance term explicit for this mode: 0.4 m occupancy inflation plus
-# 0.5 m optimizer clearance. The task-level gate deliberately adds one
-# 0.2 m grid-cell robustness margin; it does not add the vehicle radius twice.
+# 0.5 m optimizer/task clearance. The task consumes the already-inflated map
+# and never adds the vehicle radius twice.
 optimization:
   lambda_smooth: 1.0
   lambda_collision: 0.5
@@ -199,6 +208,7 @@ outputs:
   selected_tower_center: /tower_mission/selected_tower_center
   level_ingress_path: /tower_mission/level_ingress_path
   level_orbit_path: /tower_mission/level_orbit_path
+  mission_route: /tower_mission/mission_route
   altitude_policy: /tower_mission/altitude_policy
 
 services:

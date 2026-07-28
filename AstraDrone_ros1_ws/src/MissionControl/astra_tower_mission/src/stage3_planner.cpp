@@ -74,272 +74,6 @@ const char* sectorStateName(SectorState state) {
   return "UNKNOWN";
 }
 
-LevelPathResult planLevelPath(
-    const geometry_msgs::Point& start,
-    const geometry_msgs::Point& goal,
-    const std::vector<geometry_msgs::Point>& occupied_points,
-    const LevelPathConfig& config) {
-  LevelPathResult result;
-  const auto finitePoint = [](const geometry_msgs::Point& point) {
-    return std::isfinite(point.x) && std::isfinite(point.y) &&
-           std::isfinite(point.z);
-  };
-  if (!finitePoint(start) || !finitePoint(goal) ||
-      !std::isfinite(config.altitude) ||
-      !std::isfinite(config.vertical_half_extent) ||
-      !std::isfinite(config.additional_clearance) ||
-      !std::isfinite(config.resolution) ||
-      !std::isfinite(config.boundary_margin) ||
-      !std::isfinite(config.maximum_segment_length) ||
-      config.vertical_half_extent <= 0.0 ||
-      config.additional_clearance < 0.0 || config.resolution <= 0.0 ||
-      config.boundary_margin <= 0.0 ||
-      config.maximum_segment_length <= 0.0 ||
-      config.maximum_cell_count == 0U) {
-    result.reason = "INVALID_LEVEL_PATH_CONFIG";
-    return result;
-  }
-
-  const double minimum_x =
-      std::min(start.x, goal.x) - config.boundary_margin;
-  const double maximum_x =
-      std::max(start.x, goal.x) + config.boundary_margin;
-  const double minimum_y =
-      std::min(start.y, goal.y) - config.boundary_margin;
-  const double maximum_y =
-      std::max(start.y, goal.y) + config.boundary_margin;
-  const int width =
-      static_cast<int>(std::ceil((maximum_x - minimum_x) /
-                                 config.resolution)) +
-      1;
-  const int height =
-      static_cast<int>(std::ceil((maximum_y - minimum_y) /
-                                 config.resolution)) +
-      1;
-  if (width < 3 || height < 3 ||
-      static_cast<std::size_t>(width) >
-          config.maximum_cell_count / static_cast<std::size_t>(height)) {
-    result.reason = "LEVEL_PATH_GRID_TOO_LARGE";
-    return result;
-  }
-  const std::size_t cell_count =
-      static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-  if (cell_count > config.maximum_cell_count) {
-    result.reason = "LEVEL_PATH_GRID_TOO_LARGE";
-    return result;
-  }
-
-  const auto indexOf = [width](int x, int y) {
-    return static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
-           static_cast<std::size_t>(x);
-  };
-  const auto gridX = [&](double x) {
-    return static_cast<int>(
-        std::lround((x - minimum_x) / config.resolution));
-  };
-  const auto gridY = [&](double y) {
-    return static_cast<int>(
-        std::lround((y - minimum_y) / config.resolution));
-  };
-  const auto inBounds = [width, height](int x, int y) {
-    return x >= 0 && x < width && y >= 0 && y < height;
-  };
-
-  std::vector<std::uint8_t> blocked(cell_count, 0U);
-  const int inflation_cells = static_cast<int>(
-      std::ceil(config.additional_clearance / config.resolution));
-  for (const auto& point : occupied_points) {
-    if (!finitePoint(point) ||
-        std::abs(point.z - config.altitude) >
-            config.vertical_half_extent) {
-      continue;
-    }
-    const int center_x = gridX(point.x);
-    const int center_y = gridY(point.y);
-    for (int dy = -inflation_cells; dy <= inflation_cells; ++dy) {
-      for (int dx = -inflation_cells; dx <= inflation_cells; ++dx) {
-        if (dx * dx + dy * dy >
-            inflation_cells * inflation_cells) {
-          continue;
-        }
-        const int x = center_x + dx;
-        const int y = center_y + dy;
-        if (inBounds(x, y)) {
-          blocked[indexOf(x, y)] = 1U;
-        }
-      }
-    }
-  }
-  result.occupied_cell_count = static_cast<std::size_t>(
-      std::count(blocked.begin(), blocked.end(), std::uint8_t{1U}));
-
-  const int start_x = gridX(start.x);
-  const int start_y = gridY(start.y);
-  const int goal_x = gridX(goal.x);
-  const int goal_y = gridY(goal.y);
-  if (!inBounds(start_x, start_y) || !inBounds(goal_x, goal_y)) {
-    result.reason = "LEVEL_PATH_ENDPOINT_OUTSIDE_GRID";
-    return result;
-  }
-  const std::size_t start_index = indexOf(start_x, start_y);
-  const std::size_t goal_index = indexOf(goal_x, goal_y);
-  if (blocked[start_index] != 0U) {
-    result.reason = "LEVEL_PATH_START_OCCUPIED";
-    return result;
-  }
-  if (blocked[goal_index] != 0U) {
-    result.reason = "LEVEL_PATH_GOAL_OCCUPIED";
-    return result;
-  }
-
-  struct OpenCell {
-    double score;
-    std::size_t index;
-  };
-  struct OpenCellCompare {
-    bool operator()(const OpenCell& left, const OpenCell& right) const {
-      return left.score > right.score;
-    }
-  };
-  std::priority_queue<OpenCell, std::vector<OpenCell>, OpenCellCompare> open;
-  std::vector<double> cost(
-      cell_count, std::numeric_limits<double>::infinity());
-  std::vector<std::int64_t> parent(cell_count, -1);
-  std::vector<std::uint8_t> closed(cell_count, 0U);
-  const auto heuristic = [goal_x, goal_y](int x, int y) {
-    return std::hypot(static_cast<double>(goal_x - x),
-                      static_cast<double>(goal_y - y));
-  };
-  cost[start_index] = 0.0;
-  open.push({heuristic(start_x, start_y), start_index});
-
-  static const int kDx[8] = {1, 1, 0, -1, -1, -1, 0, 1};
-  static const int kDy[8] = {0, 1, 1, 1, 0, -1, -1, -1};
-  while (!open.empty()) {
-    const OpenCell current = open.top();
-    open.pop();
-    if (closed[current.index] != 0U) continue;
-    closed[current.index] = 1U;
-    if (current.index == goal_index) break;
-    const int current_x =
-        static_cast<int>(current.index % static_cast<std::size_t>(width));
-    const int current_y =
-        static_cast<int>(current.index / static_cast<std::size_t>(width));
-    for (int direction = 0; direction < 8; ++direction) {
-      const int next_x = current_x + kDx[direction];
-      const int next_y = current_y + kDy[direction];
-      if (!inBounds(next_x, next_y)) continue;
-      const std::size_t next_index = indexOf(next_x, next_y);
-      if (blocked[next_index] != 0U || closed[next_index] != 0U) continue;
-      const bool diagonal =
-          kDx[direction] != 0 && kDy[direction] != 0;
-      if (diagonal &&
-          (blocked[indexOf(current_x + kDx[direction], current_y)] != 0U ||
-           blocked[indexOf(current_x, current_y + kDy[direction])] != 0U)) {
-        continue;
-      }
-      const double next_cost =
-          cost[current.index] + (diagonal ? std::sqrt(2.0) : 1.0);
-      if (next_cost + 1.0e-12 >= cost[next_index]) continue;
-      cost[next_index] = next_cost;
-      parent[next_index] = static_cast<std::int64_t>(current.index);
-      open.push({next_cost + heuristic(next_x, next_y), next_index});
-    }
-  }
-  if (!std::isfinite(cost[goal_index])) {
-    result.reason = "NO_LEVEL_PATH";
-    return result;
-  }
-
-  std::vector<std::pair<int, int>> cells;
-  for (std::int64_t index = static_cast<std::int64_t>(goal_index);
-       index >= 0;) {
-    const std::size_t unsigned_index = static_cast<std::size_t>(index);
-    cells.emplace_back(
-        static_cast<int>(unsigned_index % static_cast<std::size_t>(width)),
-        static_cast<int>(unsigned_index / static_cast<std::size_t>(width)));
-    if (unsigned_index == start_index) break;
-    index = parent[unsigned_index];
-  }
-  if (cells.empty() ||
-      cells.back() != std::make_pair(start_x, start_y)) {
-    result.reason = "LEVEL_PATH_PARENT_CHAIN_BROKEN";
-    return result;
-  }
-  std::reverse(cells.begin(), cells.end());
-
-  const auto lineClear =
-      [&](const std::pair<int, int>& from,
-          const std::pair<int, int>& to) {
-        int x = from.first;
-        int y = from.second;
-        const int delta_x = std::abs(to.first - from.first);
-        const int delta_y = std::abs(to.second - from.second);
-        const int step_x = from.first < to.first ? 1 : -1;
-        const int step_y = from.second < to.second ? 1 : -1;
-        int error = delta_x - delta_y;
-        while (true) {
-          if (!inBounds(x, y) || blocked[indexOf(x, y)] != 0U) return false;
-          if (x == to.first && y == to.second) return true;
-          const int twice_error = 2 * error;
-          if (twice_error > -delta_y) {
-            error -= delta_y;
-            x += step_x;
-          }
-          if (twice_error < delta_x) {
-            error += delta_x;
-            y += step_y;
-          }
-        }
-      };
-
-  std::vector<std::pair<int, int>> bends;
-  bends.push_back(cells.front());
-  std::size_t anchor = 0U;
-  while (anchor + 1U < cells.size()) {
-    std::size_t furthest = anchor + 1U;
-    for (std::size_t candidate_index = furthest + 1U;
-         candidate_index < cells.size(); ++candidate_index) {
-      if (!lineClear(cells[anchor], cells[candidate_index])) break;
-      furthest = candidate_index;
-    }
-    bends.push_back(cells[furthest]);
-    anchor = furthest;
-  }
-
-  result.points.push_back(start);
-  geometry_msgs::Point previous = start;
-  for (std::size_t bend_index = 1U; bend_index < bends.size(); ++bend_index) {
-    geometry_msgs::Point bend;
-    const bool final_bend = bend_index + 1U == bends.size();
-    bend.x = final_bend
-                 ? goal.x
-                 : minimum_x + bends[bend_index].first * config.resolution;
-    bend.y = final_bend
-                 ? goal.y
-                 : minimum_y + bends[bend_index].second * config.resolution;
-    bend.z = config.altitude;
-    const double distance = std::hypot(bend.x - previous.x,
-                                       bend.y - previous.y);
-    const int segments = std::max(
-        1, static_cast<int>(
-               std::ceil(distance / config.maximum_segment_length)));
-    for (int segment = 1; segment <= segments; ++segment) {
-      const double ratio = static_cast<double>(segment) / segments;
-      geometry_msgs::Point waypoint;
-      waypoint.x = previous.x + ratio * (bend.x - previous.x);
-      waypoint.y = previous.y + ratio * (bend.y - previous.y);
-      waypoint.z = config.altitude;
-      result.points.push_back(waypoint);
-    }
-    previous = bend;
-  }
-  result.reachable = result.points.size() >= 2U;
-  result.reason = result.reachable ? "LEVEL_PATH_AVAILABLE"
-                                   : "LEVEL_PATH_EMPTY";
-  return result;
-}
-
 std::vector<Sector> buildInspectionSectors(
     const RouteConfig& route, int sector_count, int layer_count,
     double angle_half_width_deg, double radius_half_width,
@@ -364,6 +98,7 @@ std::vector<Sector> buildInspectionSectors(
     sector.center_x = route.center_x;
     sector.center_y = route.center_y;
     sector.tower_collision_radius = route.tower_collision_radius;
+    sector.minimum_tower_clearance = route.minimum_safety_distance;
     sector.min_angle_rad = sector.nominal_angle_rad - angle_half_width;
     sector.max_angle_rad = sector.nominal_angle_rad + angle_half_width;
     sector.min_radius = route.radius - radius_half_width;
@@ -463,7 +198,7 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       distance2d(candidate->x, candidate->y, sector.center_x, sector.center_y) -
       sector.tower_collision_radius - config.tower_extra_clearance;
   candidate->clearance = tower_clearance;
-  if (tower_clearance < config.minimum_clearance) {
+  if (tower_clearance < sector.minimum_tower_clearance) {
     return reject("TOWER_KEEP_OUT");
   }
   const double candidate_radius =
@@ -495,19 +230,32 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       candidate->risk_reason = "COARSE_KNOWN_OBSTACLE_OVERLAP";
     }
   }
+  const double map_inflation =
+      config.map_points_are_inflated ? 0.0 : config.cloud_inflation;
+  const double map_required_clearance =
+      config.map_points_are_inflated ? config.map_additional_clearance
+                                     : config.minimum_clearance;
   for (const auto& cloud : cloud_points) {
     const double clearance = distance3d(target.x, target.y, target.z,
                                          cloud.x, cloud.y, cloud.z) -
-                             config.cloud_inflation;
+                             map_inflation;
     candidate->clearance = std::min(candidate->clearance, clearance);
-    if (clearance < config.minimum_clearance) {
+    if (clearance < map_required_clearance) {
       return reject("OCCUPANCY_OR_CLEARANCE");
     }
   }
-  candidate->straight_corridor_blocked = !lineCorridorSafe(
-      current_position, target, cloud_points, obstacles,
+  static const std::vector<geometry_msgs::Point> no_map_points;
+  static const std::vector<StaticObstacle> no_static_obstacles;
+  const bool static_corridor_safe = lineCorridorSafe(
+      current_position, target, no_map_points, obstacles,
       config.minimum_clearance + config.cloud_inflation,
       config.corridor_sample_step);
+  const bool map_corridor_safe = lineCorridorSafe(
+      current_position, target, cloud_points, no_static_obstacles,
+      map_required_clearance + map_inflation,
+      config.corridor_sample_step);
+  candidate->straight_corridor_blocked =
+      !static_corridor_safe || !map_corridor_safe;
   if (candidate->straight_corridor_blocked) {
     if (candidate->risk_reason.empty()) {
       candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
@@ -828,10 +576,9 @@ bool evaluateEntryGateCandidate(
   if (home_distance > config.maximum_horizontal_distance) {
     return reject("TASK_BOUNDARY");
   }
-  const double tower_clearance =
-      radius - route.tower_collision_radius - config.cloud_inflation;
+  const double tower_clearance = radius - route.tower_collision_radius;
   candidate->clearance = tower_clearance;
-  if (tower_clearance < config.minimum_clearance) {
+  if (tower_clearance < route.minimum_safety_distance) {
     return reject("TOWER_KEEP_OUT");
   }
 
@@ -847,13 +594,18 @@ bool evaluateEntryGateCandidate(
       return reject("KNOWN_OBSTACLE_CLEARANCE");
     }
   }
+  const double map_inflation =
+      config.map_points_are_inflated ? 0.0 : config.cloud_inflation;
+  const double map_required_clearance =
+      config.map_points_are_inflated ? config.map_additional_clearance
+                                     : config.minimum_clearance;
   for (const auto& map_point : map_points) {
     const double clearance = distance3d(target.x, target.y, target.z,
                                          map_point.x, map_point.y,
                                          map_point.z) -
-                             config.cloud_inflation;
+                             map_inflation;
     candidate->clearance = std::min(candidate->clearance, clearance);
-    if (clearance < config.minimum_clearance) {
+    if (clearance < map_required_clearance) {
       return reject("OCCUPANCY_OR_CLEARANCE");
     }
   }
@@ -865,10 +617,18 @@ bool evaluateEntryGateCandidate(
   // A straight line is only a risk hint here.  The rolling goals below are
   // deliberately handed to EGO one at a time so EGO can bend around a
   // partially observed obstacle instead of the task layer bypassing it.
-  candidate->straight_corridor_blocked = !lineCorridorSafe(
-      current_position, target, map_points, obstacles,
+  static const std::vector<geometry_msgs::Point> no_map_points;
+  static const std::vector<StaticObstacle> no_static_obstacles;
+  const bool static_corridor_safe = lineCorridorSafe(
+      current_position, target, no_map_points, obstacles,
       config.minimum_clearance + config.cloud_inflation,
       config.corridor_sample_step);
+  const bool map_corridor_safe = lineCorridorSafe(
+      current_position, target, map_points, no_static_obstacles,
+      map_required_clearance + map_inflation,
+      config.corridor_sample_step);
+  candidate->straight_corridor_blocked =
+      !static_corridor_safe || !map_corridor_safe;
   if (candidate->straight_corridor_blocked) {
     candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
   }

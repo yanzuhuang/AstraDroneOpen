@@ -23,7 +23,8 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES tower_route motion_limiter ego_task_utils stage3_planner
+  LIBRARIES tower_route motion_limiter ego_task_utils
+            low_altitude_path_planner stage3_planner
   CATKIN_DEPENDS
     geometry_msgs
     astra_custom_msgs
@@ -59,8 +60,16 @@ add_library(ego_task_utils src/ego_task_utils.cpp)
 target_link_libraries(ego_task_utils ${catkin_LIBRARIES})
 add_dependencies(ego_task_utils ${catkin_EXPORTED_TARGETS})
 
+add_library(low_altitude_path_planner src/low_altitude_path_planner.cpp)
+target_link_libraries(low_altitude_path_planner ${catkin_LIBRARIES})
+add_dependencies(low_altitude_path_planner ${catkin_EXPORTED_TARGETS})
+
 add_library(stage3_planner src/stage3_planner.cpp)
-target_link_libraries(stage3_planner tower_route ${catkin_LIBRARIES})
+target_link_libraries(stage3_planner
+  low_altitude_path_planner
+  tower_route
+  ${catkin_LIBRARIES}
+)
 add_dependencies(stage3_planner ${catkin_EXPORTED_TARGETS})
 
 add_executable(tower_mission_node src/tower_mission_node.cpp)
@@ -95,7 +104,8 @@ add_executable(occupancy_stamp_adapter_node src/occupancy_stamp_adapter_node.cpp
 target_link_libraries(occupancy_stamp_adapter_node ${catkin_LIBRARIES})
 add_dependencies(occupancy_stamp_adapter_node ${catkin_EXPORTED_TARGETS})
 
-install(TARGETS tower_route motion_limiter ego_task_utils stage3_planner
+install(TARGETS tower_route motion_limiter ego_task_utils
+  low_altitude_path_planner stage3_planner
   tower_mission_node stage2_ego_mission_node stage3_ego_mission_node
   planner_status_adapter_node occupancy_stamp_adapter_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

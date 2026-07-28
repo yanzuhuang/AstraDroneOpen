@@ -40,7 +40,10 @@ namespace ego_planner
   // SECTION rebond replanning
   bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
-                                        Eigen::Vector3d local_target_vel, bool flag_polyInit, bool flag_randomPolyTraj)
+                                        Eigen::Vector3d local_target_vel,
+                                        bool flag_polyInit,
+                                        bool flag_randomPolyTraj,
+                                        double previous_traj_start_time)
   {
 
     static int count = 0;
@@ -132,7 +135,11 @@ namespace ego_planner
       {
 
         double t;
-        double t_cur = (ros::Time::now() - local_data_.start_time_).toSec();
+        double t_cur =
+            previous_traj_start_time >= 0.0
+                ? previous_traj_start_time
+                : (ros::Time::now() - local_data_.start_time_).toSec();
+        t_cur = std::max(0.0, std::min(local_data_.duration_, t_cur));
 
         vector<double> pseudo_arc_length;
         vector<Eigen::Vector3d> segment_point;

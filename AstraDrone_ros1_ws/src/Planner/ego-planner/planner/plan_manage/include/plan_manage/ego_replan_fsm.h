@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iostream>
 #include <nav_msgs/Path.h>
+#include <geometry_msgs/TwistStamped.h>
 #include <sensor_msgs/Imu.h>
 #include <ros/ros.h>
 #include <std_msgs/Empty.h>
@@ -61,6 +62,10 @@ namespace ego_planner
     double planning_horizen_, planning_horizen_time_;
     double emergency_time_;
     double manual_target_height_;
+    double goal_velocity_timeout_;
+    double goal_path_hint_timeout_;
+    double max_goal_velocity_;
+    double replan_state_prediction_time_;
     bool use_goal_height_;
 
     /* planning data */
@@ -74,6 +79,13 @@ namespace ego_planner
     Eigen::Vector3d init_pt_, start_pt_, start_vel_, start_acc_, start_yaw_; // start state
     Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
     Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
+    Eigen::Vector3d goal_velocity_hint_{Eigen::Vector3d::Zero()};
+    bool have_goal_velocity_hint_{false};
+    ros::Time goal_velocity_received_;
+    nav_msgs::Path goal_path_hint_;
+    bool have_goal_path_hint_{false};
+    ros::Time goal_path_hint_received_;
+    double previous_traj_replan_time_{-1.0};
     int current_wp_;
 
     bool flag_escape_emergency_;
@@ -81,7 +93,8 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_, status_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_, cancel_sub_;
+    ros::Subscriber waypoint_sub_, odom_sub_, cancel_sub_,
+        goal_velocity_sub_, goal_path_hint_sub_;
     ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, status_pub_;
     std::string status_topic_, cancel_topic_, status_frame_id_;
     std::string target_id_;
@@ -107,6 +120,9 @@ namespace ego_planner
     void execFSMCallback(const ros::TimerEvent &e);
     void checkCollisionCallback(const ros::TimerEvent &e);
     void waypointCallback(const nav_msgs::PathConstPtr &msg);
+    void goalVelocityCallback(
+        const geometry_msgs::TwistStampedConstPtr &msg);
+    void goalPathHintCallback(const nav_msgs::PathConstPtr &msg);
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void cancelCallback(const std_msgs::EmptyConstPtr &msg);
     void statusCallback(const ros::TimerEvent &e);

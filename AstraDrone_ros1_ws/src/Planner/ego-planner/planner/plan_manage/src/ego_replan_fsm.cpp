@@ -24,6 +24,11 @@ namespace ego_planner
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
     nh.param("fsm/manual_target_height", manual_target_height_, 1.0);
     nh.param("fsm/use_goal_height", use_goal_height_, false);
+    nh.param("fsm/goal_velocity_timeout", goal_velocity_timeout_, 0.5);
+    nh.param("fsm/goal_path_hint_timeout", goal_path_hint_timeout_, 0.5);
+    nh.param("fsm/max_goal_velocity", max_goal_velocity_, 1.0);
+    nh.param("fsm/replan_state_prediction_time",
+             replan_state_prediction_time_, 0.10);
     nh.param<std::string>("fsm/status_topic", status_topic_, "/planner/status");
     nh.param<std::string>("fsm/cancel_topic", cancel_topic_, "/planning/cancel");
     nh.param<std::string>("fsm/status_frame_id", status_frame_id_, "camera_init");
@@ -40,6 +45,18 @@ namespace ego_planner
     {
       ROS_WARN("Invalid fsm/manual_target_height=%.3f; using 1.0 m.", manual_target_height_);
       manual_target_height_ = 1.0;
+    }
+    if (!std::isfinite(goal_velocity_timeout_) ||
+        goal_velocity_timeout_ <= 0.0 ||
+        !std::isfinite(goal_path_hint_timeout_) ||
+        goal_path_hint_timeout_ <= 0.0 ||
+        !std::isfinite(max_goal_velocity_) || max_goal_velocity_ <= 0.0 ||
+        !std::isfinite(replan_state_prediction_time_) ||
+        replan_state_prediction_time_ < 0.0)
+    {
+      ROS_FATAL("Invalid goal velocity or replan prediction parameter.");
+      ros::shutdown();
+      return;
     }
     ROS_INFO("Manual waypoint height source: %s.",
              use_goal_height_ ? "incoming goal z" : "fsm/manual_target_height");
@@ -84,6 +101,12 @@ namespace ego_planner
 
     odom_sub_ = nh.subscribe("/odom_world", 1, &EGOReplanFSM::odometryCallback, this);
     cancel_sub_ = nh.subscribe(cancel_topic_, 1, &EGOReplanFSM::cancelCallback, this);
+    goal_velocity_sub_ = nh.subscribe(
+        "/planning/goal_velocity", 10,
+        &EGOReplanFSM::goalVelocityCallback, this);
+    goal_path_hint_sub_ = nh.subscribe(
+        "/planning/goal_path_hint", 10,
+        &EGOReplanFSM::goalPathHintCallback, this);
 
     bspline_pub_ = nh.advertise<ego_planner::Bspline>("/planning/bspline", 10);
     data_disp_pub_ = nh.advertise<ego_planner::DataDisp>("/planning/data_display", 100);
@@ -192,9 +215,70 @@ namespace ego_planner
     trigger_ = true;
     init_pt_ = odom_pos_;
 
+    const ros::Time now = ros::Time::now();
+    end_vel_.setZero();
+    if (have_goal_velocity_hint_ &&
+        !goal_velocity_received_.isZero() &&
+        now >= goal_velocity_received_ &&
+        now - goal_velocity_received_ <=
+            ros::Duration(goal_velocity_timeout_))
+    {
+      end_vel_ = goal_velocity_hint_;
+    }
+    // A velocity hint belongs to exactly one goal. Consuming it prevents the
+    // final bridge-generated home hover from inheriting the previous EXIT
+    // tangent if no explicit hint accompanies that goal.
+    have_goal_velocity_hint_ = false;
+
     bool success = false;
     end_pt_ << goal.x, goal.y, target_height;
-    success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    std::vector<Eigen::Vector3d> path_waypoints;
+    if (have_goal_path_hint_ &&
+        !goal_path_hint_received_.isZero() &&
+        now >= goal_path_hint_received_ &&
+        now - goal_path_hint_received_ <=
+            ros::Duration(goal_path_hint_timeout_) &&
+        goal_path_hint_.poses.size() >= 2U)
+    {
+      const auto &hint_end = goal_path_hint_.poses.back().pose.position;
+      const Eigen::Vector3d hint_end_point(
+          hint_end.x, hint_end.y, hint_end.z);
+      if ((hint_end_point - end_pt_).norm() <= 0.5)
+      {
+        for (const auto &pose : goal_path_hint_.poses)
+        {
+          const auto &point = pose.pose.position;
+          Eigen::Vector3d waypoint(point.x, point.y, point.z);
+          if (!waypoint.allFinite())
+          {
+            path_waypoints.clear();
+            break;
+          }
+          if ((waypoint - odom_pos_).norm() > 0.20)
+            path_waypoints.push_back(waypoint);
+        }
+        if (path_waypoints.empty() ||
+            (path_waypoints.back() - end_pt_).norm() > 0.5)
+          path_waypoints.clear();
+        else
+          path_waypoints.back() = end_pt_;
+      }
+    }
+    have_goal_path_hint_ = false;
+    if (!path_waypoints.empty())
+    {
+      success = planner_manager_->planGlobalTrajWaypoints(
+          odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), path_waypoints,
+          end_vel_, Eigen::Vector3d::Zero());
+      ROS_INFO("EGO consumed global path hint with %zu points for current goal.",
+               path_waypoints.size());
+    }
+    else
+    {
+      success = planner_manager_->planGlobalTraj(
+          odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, end_vel_,
+          Eigen::Vector3d::Zero());
+    }
     recordPlanningResult(success, astra_custom_msgs::PlannerStatus::NO_FEASIBLE_TRAJECTORY);
 
     visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
@@ -211,9 +295,10 @@ namespace ego_planner
         gloabl_traj[i] = planner_manager_->global_data_.global_traj_.evaluate(i * step_size_t);
       }
 
-      end_vel_.setZero();
       have_target_ = true;
       have_new_target_ = true;
+      ROS_INFO("EGO goal terminal velocity=(%.3f, %.3f, %.3f).",
+               end_vel_.x(), end_vel_.y(), end_vel_.z());
 
       /*** FSM ***/
       if (exec_state_ == WAIT_TARGET)
@@ -228,6 +313,42 @@ namespace ego_planner
     {
       ROS_ERROR("Unable to generate global trajectory!");
     }
+  }
+
+  void EGOReplanFSM::goalVelocityCallback(
+      const geometry_msgs::TwistStampedConstPtr &msg)
+  {
+    const auto &velocity = msg->twist.linear;
+    if (msg->header.stamp.isZero() ||
+        msg->header.frame_id != status_frame_id_ ||
+        !std::isfinite(velocity.x) || !std::isfinite(velocity.y) ||
+        !std::isfinite(velocity.z))
+    {
+      ROS_WARN("Ignoring invalid EGO goal velocity hint.");
+      return;
+    }
+    goal_velocity_hint_ << velocity.x, velocity.y, velocity.z;
+    const double speed = goal_velocity_hint_.norm();
+    if (speed > max_goal_velocity_)
+      goal_velocity_hint_ *= max_goal_velocity_ / speed;
+    goal_velocity_received_ = ros::Time::now();
+    have_goal_velocity_hint_ = true;
+  }
+
+  void EGOReplanFSM::goalPathHintCallback(
+      const nav_msgs::PathConstPtr &msg)
+  {
+    if (msg->poses.size() < 2U ||
+        msg->header.frame_id != status_frame_id_)
+    {
+      ROS_WARN_THROTTLE(
+          1.0, "Ignoring invalid EGO global path hint (poses=%zu frame=%s).",
+          msg->poses.size(), msg->header.frame_id.c_str());
+      return;
+    }
+    goal_path_hint_ = *msg;
+    goal_path_hint_received_ = ros::Time::now();
+    have_goal_path_hint_ = true;
   }
 
   void EGOReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
@@ -401,6 +522,7 @@ namespace ego_planner
       start_pt_ = odom_pos_;
       start_vel_ = odom_vel_;
       start_acc_.setZero();
+      previous_traj_replan_time_ = -1.0;
 
       // Eigen::Vector3d rot_x = odom_orient_.toRotationMatrix().block(0, 0, 3, 1);
       // start_yaw_(0)         = atan2(rot_x(1), rot_x(0));
@@ -504,12 +626,15 @@ namespace ego_planner
     LocalTrajData *info = &planner_manager_->local_data_;
     ros::Time time_now = ros::Time::now();
     double t_cur = (time_now - info->start_time_).toSec();
+    t_cur = std::max(0.0, std::min(
+        info->duration_, t_cur + replan_state_prediction_time_));
 
     //cout << "info->velocity_traj_=" << info->velocity_traj_.get_control_points() << endl;
 
     start_pt_ = info->position_traj_.evaluateDeBoorT(t_cur);
     start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
     start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
+    previous_traj_replan_time_ = t_cur;
 
     bool success = callReboundReplan(false, false);
 
@@ -581,7 +706,10 @@ namespace ego_planner
     getLocalTarget();
 
     bool plan_success =
-        planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_, (have_new_target_ || flag_use_poly_init), flag_randomPolyTraj);
+        planner_manager_->reboundReplan(
+            start_pt_, start_vel_, start_acc_, local_target_pt_,
+            local_target_vel_, (have_new_target_ || flag_use_poly_init),
+            flag_randomPolyTraj, previous_traj_replan_time_);
     have_new_target_ = false;
 
     recordPlanningResult(
@@ -707,7 +835,7 @@ namespace ego_planner
     {
       // local_target_vel_ = (end_pt_ - init_pt_).normalized() * planner_manager_->pp_.max_vel_ * (( end_pt_ - local_target_pt_ ).norm() / ((planner_manager_->pp_.max_vel_*planner_manager_->pp_.max_vel_)/(2*planner_manager_->pp_.max_acc_)));
       // cout << "A" << endl;
-      local_target_vel_ = Eigen::Vector3d::Zero();
+      local_target_vel_ = end_vel_;
     }
     else
     {

@@ -21,10 +21,18 @@ topics=(
     /gazebo/model_states
     /grid_map/occupancy_inflate
     /stage3_low/occupancy_inflate
+    /move_base_simple/goal
     /planning/goal
+    /planning/goal_velocity
+    /planning/goal_path_hint
     /planning/bspline
     /planning/pos_cmd
     /planning/cancel
+    /ego_planner_node/goal_point
+    /ego_planner_node/global_list
+    /ego_planner_node/init_list
+    /ego_planner_node/optimal_list
+    /ego_planner_node/a_star_list
     /planner/status
     /ego_mavros_bridge/state
     /ego_mavros_bridge/tracking_error
@@ -36,6 +44,7 @@ topics=(
     /tower_mission/selected_tower_center
     /tower_mission/level_ingress_path
     /tower_mission/level_orbit_path
+    /tower_mission/mission_route
     /tower_mission/altitude_policy
     /tf
     /tf_static

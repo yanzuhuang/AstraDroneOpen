@@ -1,6 +1,7 @@
 #ifndef ASTRA_TOWER_MISSION_STAGE3_PLANNER_H_
 #define ASTRA_TOWER_MISSION_STAGE3_PLANNER_H_
 
+#include "astra_tower_mission/low_altitude_path_planner.h"
 #include "astra_tower_mission/tower_route.h"
 
 #include <geometry_msgs/Point.h>
@@ -83,6 +84,8 @@ struct EntryGateConfig {
   double preferred_radius{16.0};
   double minimum_clearance{2.0};
   double cloud_inflation{0.4};
+  bool map_points_are_inflated{false};
+  double map_additional_clearance{0.0};
   double corridor_sample_step{0.5};
   double minimum_radius{16.0};
   double maximum_radius{24.0};
@@ -106,6 +109,7 @@ struct Sector {
   double center_x{0.0};
   double center_y{0.0};
   double tower_collision_radius{0.0};
+  double minimum_tower_clearance{2.0};
   double min_angle_rad{0.0};
   double max_angle_rad{0.0};
   double min_radius{0.0};
@@ -123,6 +127,8 @@ struct CandidateFilterConfig {
   double minimum_clearance{2.0};
   double map_timeout{0.5};
   double cloud_inflation{0.4};
+  bool map_points_are_inflated{false};
+  double map_additional_clearance{0.0};
   double unknown_ratio_limit{0.25};
   bool unknown_is_hard_constraint{true};
   bool known_obstacle_is_hard_constraint{true};
@@ -169,33 +175,6 @@ struct ReturnEgressConfig {
   double corridor_sample_step{0.5};
   double minimum_goal_separation{0.5};
 };
-
-// A live-map, fixed-height path used only to establish whether a horizontal
-// ingress is available. The returned bends are local EGO goals, not a
-// pre-recorded avoidance route. If no path exists after bounded fresh-map
-// confirmations, the mission may release EGO to search in 3-D.
-struct LevelPathConfig {
-  double altitude{3.0};
-  double vertical_half_extent{0.7};
-  double additional_clearance{0.6};
-  double resolution{0.4};
-  double boundary_margin{6.0};
-  double maximum_segment_length{5.0};
-  std::size_t maximum_cell_count{250000U};
-};
-
-struct LevelPathResult {
-  bool reachable{false};
-  std::string reason;
-  std::vector<geometry_msgs::Point> points;
-  std::size_t occupied_cell_count{0U};
-};
-
-LevelPathResult planLevelPath(
-    const geometry_msgs::Point& start,
-    const geometry_msgs::Point& goal,
-    const std::vector<geometry_msgs::Point>& occupied_points,
-    const LevelPathConfig& config);
 
 std::vector<Sector> buildInspectionSectors(const RouteConfig& route,
                                             int sector_count,

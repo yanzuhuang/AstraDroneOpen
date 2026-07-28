@@ -18,8 +18,8 @@ usage() {
   stage3_low_altitude.sh --stop
 
 默认是无控制验证。只有显式 --control 才会解锁、垂直起飞至 3 m，
-并在项目原有 worksite.world 中执行实时地图水平优先进场、
-ENTRY_GATE、原顺序 3 m 绕塔一圈和返航降落。
+并在项目原有 worksite.world 中按固定正式目标执行 ENTRY_GATE、
+原顺序 3 m 绕塔一圈、EXIT_GATE、HOME_HOVER 和返航降落。
 CSV 与 rosbag 默认写入 /tmp/astra_stage3_low_evidence/。
 EOF
 }
@@ -184,8 +184,10 @@ if [[ "$stop" == true ]]; then
     fi
     echo "低空避障会话已停止。"
     if [[ -n "$evidence_report" && -s "$evidence_report" ]]; then
+        setup_ros
         python3 "$repo_root/scripts/tool/plot_low_altitude_trajectory.py" \
             --csv "$evidence_report" \
+            --bag "$evidence_bag" \
             --world "$evidence_world" \
             --output-dir "$repo_root/trc_picture"
     fi
