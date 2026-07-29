@@ -45,10 +45,10 @@ low_altitude:
   # the old +/-2.8 m column onto 3 m duplicated vertical inflation and made
   # overhead tree canopy look like a horizontal collision.
   vertical_half_extent: 0.2
-  # /grid_map/occupancy_inflate already contains EGO's 0.4 m vehicle
-  # envelope. Add 0.5 m of operational margin, matching the optimizer's dist0
-  # without charging the vehicle radius a second time. At 0.2 m resolution
-  # this remains a conservative three-cell hard dilation.
+  # /grid_map/occupancy_inflate already contains EGO's 0.4 m hard vehicle
+  # envelope. Task-side reachability diagnostics add 0.5 m without charging
+  # the vehicle radius twice; EGO's optimizer uses its separate dist0 below.
+  # At 0.2 m resolution the hard envelope remains a two-cell dilation.
   additional_clearance: 0.5
   grid_resolution: 0.2
   boundary_margin: 8.0
@@ -79,9 +79,9 @@ entry_gate:
   angular_sample_step_deg: 7.5
   radial_sample_step: 1.0
   maximum_horizontal_distance: 60.0
-  # Low mode keeps a 1.0 m net clearance (0.4 m vehicle envelope plus
-  # approximately 0.6 m operational margin); the validated high-altitude
-  # candidate clearance remains unchanged in stage3_ego.yaml.
+  # Keep the existing 1.0 m task endpoint criterion. The low-altitude EGO map
+  # independently uses a 0.4 m hard vehicle envelope; the validated
+  # high-altitude candidate clearance remains unchanged in stage3_ego.yaml.
   minimum_clearance: 1.0
   cloud_inflation: 0.4
   # The subscribed map is already EGO-inflated. Use only the same 0.5 m
@@ -175,17 +175,17 @@ grid_map:
 
 # Preserve the validated EGO safety envelope while making every effective
 # clearance term explicit for this mode: 0.4 m occupancy inflation plus
-# 0.5 m optimizer/task clearance. The task consumes the already-inflated map
+# 0.6 m optimizer clearance. The task consumes the already-inflated map
 # and never adds the vehicle radius twice.
 optimization:
   lambda_smooth: 1.0
-  lambda_collision: 0.5
+  lambda_collision: 2
   lambda_feasibility: 0.1
   # Keep the optimized B-spline close to the live-map A* guide around dense
   # tree/cylinder passages; EGO itself reports increasing this term when the
   # refined trajectory repeatedly leaves a collision-free guide path.
   lambda_fitness: 2.0
-  dist0: 0.5
+  dist0: 0.8
 
 topics:
   odom: /Odometry

@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 NOMINAL_HEIGHT = 3.0
 ORBIT_RADIUS = 12.5
 EGO_INFLATION = 0.4
-EGO_TRAJECTORY_CLEARANCE = 0.5
+EGO_TRAJECTORY_CLEARANCE = 0.6
 
 
 def finite(row, name):
@@ -621,8 +621,10 @@ def summarize(samples, world, tower, obstacles, visuals):
         )
     entry = [sample for sample in samples
              if sample["state"] == "ENTRY_GATE_TRANSIT"]
-    returning = [sample for sample in samples
-                 if sample["state"] == "NORMAL_RETURN"]
+    return_states = {"NORMAL_RETURN", "RETURN_HOME"}
+    returning = [
+        sample for sample in samples if sample["state"] in return_states
+    ]
     horizontal = [
         sample for sample in entry
         if sample["horizontal"] and not sample["vertical"]
@@ -647,7 +649,10 @@ def summarize(samples, world, tower, obstacles, visuals):
     terminal_return_landed = (
         samples[-1]["state"] == "RETURN_HOME"
         and samples[-1]["z"] <= 0.3
-        and ("NORMAL_RETURN" in states or "RETURN_EGRESS" in states)
+        and (
+            bool(return_states.intersection(states))
+            or "RETURN_EGRESS" in states
+        )
     )
     entry_yaw = tangent_yaw_errors(entry)
     return_yaw = tangent_yaw_errors(returning)
@@ -719,7 +724,7 @@ def summarize(samples, world, tower, obstacles, visuals):
             math.degrees(max(yaw_rates)) if yaw_rates else None
         ),
         "closed_lap_completed": "GO_TO_EXIT_GATE" in states,
-        "return_started": "NORMAL_RETURN" in states,
+        "return_started": bool(return_states.intersection(states)),
         "mission_done": "DONE" in states or terminal_return_landed,
         "mission_done_inferred_from_grounded_return": (
             terminal_return_landed and "DONE" not in states
@@ -802,7 +807,11 @@ def plot(samples, source, output, tower, obstacles, visuals):
     )
     entry = [item for item in samples
              if item["state"] == "ENTRY_GATE_TRANSIT"]
-    returning = [item for item in samples if item["state"] == "NORMAL_RETURN"]
+    returning = [
+        item
+        for item in samples
+        if item["state"] in {"NORMAL_RETURN", "RETURN_HOME"}
+    ]
     theta = [index * 2.0 * math.pi / 240.0 for index in range(241)]
     trajectory.plot(
         [tower["x"] + ORBIT_RADIUS * math.cos(value) for value in theta],
