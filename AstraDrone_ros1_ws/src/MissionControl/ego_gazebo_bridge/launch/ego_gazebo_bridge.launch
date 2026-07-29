@@ -15,9 +15,13 @@
   <arg name="mavros_frame" default="map"/>
   <arg name="odom_topic" default="/Odometry"/>
   <arg name="cloud_topic" default="/cloud_registered"/>
-  <arg name="position_command_topic" default="/planning/pos_cmd"/>
-  <arg name="planner_goal_topic" default="/planning/goal"/>
-  <arg name="traj_start_trigger_topic" default="/traj_start_trigger"/>
+  <arg name="position_command_topic" default="planning/pos_cmd"/>
+  <arg name="planner_goal_topic" default="planning/goal"/>
+  <arg name="planning_cancel_topic" default="planning/cancel"/>
+  <arg name="planner_bspline_topic" default="planning/bspline"/>
+  <arg name="planner_status_topic" default="planner/status"/>
+  <arg name="waypoint_topic" default="waypoint_generator/waypoints"/>
+  <arg name="traj_start_trigger_topic" default="traj_start_trigger"/>
   <arg name="bridge_cloud_topic" default="$(arg cloud_topic)"/>
   <arg name="ego_cloud_topic" default="$(arg cloud_topic)"/>
   <arg name="filter_ground_cloud" default="false"/>
@@ -88,6 +92,10 @@
     <arg name="trajectory_color_r" value="$(arg trajectory_color_r)"/>
     <arg name="trajectory_color_g" value="$(arg trajectory_color_g)"/>
     <arg name="trajectory_color_b" value="$(arg trajectory_color_b)"/>
+    <arg name="waypoint_topic" value="$(arg waypoint_topic)"/>
+    <arg name="cancel_topic" value="$(arg planning_cancel_topic)"/>
+    <arg name="bspline_topic" value="$(arg planner_bspline_topic)"/>
+    <arg name="status_topic" value="$(arg planner_status_topic)"/>
 
     <!-- Unused for flight_type=1; explicit values keep the include contract complete. -->
     <arg name="point_num" value="0"/>
@@ -118,16 +126,23 @@
   </node>
 
   <node pkg="ego_planner" type="traj_server" name="traj_server" output="screen">
-    <remap from="/position_cmd" to="$(arg position_command_topic)"/>
     <remap from="/odom_world" to="$(arg odom_topic)"/>
     <param name="traj_server/time_forward" value="1.0"/>
     <param name="traj_server/frame_id" value="$(arg planning_frame)"/>
+    <param name="traj_server/position_command_topic"
+           value="$(arg position_command_topic)"/>
+    <param name="traj_server/goal_topic" value="$(arg planner_goal_topic)"/>
+    <param name="traj_server/cancel_topic"
+           value="$(arg planning_cancel_topic)"/>
+    <param name="traj_server/bspline_topic"
+           value="$(arg planner_bspline_topic)"/>
   </node>
 
   <node pkg="waypoint_generator" type="waypoint_generator"
         name="waypoint_generator" output="screen">
     <remap from="~odom" to="$(arg odom_topic)"/>
     <remap from="~goal" to="$(arg planner_goal_topic)"/>
+    <remap from="~waypoints" to="$(arg waypoint_topic)"/>
     <remap from="~traj_start_trigger" to="$(arg traj_start_trigger_topic)"/>
     <param name="waypoint_type" value="manual-lonely-waypoint"/>
     <param name="frame_id" value="$(arg planning_frame)"/>
@@ -142,6 +157,9 @@
     <param name="mavros_frame" value="$(arg mavros_frame)"/>
     <param name="planner_odom_topic" value="$(arg odom_topic)"/>
     <param name="cloud_topic" value="$(arg bridge_cloud_topic)"/>
+    <param name="command_topic" value="$(arg position_command_topic)"/>
+    <param name="planner_goal_topic" value="$(arg planner_goal_topic)"/>
+    <param name="planning_cancel_topic" value="$(arg planning_cancel_topic)"/>
     <param if="$(arg override_takeoff_height)"
            name="takeoff_height" value="$(arg takeoff_height)"/>
     <param if="$(arg override_takeoff_height)"

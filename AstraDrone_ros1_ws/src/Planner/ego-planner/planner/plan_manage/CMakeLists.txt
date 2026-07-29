@@ -78,4 +78,10 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET planning_status_tracker_test)
     target_link_libraries(planning_status_tracker_test ${catkin_LIBRARIES})
   endif()
+  catkin_add_gtest(trajectory_cancellation_gate_test
+    test/trajectory_cancellation_gate_test.cpp)
+  if(TARGET trajectory_cancellation_gate_test)
+    target_link_libraries(trajectory_cancellation_gate_test
+      ${catkin_LIBRARIES})
+  endif()
 endif()

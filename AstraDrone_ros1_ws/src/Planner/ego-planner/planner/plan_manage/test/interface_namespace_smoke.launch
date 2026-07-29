@@ -1,0 +1,119 @@
+<launch>
+  <!-- No simulator and no control nodes: only two planner interface stacks. -->
+  <arg name="map_size" default="4.0"/>
+  <arg name="planning_horizon" default="7.5"/>
+
+  <group ns="uav0">
+    <node pkg="waypoint_generator" type="waypoint_generator" name="waypoint_generator"
+          output="screen">
+      <remap from="~odom" to="Odometry"/>
+      <remap from="~goal" to="planning/goal"/>
+      <remap from="~waypoints" to="waypoint_generator/waypoints"/>
+      <remap from="~traj_start_trigger" to="traj_start_trigger"/>
+      <param name="waypoint_type" value="manual-lonely-waypoint"/>
+      <param name="frame_id" value="uav0/camera_init"/>
+    </node>
+    <include file="$(find ego_planner)/launch/advanced_param.xml">
+      <arg name="map_size_x_" value="$(arg map_size)"/>
+      <arg name="map_size_y_" value="$(arg map_size)"/>
+      <arg name="map_size_z_" value="$(arg map_size)"/>
+      <arg name="odometry_topic" value="Odometry"/>
+      <arg name="camera_pose_topic" value="unused_camera_pose"/>
+      <arg name="depth_topic" value="unused_depth"/>
+      <arg name="cloud_topic" value="cloud_registered"/>
+      <arg name="cx" value="321.0"/>
+      <arg name="cy" value="243.0"/>
+      <arg name="fx" value="387.0"/>
+      <arg name="fy" value="387.0"/>
+      <arg name="max_vel" value="0.5"/>
+      <arg name="max_acc" value="1.0"/>
+      <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+      <arg name="flight_type" value="1"/>
+      <arg name="planning_frame" value="uav0/camera_init"/>
+      <arg name="point_num" value="0"/>
+      <arg name="point0_x" value="0.0"/>
+      <arg name="point0_y" value="0.0"/>
+      <arg name="point0_z" value="1.0"/>
+      <arg name="point1_x" value="0.0"/>
+      <arg name="point1_y" value="0.0"/>
+      <arg name="point1_z" value="1.0"/>
+      <arg name="point2_x" value="0.0"/>
+      <arg name="point2_y" value="0.0"/>
+      <arg name="point2_z" value="1.0"/>
+      <arg name="point3_x" value="0.0"/>
+      <arg name="point3_y" value="0.0"/>
+      <arg name="point3_z" value="1.0"/>
+      <arg name="point4_x" value="0.0"/>
+      <arg name="point4_y" value="0.0"/>
+      <arg name="point4_z" value="1.0"/>
+      <arg name="marker_namespace" value="uav0_ego_trajectory"/>
+    </include>
+    <node pkg="ego_planner" type="traj_server" name="traj_server"
+          output="screen">
+      <param name="traj_server/time_forward" value="1.0"/>
+      <param name="traj_server/frame_id" value="uav0/camera_init"/>
+      <param name="traj_server/goal_topic" value="planning/goal"/>
+      <param name="traj_server/cancel_topic" value="planning/cancel"/>
+      <param name="traj_server/bspline_topic" value="planning/bspline"/>
+      <param name="traj_server/position_command_topic"
+             value="planning/pos_cmd"/>
+    </node>
+  </group>
+
+  <group ns="uav1">
+    <node pkg="waypoint_generator" type="waypoint_generator" name="waypoint_generator"
+          output="screen">
+      <remap from="~odom" to="Odometry"/>
+      <remap from="~goal" to="planning/goal"/>
+      <remap from="~waypoints" to="waypoint_generator/waypoints"/>
+      <remap from="~traj_start_trigger" to="traj_start_trigger"/>
+      <param name="waypoint_type" value="manual-lonely-waypoint"/>
+      <param name="frame_id" value="uav1/camera_init"/>
+    </node>
+    <include file="$(find ego_planner)/launch/advanced_param.xml">
+      <arg name="map_size_x_" value="$(arg map_size)"/>
+      <arg name="map_size_y_" value="$(arg map_size)"/>
+      <arg name="map_size_z_" value="$(arg map_size)"/>
+      <arg name="odometry_topic" value="Odometry"/>
+      <arg name="camera_pose_topic" value="unused_camera_pose"/>
+      <arg name="depth_topic" value="unused_depth"/>
+      <arg name="cloud_topic" value="cloud_registered"/>
+      <arg name="cx" value="321.0"/>
+      <arg name="cy" value="243.0"/>
+      <arg name="fx" value="387.0"/>
+      <arg name="fy" value="387.0"/>
+      <arg name="max_vel" value="0.5"/>
+      <arg name="max_acc" value="1.0"/>
+      <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+      <arg name="flight_type" value="1"/>
+      <arg name="planning_frame" value="uav1/camera_init"/>
+      <arg name="point_num" value="0"/>
+      <arg name="point0_x" value="0.0"/>
+      <arg name="point0_y" value="0.0"/>
+      <arg name="point0_z" value="1.0"/>
+      <arg name="point1_x" value="0.0"/>
+      <arg name="point1_y" value="0.0"/>
+      <arg name="point1_z" value="1.0"/>
+      <arg name="point2_x" value="0.0"/>
+      <arg name="point2_y" value="0.0"/>
+      <arg name="point2_z" value="1.0"/>
+      <arg name="point3_x" value="0.0"/>
+      <arg name="point3_y" value="0.0"/>
+      <arg name="point3_z" value="1.0"/>
+      <arg name="point4_x" value="0.0"/>
+      <arg name="point4_y" value="0.0"/>
+      <arg name="point4_z" value="1.0"/>
+      <arg name="marker_namespace" value="uav1_ego_trajectory"/>
+    </include>
+    <node pkg="ego_planner" type="traj_server" name="traj_server"
+          output="screen">
+      <param name="traj_server/time_forward" value="1.0"/>
+      <param name="traj_server/frame_id" value="uav1/camera_init"/>
+      <param name="traj_server/goal_topic" value="planning/goal"/>
+      <param name="traj_server/cancel_topic" value="planning/cancel"/>
+      <param name="traj_server/bspline_topic" value="planning/bspline"/>
+      <param name="traj_server/position_command_topic"
+             value="planning/pos_cmd"/>
+    </node>
+  </group>
+</launch>

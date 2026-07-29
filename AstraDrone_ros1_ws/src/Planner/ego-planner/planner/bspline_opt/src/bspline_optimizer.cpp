@@ -1,5 +1,7 @@
 #include "bspline_opt/bspline_optimizer.h"
 #include "bspline_opt/gradient_descent_optimizer.h"
+#include <bspline_opt/occupied_segment_guard.h>
+
 // using namespace std;
 
 namespace ego_planner
@@ -94,7 +96,7 @@ namespace ego_planner
         {
           flag_got_start = false;
           flag_got_end = false;
-          if (in_id >= 0 && out_id > in_id)
+          if (isValidOccupiedSegment(in_id, out_id))
           {
             segment_ids.emplace_back(in_id, out_id);
           }

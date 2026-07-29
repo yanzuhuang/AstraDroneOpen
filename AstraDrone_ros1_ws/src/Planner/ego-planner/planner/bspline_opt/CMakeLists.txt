@@ -42,3 +42,11 @@ add_library( bspline_opt
 target_link_libraries( bspline_opt
     ${catkin_LIBRARIES} 
     )  
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(occupied_segment_guard_test
+    test/occupied_segment_guard_test.cpp)
+  if(TARGET occupied_segment_guard_test)
+    target_link_libraries(occupied_segment_guard_test ${catkin_LIBRARIES})
+  endif()
+endif()

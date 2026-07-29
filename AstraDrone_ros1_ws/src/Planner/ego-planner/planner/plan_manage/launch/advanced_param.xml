@@ -46,6 +46,12 @@
   <arg name="trajectory_color_r" default="1.0"/>
   <arg name="trajectory_color_g" default="0.0"/>
   <arg name="trajectory_color_b" default="0.0"/>
+  <arg name="odom_topic" default="$(arg odometry_topic)"/>
+  <arg name="waypoint_topic" default="waypoint_generator/waypoints"/>
+  <arg name="cancel_topic" default="planning/cancel"/>
+  <arg name="bspline_topic" default="planning/bspline"/>
+  <arg name="data_display_topic" default="planning/data_display"/>
+  <arg name="status_topic" default="planner/status"/>
 
   <!-- main node -->
   <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen">
@@ -64,6 +70,14 @@
     <param name="fsm/emergency_time_" value="1.0" type="double"/>
     <param name="fsm/manual_target_height" value="$(arg manual_target_height)" type="double"/>
     <param name="fsm/use_goal_height" value="$(arg use_goal_height)" type="bool"/>
+    <param name="fsm/odom_topic" value="$(arg odom_topic)" type="string"/>
+    <param name="fsm/waypoint_topic" value="$(arg waypoint_topic)" type="string"/>
+    <param name="fsm/cancel_topic" value="$(arg cancel_topic)" type="string"/>
+    <param name="fsm/bspline_topic" value="$(arg bspline_topic)" type="string"/>
+    <param name="fsm/data_display_topic"
+           value="$(arg data_display_topic)" type="string"/>
+    <param name="fsm/status_topic" value="$(arg status_topic)" type="string"/>
+    <param name="fsm/status_frame_id" value="$(arg planning_frame)" type="string"/>
     <param name="planning/frame_id" value="$(arg planning_frame)" type="string"/>
     <param name="visualization/marker_namespace"
            value="$(arg marker_namespace)" type="string"/>

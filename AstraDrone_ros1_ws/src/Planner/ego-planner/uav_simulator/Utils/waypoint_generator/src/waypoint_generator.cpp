@@ -84,9 +84,9 @@ void load_waypoints(ros::NodeHandle& nh, const ros::Time& time_base) {
     ROS_INFO("Overall load %zu segments", waypointSegments.size());
 }
 
-void publish_waypoints() {
+void publish_waypoints(const ros::Time& source_stamp) {
     waypoints.header.frame_id = waypoint_frame;
-    waypoints.header.stamp = ros::Time::now();
+    waypoints.header.stamp = source_stamp;
     pub1.publish(waypoints);
     geometry_msgs::PoseStamped init_pose;
     init_pose.header = odom.header;
@@ -94,6 +94,10 @@ void publish_waypoints() {
     waypoints.poses.insert(waypoints.poses.begin(), init_pose);
     // pub2.publish(waypoints);
     waypoints.poses.clear();
+}
+
+void publish_waypoints() {
+    publish_waypoints(ros::Time::now());
 }
 
 void publish_waypoints_vis() {
@@ -183,7 +187,9 @@ void goal_callback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
             waypoints.poses.clear();
             waypoints.poses.push_back(pt);
             publish_waypoints_vis();
-            publish_waypoints();
+            // Preserve the planning goal timestamp so the FSM and traj_server
+            // apply the same post-cancel freshness contract.
+            publish_waypoints(msg->header.stamp);
         } else {
             ROS_WARN("[waypoint_generator] invalid goal in manual-lonely-waypoint mode.");
         }

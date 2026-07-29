@@ -24,9 +24,37 @@ namespace ego_planner
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
     nh.param("fsm/manual_target_height", manual_target_height_, 1.0);
     nh.param("fsm/use_goal_height", use_goal_height_, false);
-    nh.param<std::string>("fsm/status_topic", status_topic_, "/planner/status");
-    nh.param<std::string>("fsm/cancel_topic", cancel_topic_, "/planning/cancel");
-    nh.param<std::string>("fsm/status_frame_id", status_frame_id_, "camera_init");
+    std::string planning_frame;
+    nh.param<std::string>("planning/frame_id", planning_frame, "world");
+    nh.param<std::string>("fsm/odom_topic", odom_topic_, "odom_world");
+    nh.param<std::string>("fsm/waypoint_topic", waypoint_topic_,
+                          "waypoint_generator/waypoints");
+    nh.param<std::string>("fsm/cancel_topic", cancel_topic_,
+                          "planning/cancel");
+    nh.param<std::string>("fsm/bspline_topic", bspline_topic_,
+                          "planning/bspline");
+    nh.param<std::string>("fsm/data_display_topic", data_display_topic_,
+                          "planning/data_display");
+    nh.param<std::string>("fsm/status_topic", status_topic_,
+                          "planner/status");
+    nh.param<std::string>("fsm/status_frame_id", status_frame_id_,
+                          planning_frame);
+
+    if (planning_frame.empty() || status_frame_id_.empty() ||
+        planning_frame != status_frame_id_)
+    {
+      ROS_FATAL("planning/frame_id and fsm/status_frame_id must be the same non-empty frame.");
+      ros::shutdown();
+      return;
+    }
+    if (odom_topic_.empty() || waypoint_topic_.empty() ||
+        cancel_topic_.empty() || bspline_topic_.empty() ||
+        data_display_topic_.empty() || status_topic_.empty())
+    {
+      ROS_FATAL("EGO FSM topic parameters must not be empty.");
+      ros::shutdown();
+      return;
+    }
 
     if (target_type_ != TARGET_TYPE::MANUAL_TARGET &&
         target_type_ != TARGET_TYPE::PRESET_TARGET)
@@ -82,15 +110,16 @@ namespace ego_planner
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::checkCollisionCallback, this);
     status_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::statusCallback, this);
 
-    odom_sub_ = nh.subscribe("/odom_world", 1, &EGOReplanFSM::odometryCallback, this);
-    cancel_sub_ = nh.subscribe(cancel_topic_, 1, &EGOReplanFSM::cancelCallback, this);
+    node_ = ros::NodeHandle();
+    odom_sub_ = node_.subscribe(odom_topic_, 1, &EGOReplanFSM::odometryCallback, this);
+    cancel_sub_ = node_.subscribe(cancel_topic_, 1, &EGOReplanFSM::cancelCallback, this);
 
-    bspline_pub_ = nh.advertise<ego_planner::Bspline>("/planning/bspline", 10);
-    data_disp_pub_ = nh.advertise<ego_planner::DataDisp>("/planning/data_display", 100);
-    status_pub_ = nh.advertise<astra_custom_msgs::PlannerStatus>(status_topic_, 10, true);
+    bspline_pub_ = node_.advertise<ego_planner::Bspline>(bspline_topic_, 10);
+    data_disp_pub_ = node_.advertise<ego_planner::DataDisp>(data_display_topic_, 100);
+    status_pub_ = node_.advertise<astra_custom_msgs::PlannerStatus>(status_topic_, 10, true);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
-      waypoint_sub_ = nh.subscribe("/waypoint_generator/waypoints", 1, &EGOReplanFSM::waypointCallback, this);
+      waypoint_sub_ = node_.subscribe(waypoint_topic_, 1, &EGOReplanFSM::waypointCallback, this);
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
       ros::Duration(1.0).sleep();

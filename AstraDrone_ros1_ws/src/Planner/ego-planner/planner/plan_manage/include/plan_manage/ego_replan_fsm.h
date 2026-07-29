@@ -83,7 +83,9 @@ namespace ego_planner
     ros::Timer exec_timer_, safety_timer_, status_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, cancel_sub_;
     ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, status_pub_;
-    std::string status_topic_, cancel_topic_, status_frame_id_;
+    std::string odom_topic_, waypoint_topic_, cancel_topic_;
+    std::string bspline_topic_, data_display_topic_, status_topic_;
+    std::string status_frame_id_;
     std::string target_id_;
     std::uint32_t target_sequence_{0};
     PlanningStatusTracker status_tracker_;

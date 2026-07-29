@@ -29,25 +29,15 @@
   <arg name="trajectory_color_b" default="0.0"/>
 
   <group ns="$(arg uav_ns)">
-    <!-- EGO vendor uses a small set of absolute names. Scope them at launch
-         without changing the locked vendor implementation. -->
-    <remap from="/planning/bspline"
-           to="/$(arg uav_ns)/planning/bspline"/>
-    <remap from="/planning/data_display"
-           to="/$(arg uav_ns)/planning/data_display"/>
-    <remap from="/planning/cancel"
-           to="/$(arg uav_ns)/planning/cancel"/>
+    <!-- GridMap still exposes vendor absolute names. Planner-owned goal,
+         cancel, status, waypoint and B-spline interfaces are relative and
+         therefore inherit this group namespace directly. -->
     <remap from="/grid_map/occupancy"
            to="/$(arg uav_ns)/grid_map/occupancy"/>
     <remap from="/grid_map/occupancy_inflate"
            to="/$(arg uav_ns)/grid_map/occupancy_inflate"/>
     <remap from="/grid_map/unknown"
            to="/$(arg uav_ns)/grid_map/unknown"/>
-    <remap from="/planner/status"
-           to="/$(arg uav_ns)/planner/status"/>
-    <remap from="/waypoint_generator/waypoints"
-           to="/$(arg uav_ns)/waypoint_generator/waypoints"/>
-
     <include file="$(find ego_gazebo_bridge)/launch/ego_gazebo_bridge.launch">
       <arg name="enable_control" value="$(arg enable_control)"/>
       <arg name="auto_track_on_command" value="false"/>
@@ -70,11 +60,15 @@
            value="/$(arg uav_ns)/stage3/cloud_registered_filtered"/>
       <arg name="minimum_obstacle_z" value="0.20"/>
       <arg name="position_command_topic"
-           value="/$(arg uav_ns)/planning/pos_cmd"/>
+           value="planning/pos_cmd"/>
       <arg name="planner_goal_topic"
-           value="/$(arg uav_ns)/planning/goal"/>
+           value="planning/goal"/>
+      <arg name="planning_cancel_topic" value="planning/cancel"/>
+      <arg name="planner_bspline_topic" value="planning/bspline"/>
+      <arg name="planner_status_topic" value="planner/status"/>
+      <arg name="waypoint_topic" value="waypoint_generator/waypoints"/>
       <arg name="traj_start_trigger_topic"
-           value="/$(arg uav_ns)/traj_start_trigger"/>
+           value="traj_start_trigger"/>
       <arg name="map_size_x" value="90.0"/>
       <arg name="map_size_y" value="120.0"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
