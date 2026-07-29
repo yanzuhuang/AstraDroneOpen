@@ -41,6 +41,10 @@
   <arg name="map_resolution" default="0.1"/>
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="2.5"/>
+  <arg name="marker_namespace" default="ego_trajectory"/>
+  <arg name="trajectory_color_r" default="1.0"/>
+  <arg name="trajectory_color_g" default="0.0"/>
+  <arg name="trajectory_color_b" default="0.0"/>
 
   <!--
     The Gazebo MID360/FAST-LIO stack and MAVROS local ENU start aligned in this
@@ -80,6 +84,10 @@
     <arg name="map_resolution" value="$(arg map_resolution)"/>
     <arg name="ground_height" value="$(arg ground_height)"/>
     <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
+    <arg name="marker_namespace" value="$(arg marker_namespace)"/>
+    <arg name="trajectory_color_r" value="$(arg trajectory_color_r)"/>
+    <arg name="trajectory_color_g" value="$(arg trajectory_color_g)"/>
+    <arg name="trajectory_color_b" value="$(arg trajectory_color_b)"/>
 
     <!-- Unused for flight_type=1; explicit values keep the include contract complete. -->
     <arg name="point_num" value="0"/>

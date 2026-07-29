@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<robot name="astra_iris_mid360_d435"
+       xmlns:xacro="http://ros.org/wiki/xacro">
+  <!-- RViz/TF description for the same fixed sensor geometry used by SDF. -->
+  <xacro:arg name="model_name" default="uav"/>
+
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://mavlink_sitl_gazebo/models/iris/meshes/iris.stl"/>
+      </geometry>
+      <material name="iris_dark">
+        <color rgba="0.16 0.18 0.22 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="mid360_link">
+    <visual>
+      <origin rpy="0 0 3.1415"/>
+      <geometry>
+        <mesh filename="package://livox_laser_simulation/meshes/livox_mid-360-90x.dae"/>
+      </geometry>
+    </visual>
+  </link>
+  <joint name="mid360_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="mid360_link"/>
+    <origin xyz="0 0 0.08" rpy="0 0 0"/>
+  </joint>
+
+  <link name="d435_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://realsense_ros_gazebo/meshes/realsense_d435.stl"/>
+      </geometry>
+    </visual>
+  </link>
+  <joint name="d435_mount_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="d435_link"/>
+    <origin xyz="0.12 0 0.03" rpy="1.57 0 1.57"/>
+  </joint>
+
+  <link name="d435_color_optical_frame"/>
+  <joint name="d435_color_optical_joint" type="fixed">
+    <parent link="d435_link"/>
+    <child link="d435_color_optical_frame"/>
+    <origin xyz="0.0325 0 0" rpy="3.14 -1.57 1.57"/>
+  </joint>
+
+  <link name="d435_depth_optical_frame"/>
+  <joint name="d435_depth_optical_joint" type="fixed">
+    <parent link="d435_link"/>
+    <child link="d435_depth_optical_frame"/>
+    <origin xyz="0.0325 0 0" rpy="3.14 -1.57 1.57"/>
+  </joint>
+
+  <link name="d435_infra1_optical_frame"/>
+  <joint name="d435_infra1_optical_joint" type="fixed">
+    <parent link="d435_link"/>
+    <child link="d435_infra1_optical_frame"/>
+    <origin xyz="0.02 0 0" rpy="3.14 -1.57 1.57"/>
+  </joint>
+
+  <link name="d435_infra2_optical_frame"/>
+  <joint name="d435_infra2_optical_joint" type="fixed">
+    <parent link="d435_link"/>
+    <child link="d435_infra2_optical_frame"/>
+    <origin xyz="-0.03 0 0" rpy="3.14 -1.57 1.57"/>
+  </joint>
+</robot>

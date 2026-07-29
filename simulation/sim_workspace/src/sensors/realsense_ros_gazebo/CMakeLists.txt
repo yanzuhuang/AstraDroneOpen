@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   rosconsole
   diagnostic_updater
   std_msgs
+  std_srvs
   gazebo_ros
   image_transport
   camera_info_manager
@@ -46,6 +47,7 @@ catkin_package(
   tf2_ros
   rosconsole
   std_msgs
+  std_srvs
   gazebo_ros
   image_transport
   camera_info_manager

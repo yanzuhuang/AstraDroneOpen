@@ -21,6 +21,8 @@ namespace ego_planner
   private:
     ros::NodeHandle node;
     std::string frame_id_;
+    std::string marker_namespace_;
+    Eigen::Vector4d optimal_color_;
 
     ros::Publisher goal_point_pub;
     ros::Publisher global_list_pub;

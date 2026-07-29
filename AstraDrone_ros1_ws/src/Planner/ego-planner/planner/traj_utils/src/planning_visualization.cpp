@@ -13,6 +13,12 @@ namespace ego_planner
       ROS_WARN("planning/frame_id is empty; falling back to 'world'.");
       frame_id_ = "world";
     }
+    nh.param<std::string>("visualization/marker_namespace",
+                          marker_namespace_, "ego_trajectory");
+    nh.param("visualization/optimal_color_r", optimal_color_(0), 1.0);
+    nh.param("visualization/optimal_color_g", optimal_color_(1), 0.0);
+    nh.param("visualization/optimal_color_b", optimal_color_(2), 0.0);
+    nh.param("visualization/optimal_color_a", optimal_color_(3), 1.0);
 
     goal_point_pub = nh.advertise<visualization_msgs::Marker>("goal_point", 2);
     global_list_pub = nh.advertise<visualization_msgs::Marker>("global_list", 2);
@@ -31,6 +37,7 @@ namespace ego_planner
     sphere.type = visualization_msgs::Marker::SPHERE_LIST;
     line_strip.type = visualization_msgs::Marker::LINE_STRIP;
     sphere.action = line_strip.action = visualization_msgs::Marker::ADD;
+    sphere.ns = line_strip.ns = marker_namespace_;
     sphere.id = id;
     line_strip.id = id + 1000;
 
@@ -66,6 +73,7 @@ namespace ego_planner
     sphere.type = visualization_msgs::Marker::SPHERE_LIST;
     line_strip.type = visualization_msgs::Marker::LINE_STRIP;
     sphere.action = line_strip.action = visualization_msgs::Marker::ADD;
+    sphere.ns = line_strip.ns = marker_namespace_;
     sphere.id = id;
     line_strip.id = id + 1;
 
@@ -100,6 +108,7 @@ namespace ego_planner
     arrow.header.stamp = ros::Time::now();
     arrow.type = visualization_msgs::Marker::ARROW;
     arrow.action = visualization_msgs::Marker::ADD;
+    arrow.ns = marker_namespace_;
 
     // geometry_msgs::Point start, end;
     // arrow.points
@@ -141,6 +150,7 @@ namespace ego_planner
     sphere.header.stamp = ros::Time::now();
     sphere.type = visualization_msgs::Marker::SPHERE;
     sphere.action = visualization_msgs::Marker::ADD;
+    sphere.ns = marker_namespace_;
     sphere.id = id;
 
     sphere.pose.orientation.w = 1.0;
@@ -196,8 +206,7 @@ namespace ego_planner
       Eigen::Vector3d pt = optimal_pts.col(i).transpose();
       list.push_back(pt);
     }
-    Eigen::Vector4d color(1, 0, 0, 1);
-    displayMarkerList(optimal_list_pub, list, 0.15, color, id);
+    displayMarkerList(optimal_list_pub, list, 0.15, optimal_color_, id);
   }
 
   void PlanningVisualization::displayAStarList(std::vector<std::vector<Eigen::Vector3d>> a_star_paths, int id /* = Eigen::Vector4d(0.5,0.5,0,1)*/)

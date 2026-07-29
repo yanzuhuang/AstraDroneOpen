@@ -8,5 +8,5 @@ catkin_install_python(PROGRAMS
   scripts/px4_param_guard.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
-install(DIRECTORY launch config
+install(DIRECTORY launch config models urdf
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})

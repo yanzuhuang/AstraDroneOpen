@@ -2,6 +2,8 @@
 #include <sensor_msgs/fill_image.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 
+#include <array>
+
 namespace {
 std::string extractCameraName(const std::string &name);
 sensor_msgs::CameraInfo cameraInfo(const sensor_msgs::Image &image,
@@ -30,13 +32,23 @@ void GazeboRosRealsense::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf) {
   }
   ROS_INFO("Realsense Gazebo ROS plugin loading.");
 
+  std::string robot_namespace;
+  if (_sdf->HasElement("robotNamespace")) {
+    robot_namespace = _sdf->Get<std::string>("robotNamespace");
+  }
+
   RealSensePlugin::Load(_model, _sdf);
 
-  this->rosnode_ = new ros::NodeHandle(this->GetHandle());
+  // Preserve the historical plugin-name namespace when robotNamespace is not
+  // configured. Multi-vehicle models can provide an explicit namespace so
+  // image and camera_info publishers never collide in the Gazebo process.
+  const std::string ros_namespace =
+      robot_namespace.empty() ? this->GetHandle() : robot_namespace;
+  this->rosnode_ = new ros::NodeHandle(ros_namespace);
 
   // initialize camera_info_manager
   this->camera_info_manager_.reset(
-      new camera_info_manager::CameraInfoManager(*this->rosnode_, this->GetHandle()));
+      new camera_info_manager::CameraInfoManager(*this->rosnode_, ros_namespace));
 
   this->itnode_ = new image_transport::ImageTransport(*this->rosnode_);
 
@@ -53,6 +65,33 @@ void GazeboRosRealsense::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf) {
     this->pointcloud_pub_ =
         this->rosnode_->advertise<sensor_msgs::PointCloud2>(pointCloudTopic_, 2, false);
   }
+  this->enable_service_ = this->rosnode_->advertiseService(
+      "set_enabled", &GazeboRosRealsense::SetEnabled, this);
+}
+
+bool GazeboRosRealsense::SetEnabled(
+    std_srvs::SetBool::Request &request,
+    std_srvs::SetBool::Response &response) {
+  sensors::SensorManager *sensor_manager = sensors::SensorManager::Instance();
+  const std::array<std::string, 4> sensor_names = {
+      prefix + DEPTH_CAMERA_NAME,
+      prefix + COLOR_CAMERA_NAME,
+      prefix + IRED1_CAMERA_NAME,
+      prefix + IRED2_CAMERA_NAME};
+
+  for (const auto &sensor_name : sensor_names) {
+    const sensors::SensorPtr sensor = sensor_manager->GetSensor(sensor_name);
+    if (!sensor) {
+      response.success = false;
+      response.message = "camera sensor not found: " + sensor_name;
+      return true;
+    }
+    sensor->SetActive(request.data);
+  }
+
+  response.success = true;
+  response.message = request.data ? "D435 streams enabled" : "D435 streams disabled";
+  return true;
 }
 
 void GazeboRosRealsense::OnNewFrame(const rendering::CameraPtr cam,

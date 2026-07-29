@@ -42,6 +42,10 @@
   <arg name="map_resolution" default="0.1"/>
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="2.5"/>
+  <arg name="marker_namespace" default="ego_trajectory"/>
+  <arg name="trajectory_color_r" default="1.0"/>
+  <arg name="trajectory_color_g" default="0.0"/>
+  <arg name="trajectory_color_b" default="0.0"/>
 
   <!-- main node -->
   <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen">
@@ -61,6 +65,14 @@
     <param name="fsm/manual_target_height" value="$(arg manual_target_height)" type="double"/>
     <param name="fsm/use_goal_height" value="$(arg use_goal_height)" type="bool"/>
     <param name="planning/frame_id" value="$(arg planning_frame)" type="string"/>
+    <param name="visualization/marker_namespace"
+           value="$(arg marker_namespace)" type="string"/>
+    <param name="visualization/optimal_color_r"
+           value="$(arg trajectory_color_r)" type="double"/>
+    <param name="visualization/optimal_color_g"
+           value="$(arg trajectory_color_g)" type="double"/>
+    <param name="visualization/optimal_color_b"
+           value="$(arg trajectory_color_b)" type="double"/>
 
     <param name="fsm/waypoint_num" value="$(arg point_num)" type="int"/>
     <param name="fsm/waypoint0_x" value="$(arg point0_x)" type="double"/>

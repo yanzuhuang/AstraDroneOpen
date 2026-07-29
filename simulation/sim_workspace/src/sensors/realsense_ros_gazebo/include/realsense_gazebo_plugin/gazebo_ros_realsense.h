@@ -8,6 +8,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/image_encodings.h>
+#include <std_srvs/SetBool.h>
 
 #include <camera_info_manager/camera_info_manager.h>
 #include <image_transport/image_transport.h>
@@ -45,6 +46,10 @@ public:
   virtual void OnNewFrame(const rendering::CameraPtr cam,
                           const transport::PublisherPtr pub);
 
+private:
+  bool SetEnabled(std_srvs::SetBool::Request &request,
+                  std_srvs::SetBool::Response &response);
+
 protected:
   boost::shared_ptr<camera_info_manager::CameraInfoManager>
       camera_info_manager_;
@@ -57,6 +62,7 @@ protected:
 private:
   image_transport::ImageTransport *itnode_;
   ros::Publisher pointcloud_pub_;
+  ros::ServiceServer enable_service_;
 
 protected:
   image_transport::CameraPublisher color_pub_, ir1_pub_, ir2_pub_, depth_pub_;

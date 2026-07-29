@@ -42,9 +42,8 @@
 
   <group ns="uav1">
     <group>
-      <remap from="/livox/lidar" to="/uav0/livox/lidar"/>
-      <remap from="/livox/imu"
-             to="/iris_mid360_00/uav0/livox/imu"/>
+      <remap from="/livox/lidar" to="/uav1/livox/lidar"/>
+      <remap from="/livox/imu" to="/uav1/livox/imu"/>
       <remap from="/Odometry" to="/uav1/fast_lio/Odometry_raw"/>
       <remap from="/cloud_registered"
              to="/uav1/fast_lio/cloud_registered_raw"/>
@@ -57,6 +56,11 @@
         <arg name="rviz" value="false"/>
       </include>
     </group>
+
+    <include file="$(find astra_swarm_bringup)/launch/uav_sensor_frames.launch">
+      <arg name="frame_prefix" value="uav1"/>
+      <arg name="model_name" value="uav1"/>
+    </include>
 
     <node pkg="astra_swarm_tf" type="frame_adapter_node.py"
           name="frame_adapter" output="screen" required="true">
@@ -116,9 +120,8 @@
 
   <group ns="uav2">
     <group>
-      <remap from="/livox/lidar" to="/uav1/livox/lidar"/>
-      <remap from="/livox/imu"
-             to="/iris_mid360_11/uav1/livox/imu"/>
+      <remap from="/livox/lidar" to="/uav2/livox/lidar"/>
+      <remap from="/livox/imu" to="/uav2/livox/imu"/>
       <remap from="/Odometry" to="/uav2/fast_lio/Odometry_raw"/>
       <remap from="/cloud_registered"
              to="/uav2/fast_lio/cloud_registered_raw"/>
@@ -131,6 +134,11 @@
         <arg name="rviz" value="false"/>
       </include>
     </group>
+
+    <include file="$(find astra_swarm_bringup)/launch/uav_sensor_frames.launch">
+      <arg name="frame_prefix" value="uav2"/>
+      <arg name="model_name" value="uav2"/>
+    </include>
 
     <node pkg="astra_swarm_tf" type="frame_adapter_node.py"
           name="frame_adapter" output="screen" required="true">
@@ -213,6 +221,9 @@
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
     <arg name="report_file" value="$(arg uav1_report_file)"/>
+    <arg name="trajectory_color_r" value="1.0"/>
+    <arg name="trajectory_color_g" value="0.55"/>
+    <arg name="trajectory_color_b" value="0.0"/>
   </include>
 
   <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
@@ -241,6 +252,9 @@
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav2_bridge.yaml"/>
     <arg name="report_file" value="$(arg uav2_report_file)"/>
+    <arg name="trajectory_color_r" value="0.0"/>
+    <arg name="trajectory_color_g" value="0.75"/>
+    <arg name="trajectory_color_b" value="1.0"/>
   </include>
 
   <node pkg="astra_swarm_safety" type="swarm_safety_node.py"

@@ -24,6 +24,9 @@
   <arg name="crane_center_x"/>
   <arg name="bridge_config"/>
   <arg name="report_file"/>
+  <arg name="trajectory_color_r" default="1.0"/>
+  <arg name="trajectory_color_g" default="0.0"/>
+  <arg name="trajectory_color_b" default="0.0"/>
 
   <group ns="$(arg uav_ns)">
     <!-- EGO vendor uses a small set of absolute names. Scope them at launch
@@ -84,6 +87,11 @@
       <arg name="manual_target_height" value="$(arg inspection_top_height)"/>
       <arg name="use_goal_height" value="true"/>
       <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
+      <arg name="marker_namespace"
+           value="$(arg uav_ns)_ego_trajectory"/>
+      <arg name="trajectory_color_r" value="$(arg trajectory_color_r)"/>
+      <arg name="trajectory_color_g" value="$(arg trajectory_color_g)"/>
+      <arg name="trajectory_color_b" value="$(arg trajectory_color_b)"/>
     </include>
 
     <node pkg="astra_tower_mission" type="occupancy_stamp_adapter_node"

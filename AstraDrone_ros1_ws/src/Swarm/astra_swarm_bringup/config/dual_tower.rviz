@@ -43,7 +43,7 @@ Visualization Manager:
       Plane Cell Count: 60
       Reference Frame: <Fixed Frame>
       Value: true
-    - Alpha: 1
+    - Alpha: 0.35
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
         Max Value: 40
@@ -54,7 +54,7 @@ Visualization Manager:
       Class: rviz/PointCloud2
       Color: 255; 170; 0
       Color Transformer: FlatColor
-      Decay Time: 2
+      Decay Time: 1
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
@@ -63,7 +63,7 @@ Visualization Manager:
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
-      Size (Pixels): 4
+      Size (Pixels): 2
       Size (m): 0.04
       Style: Points
       Topic: /uav1/cloud_registered_peer_filtered
@@ -71,7 +71,7 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: false
       Value: true
-    - Alpha: 1
+    - Alpha: 0.35
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
         Max Value: 40
@@ -82,7 +82,7 @@ Visualization Manager:
       Class: rviz/PointCloud2
       Color: 0; 200; 255
       Color Transformer: FlatColor
-      Decay Time: 2
+      Decay Time: 1
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
@@ -91,7 +91,7 @@ Visualization Manager:
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
-      Size (Pixels): 4
+      Size (Pixels): 2
       Size (m): 0.04
       Style: Points
       Topic: /uav2/cloud_registered_peer_filtered
@@ -99,7 +99,7 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: false
       Value: true
-    - Alpha: 0.45
+    - Alpha: 0.2
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
         Max Value: 40
@@ -127,7 +127,7 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: false
       Value: true
-    - Alpha: 0.45
+    - Alpha: 0.2
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
         Max Value: 40
@@ -194,6 +194,70 @@ Visualization Manager:
         Value: Arrow
       Topic: /uav2/Odometry
       Unreliable: false
+      Value: true
+    - Alpha: 1
+      Class: rviz/RobotModel
+      Collision Enabled: false
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+      Name: UAV1 Model
+      Robot Description: /uav1/robot_description
+      TF Prefix: uav1
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Alpha: 1
+      Class: rviz/RobotModel
+      Collision Enabled: false
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+      Name: UAV2 Model
+      Robot Description: /uav2/robot_description
+      TF Prefix: uav2
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /uav1/ego_planner_node/optimal_list
+      Name: UAV1 EGO Optimal Trajectory (Orange)
+      Namespaces:
+        uav1_ego_trajectory: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /uav2/ego_planner_node/optimal_list
+      Name: UAV2 EGO Optimal Trajectory (Cyan)
+      Namespaces:
+        uav2_ego_trajectory: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /uav1/ego_planner_node/goal_point
+      Name: UAV1 EGO Goal
+      Namespaces:
+        uav1_ego_trajectory: true
+      Queue Size: 20
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /uav2/ego_planner_node/goal_point
+      Name: UAV2 EGO Goal
+      Namespaces:
+        uav2_ego_trajectory: true
+      Queue Size: 20
       Value: true
     - Class: rviz/TF
       Enabled: true
