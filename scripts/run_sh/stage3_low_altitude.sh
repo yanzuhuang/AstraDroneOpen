@@ -18,8 +18,9 @@ usage() {
   stage3_low_altitude.sh --stop
 
 默认是无控制验证。只有显式 --control 才会解锁、垂直起飞至 3 m，
-并在项目原有 worksite.world 中按固定正式目标执行 ENTRY_GATE、
-原顺序 3 m 绕塔一圈、EXIT_GATE、HOME_HOVER 和返航降落。
+并在项目原有 worksite.world 中按正式目标顺序执行 ENTRY_GATE、
+3 m 绕塔一圈、EXIT_GATE、HOME_HOVER 和返航降落。被占据的绕塔
+目标沿用高空/双机规则，仅在当前扇区内选择安全替代点。
 CSV 与 rosbag 默认写入 /tmp/astra_stage3_low_evidence/。
 EOF
 }

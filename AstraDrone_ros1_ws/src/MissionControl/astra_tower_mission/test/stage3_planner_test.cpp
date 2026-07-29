@@ -49,6 +49,71 @@ TEST(Stage3Planner, GoalInsideKnownObstacleIsRejected) {
   EXPECT_EQ(point.rejection_reason, "KNOWN_OBSTACLE_CLEARANCE");
 }
 
+TEST(Stage3Planner, LowAltitudeBlockedNominalUsesSameSectorCandidate) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.height = 3.0;
+  route.minimum_height = 2.0;
+  route.maximum_height = 10.0;
+  route.tower_collision_radius = 6.41;
+  route.minimum_safety_distance = 2.0;
+  route.start_angle_rad = 0.0;
+
+  std::vector<CandidateOffset> offsets;
+  for (double angle : {0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0}) {
+    for (double radius : {0.0, 2.0, 4.0}) {
+      offsets.push_back({angle, radius, 0.0});
+    }
+  }
+  auto sectors =
+      buildInspectionSectors(route, 8, 1, 12.0, 4.0, 1.0, offsets);
+  ASSERT_EQ(sectors.size(), 8U);
+  ASSERT_EQ(sectors.front().candidates.size(), 21U);
+
+  geometry_msgs::Point occupied_nominal;
+  occupied_nominal.x = route.center_x + route.radius;
+  occupied_nominal.y = route.center_y;
+  occupied_nominal.z = route.height;
+  geometry_msgs::Point current;
+  current.x = occupied_nominal.x;
+  current.y = occupied_nominal.y - 5.0;
+  current.z = route.height;
+
+  CandidateFilterConfig config;
+  config.minimum_clearance = 1.0;
+  config.cloud_inflation = 0.4;
+  config.map_points_are_inflated = true;
+  config.map_additional_clearance = 0.5;
+  config.unknown_is_hard_constraint = false;
+  for (auto& point : sectors.front().candidates) {
+    evaluateCandidate(&point, sectors.front(), current, {occupied_nominal}, {},
+                      true, config);
+  }
+
+  EXPECT_FALSE(sectors.front().candidates.front().accepted);
+  EXPECT_EQ(sectors.front().candidates.front().rejection_reason,
+            "OCCUPANCY_OR_CLEARANCE");
+  const int selected = chooseBestCandidate(sectors.front(), nullptr, 2.0);
+  ASSERT_GE(selected, 0);
+  const CandidatePoint& replacement = sectors.front().candidates[selected];
+  EXPECT_NE(replacement.id, sectors.front().candidates.front().id);
+  EXPECT_EQ(replacement.sector_id, sectors.front().sector_id);
+  EXPECT_DOUBLE_EQ(replacement.z, 3.0);
+  EXPECT_LE(std::abs(normalizeAngle(
+                std::atan2(replacement.y - route.center_y,
+                           replacement.x - route.center_x) -
+                sectors.front().nominal_angle_rad)),
+            12.0 * kPi / 180.0 + 1.0e-9);
+  EXPECT_GE(std::hypot(replacement.x - route.center_x,
+                       replacement.y - route.center_y),
+            route.radius - 1.0e-9);
+  EXPECT_LE(std::hypot(replacement.x - route.center_x,
+                       replacement.y - route.center_y),
+            route.radius + 4.0 + 1.0e-9);
+}
+
 TEST(Stage3Planner, LevelPathUsesLiveMapAndStaysAtConfiguredAltitude) {
   geometry_msgs::Point start;
   start.x = 0.0;

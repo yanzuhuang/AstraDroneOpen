@@ -37,9 +37,9 @@
     <arg name="planning_horizon" value="7.5"/>
     <arg name="manual_target_height" value="3.0"/>
     <arg name="use_goal_height" value="true"/>
-    <!-- Keep the two-voxel hard envelope required by the immutable low
-         waypoints. A three-voxel (0.60 m) envelope was flight-tested and
-         rejected because it marks the fixed WP6 endpoint as occupied. -->
+    <!-- Keep the two-voxel hard envelope used by the low-altitude candidate
+         selector. A three-voxel (0.60 m) envelope was flight-tested and
+         rejected because it removed too much usable clearance near WP6. -->
     <arg name="obstacles_inflation" value="0.40"/>
   </include>
 

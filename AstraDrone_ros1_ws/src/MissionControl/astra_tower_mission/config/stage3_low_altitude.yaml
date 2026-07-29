@@ -133,11 +133,12 @@ coverage:
   sensor_max_elevation_deg: 52.2
 
 candidate:
-  # The eight numbered mission targets are immutable. Obstacles between them
-  # are handled by EGO local avoidance; the task layer does not relocate a
-  # numbered waypoint or replace it with an intermediate goal.
-  angle_offsets_deg: [0.0]
-  radius_offsets_m: [0.0]
+  # Reuse the validated high-altitude/swarm same-sector selection rule. The
+  # nominal point is preferred while it is clear; an occupied/unreachable
+  # endpoint may move only inside the configured angular/radial sector.
+  # Height remains fixed at 3 m and no path-intermediate goals are generated.
+  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0]
+  radius_offsets_m: [0.0, 2.0, 4.0]
   height_offsets_m: [0.0]
   minimum_clearance: 1.0
   cloud_inflation: 0.4

@@ -1989,53 +1989,6 @@ class Stage3EgoMissionNode {
     sector.state = SectorState::kEvaluating;
     const CandidatePoint* previous = nullptr;
     if (have_last_inspection_target_) previous = &last_inspection_target_;
-    if (low_altitude_mode_) {
-      // The low-altitude mission has one configured, immutable coordinate for
-      // every formal WP.  Clearance and occupancy remain useful diagnostics,
-      // but task-side candidate rejection or relocation would change/skip the
-      // required mission target before EGO sees it.  Publish the nominal c0
-      // endpoint exactly as configured and let EGO perform its native search,
-      // collision checking and replanning.
-      const auto nominal = std::find_if(
-          sector.candidates.begin(), sector.candidates.end(),
-          [](const CandidatePoint& candidate) {
-            return candidate.id.size() >= 3U &&
-                   candidate.id.compare(candidate.id.size() - 3U, 3U, "_c0") ==
-                       0;
-          });
-      if (nominal == sector.candidates.end()) {
-        sector.failure_reason = "FORMAL_WAYPOINT_C0_MISSING";
-        sector.state = SectorState::kRelocating;
-        return false;
-      }
-      geometry_msgs::Point nominal_point;
-      nominal_point.x = nominal->x;
-      nominal_point.y = nominal->y;
-      nominal_point.z = nominal->z;
-      evaluateCandidate(&(*nominal), sector, pointOf(odom_),
-                        planningMapPoints(), obstacles_, mapFresh(now),
-                        filter_config_, previous,
-                        candidateUnknownRatio(nominal_point));
-      if (!nominal->accepted) {
-        ROS_WARN("[STAGE3_TASK] formal waypoint diagnostic id=%s reason=%s "
-                 "clearance=%.3f; task-level rejection/relocation disabled, "
-                 "unchanged coordinate will be handed to EGO",
-                 nominal->id.c_str(), nominal->rejection_reason.c_str(),
-                 nominal->clearance);
-      }
-      sector.locked_index =
-          static_cast<int>(std::distance(sector.candidates.begin(), nominal));
-      sector.state = SectorState::kTargetLocked;
-      active_target_ = *nominal;
-      active_target_.accepted = true;
-      active_target_.target_invalid = false;
-      active_target_.planner_unreachable = false;
-      current_target_plan_attempt_ = 0;
-      publishCandidateDebug(now);
-      transition(MissionState::kTargetLocked,
-                 "immutable formal waypoint locked for direct EGO call");
-      return true;
-    }
     const bool closing_at_layer_anchor =
         have_layer_start_anchor_ && visit_cursor_ > 0U &&
         current_sector_ == 0U;
@@ -2857,10 +2810,14 @@ class Stage3EgoMissionNode {
     if (!low_altitude_mode_ || target == nullptr ||
         (mission_target_id != "ENTRY_GATE" &&
          mission_target_id != "EXIT_GATE" &&
-         mission_target_id.rfind("WP", 0U) != 0U &&
          mission_target_id != "HOME_HOVER")) {
       return;
     }
+    // Numbered waypoints deliberately do not enter this immutable-coordinate
+    // map. Their active candidate remains unchanged during normal EGO
+    // replanning and bounded retries, but the validated Stage 3 relocation
+    // path may replace an occupied/unreachable endpoint inside the same
+    // sector. ENTRY_GATE, EXIT_GATE and HOME_HOVER remain locked.
     const auto inserted = formal_target_coordinates_.emplace(
         mission_target_id, *target);
     if (inserted.second) return;
@@ -3439,10 +3396,7 @@ class Stage3EgoMissionNode {
           requestReturnOrLand("map stale before target selection");
         }
       } else if (initial_waypoint_pending_) {
-        if (low_altitude_mode_) {
-          requestReturnOrLand(
-              "fixed WP1 became unreachable; waypoint skipping is disabled");
-        } else if (lockDirectionalInitialSector(now, true)) {
+        if (lockDirectionalInitialSector(now, true)) {
           ROS_WARN("[STAGE3_TASK] first standard waypoint "
                    "planner-unreachable; advanced to the next standard "
                    "waypoint in the configured orbit direction");
@@ -3534,21 +3488,8 @@ class Stage3EgoMissionNode {
         std::string failure;
         if (plannerFailure(now, &failure)) {
           ++lap_planning_failures_;
-          if (low_altitude_mode_) {
-            if (failure ==
-                astra_custom_msgs::PlannerStatus::GOAL_IN_OCCUPANCY) {
-              requestReturnOrLand(
-                  "formal waypoint rejected as occupied; target relocation "
-                  "and mission-level retry disabled");
-            } else {
-              ROS_WARN_THROTTLE(
-                  1.0,
-                  "[STAGE3_TASK] EGO internal waypoint replan status=%s for "
-                  "%s; formal target remains unchanged and is not republished",
-                  failure.c_str(), active_target_.id.c_str());
-            }
-          } else if (failure ==
-                     astra_custom_msgs::PlannerStatus::GOAL_IN_OCCUPANCY) {
+          if (failure ==
+              astra_custom_msgs::PlannerStatus::GOAL_IN_OCCUPANCY) {
             requestHold(failure);
           } else {
             sector_retry_pending_ = true;
@@ -3556,22 +3497,11 @@ class Stage3EgoMissionNode {
                         active_target_.id + ": " + failure);
           }
         } else if (noProgressTimedOut(now)) {
-          if (low_altitude_mode_) {
-            requestReturnOrLand(
-                "formal waypoint no progress; mission-level goal retry "
-                "disabled");
-          } else {
-            sector_retry_pending_ = true;
-            requestHold("planner_unreachable attempt: sector no progress");
-          }
+          sector_retry_pending_ = true;
+          requestHold("planner_unreachable attempt: sector no progress");
         } else if (now - goal_sent_ > ros::Duration(goal_timeout_)) {
-          if (low_altitude_mode_) {
-            requestReturnOrLand(
-                "formal waypoint timeout; mission-level goal retry disabled");
-          } else {
-            sector_retry_pending_ = true;
-            requestHold("planner_unreachable attempt: sector target timeout");
-          }
+          sector_retry_pending_ = true;
+          requestHold("planner_unreachable attempt: sector target timeout");
         }
       }
     } else if (state_ == MissionState::kLayerTransition) {
