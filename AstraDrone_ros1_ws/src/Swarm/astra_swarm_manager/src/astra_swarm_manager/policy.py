@@ -36,11 +36,11 @@ def uav2_takeoff_allowed(elapsed, delay, uav1_healthy, uav1_position,
 
 def transition_permissions(uav1_phase, uav2_phase, uav2_height,
                            uav2_final_height, height_tolerance, safety_clear):
-    """UAV2 descends first; UAV1 is released only after stable 24 m proof."""
+    """UAV2 descends first; UAV1 waits for proof on UAV2's final layer."""
     uav2_waiting = uav2_phase == "WAIT_TRANSITION_PERMISSION"
     uav2_confirmed = (
         abs(uav2_height - uav2_final_height) <= height_tolerance
-        and uav2_phase not in {"WAIT_TRANSITION_PERMISSION", "LAYER_TRANSITION"}
+        and uav2_phase in {"EVALUATING", "NAVIGATING"}
     )
     return (
         bool(safety_clear and uav2_confirmed

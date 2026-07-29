@@ -11,4 +11,7 @@ uav2_takeoff_height: 4.0
 landing_protection_radius: 3.0
 uav1_home_position: [0.0, 0.0, 0.0]
 uav2_home_position: [2.0, 0.0, 0.0]
+uav1_initial_height: 34.0
+uav1_final_height: 30.0
+uav2_initial_height: 28.0
 uav2_final_height: 24.0

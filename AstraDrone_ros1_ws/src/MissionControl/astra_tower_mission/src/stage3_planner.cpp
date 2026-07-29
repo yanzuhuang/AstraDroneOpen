@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <queue>
 #include <sstream>
+#include <utility>
 
 namespace astra_tower_mission {
 namespace {
@@ -95,6 +98,7 @@ std::vector<Sector> buildInspectionSectors(
     sector.center_x = route.center_x;
     sector.center_y = route.center_y;
     sector.tower_collision_radius = route.tower_collision_radius;
+    sector.minimum_tower_clearance = route.minimum_safety_distance;
     sector.min_angle_rad = sector.nominal_angle_rad - angle_half_width;
     sector.max_angle_rad = sector.nominal_angle_rad + angle_half_width;
     sector.min_radius = route.radius - radius_half_width;
@@ -194,7 +198,7 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       distance2d(candidate->x, candidate->y, sector.center_x, sector.center_y) -
       sector.tower_collision_radius - config.tower_extra_clearance;
   candidate->clearance = tower_clearance;
-  if (tower_clearance < config.minimum_clearance) {
+  if (tower_clearance < sector.minimum_tower_clearance) {
     return reject("TOWER_KEEP_OUT");
   }
   const double candidate_radius =
@@ -226,19 +230,32 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       candidate->risk_reason = "COARSE_KNOWN_OBSTACLE_OVERLAP";
     }
   }
+  const double map_inflation =
+      config.map_points_are_inflated ? 0.0 : config.cloud_inflation;
+  const double map_required_clearance =
+      config.map_points_are_inflated ? config.map_additional_clearance
+                                     : config.minimum_clearance;
   for (const auto& cloud : cloud_points) {
     const double clearance = distance3d(target.x, target.y, target.z,
                                          cloud.x, cloud.y, cloud.z) -
-                             config.cloud_inflation;
+                             map_inflation;
     candidate->clearance = std::min(candidate->clearance, clearance);
-    if (clearance < config.minimum_clearance) {
+    if (clearance < map_required_clearance) {
       return reject("OCCUPANCY_OR_CLEARANCE");
     }
   }
-  candidate->straight_corridor_blocked = !lineCorridorSafe(
-      current_position, target, cloud_points, obstacles,
+  static const std::vector<geometry_msgs::Point> no_map_points;
+  static const std::vector<StaticObstacle> no_static_obstacles;
+  const bool static_corridor_safe = lineCorridorSafe(
+      current_position, target, no_map_points, obstacles,
       config.minimum_clearance + config.cloud_inflation,
       config.corridor_sample_step);
+  const bool map_corridor_safe = lineCorridorSafe(
+      current_position, target, cloud_points, no_static_obstacles,
+      map_required_clearance + map_inflation,
+      config.corridor_sample_step);
+  candidate->straight_corridor_blocked =
+      !static_corridor_safe || !map_corridor_safe;
   if (candidate->straight_corridor_blocked) {
     if (candidate->risk_reason.empty()) {
       candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
@@ -559,10 +576,9 @@ bool evaluateEntryGateCandidate(
   if (home_distance > config.maximum_horizontal_distance) {
     return reject("TASK_BOUNDARY");
   }
-  const double tower_clearance =
-      radius - route.tower_collision_radius - config.cloud_inflation;
+  const double tower_clearance = radius - route.tower_collision_radius;
   candidate->clearance = tower_clearance;
-  if (tower_clearance < config.minimum_clearance) {
+  if (tower_clearance < route.minimum_safety_distance) {
     return reject("TOWER_KEEP_OUT");
   }
 
@@ -578,13 +594,18 @@ bool evaluateEntryGateCandidate(
       return reject("KNOWN_OBSTACLE_CLEARANCE");
     }
   }
+  const double map_inflation =
+      config.map_points_are_inflated ? 0.0 : config.cloud_inflation;
+  const double map_required_clearance =
+      config.map_points_are_inflated ? config.map_additional_clearance
+                                     : config.minimum_clearance;
   for (const auto& map_point : map_points) {
     const double clearance = distance3d(target.x, target.y, target.z,
                                          map_point.x, map_point.y,
                                          map_point.z) -
-                             config.cloud_inflation;
+                             map_inflation;
     candidate->clearance = std::min(candidate->clearance, clearance);
-    if (clearance < config.minimum_clearance) {
+    if (clearance < map_required_clearance) {
       return reject("OCCUPANCY_OR_CLEARANCE");
     }
   }
@@ -596,10 +617,18 @@ bool evaluateEntryGateCandidate(
   // A straight line is only a risk hint here.  The rolling goals below are
   // deliberately handed to EGO one at a time so EGO can bend around a
   // partially observed obstacle instead of the task layer bypassing it.
-  candidate->straight_corridor_blocked = !lineCorridorSafe(
-      current_position, target, map_points, obstacles,
+  static const std::vector<geometry_msgs::Point> no_map_points;
+  static const std::vector<StaticObstacle> no_static_obstacles;
+  const bool static_corridor_safe = lineCorridorSafe(
+      current_position, target, no_map_points, obstacles,
       config.minimum_clearance + config.cloud_inflation,
       config.corridor_sample_step);
+  const bool map_corridor_safe = lineCorridorSafe(
+      current_position, target, map_points, no_static_obstacles,
+      map_required_clearance + map_inflation,
+      config.corridor_sample_step);
+  candidate->straight_corridor_blocked =
+      !static_corridor_safe || !map_corridor_safe;
   if (candidate->straight_corridor_blocked) {
     candidate->risk_reason = "STRAIGHT_CORRIDOR_BLOCKED";
   }

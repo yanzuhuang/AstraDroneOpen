@@ -34,6 +34,12 @@ class PolicyTest(unittest.TestCase):
             24.1, 24.0, 0.4, True)
         self.assertEqual((p1, p2, confirmed), (True, False, True))
 
+    def test_climb_through_final_height_is_not_layer_confirmation(self):
+        p1, p2, confirmed = transition_permissions(
+            "WAIT_TRANSITION_PERMISSION", "SEGMENTED_CLIMB",
+            24.1, 24.0, 0.4, True)
+        self.assertEqual((p1, p2, confirmed), (False, False, False))
+
     def test_overlapping_landing_owner_is_sticky(self):
         self.assertEqual(
             landing_permissions(True, True, True, 0), (True, False, 1))

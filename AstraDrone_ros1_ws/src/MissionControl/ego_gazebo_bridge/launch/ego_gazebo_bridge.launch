@@ -25,6 +25,9 @@
   <arg name="minimum_obstacle_z" default="0.2"/>
   <arg name="bridge_config_file"
        default="$(find ego_gazebo_bridge)/config/ego_gazebo_bridge.yaml"/>
+  <arg name="override_takeoff_height" default="false"/>
+  <arg name="takeoff_height" default="1.0"/>
+  <arg name="return_height" default="$(arg takeoff_height)"/>
 
   <arg name="map_size_x" default="40.0"/>
   <arg name="map_size_y" default="40.0"/>
@@ -131,6 +134,10 @@
     <param name="mavros_frame" value="$(arg mavros_frame)"/>
     <param name="planner_odom_topic" value="$(arg odom_topic)"/>
     <param name="cloud_topic" value="$(arg bridge_cloud_topic)"/>
+    <param if="$(arg override_takeoff_height)"
+           name="takeoff_height" value="$(arg takeoff_height)"/>
+    <param if="$(arg override_takeoff_height)"
+           name="return_height" value="$(arg return_height)"/>
   </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="ego_gazebo_bridge_rviz"

@@ -29,6 +29,12 @@ class SwarmManager:
             "~landing_protection_radius", 3.0))
         self.home1 = rospy.get_param("~uav1_home_position", [0.0, 0.0, 0.0])
         self.home2 = rospy.get_param("~uav2_home_position", [2.0, 0.0, 0.0])
+        self.uav1_initial_height = float(rospy.get_param(
+            "~uav1_initial_height", 34.0))
+        self.uav1_final_height = float(rospy.get_param(
+            "~uav1_final_height", 30.0))
+        self.uav2_initial_height = float(rospy.get_param(
+            "~uav2_initial_height", 28.0))
         self.uav2_final_height = float(rospy.get_param(
             "~uav2_final_height", 24.0))
         self.states = {}
@@ -136,7 +142,7 @@ class SwarmManager:
             confirmation.header.stamp = now
             confirmation.header.frame_id = "world"
             confirmation.uav_id = 2
-            confirmation.from_height = 28.0
+            confirmation.from_height = self.uav2_initial_height
             confirmation.to_height = self.uav2_final_height
             confirmation.stable = True
             confirmation.transition_anchor = "configured_transition_anchor"
@@ -218,16 +224,22 @@ class SwarmManager:
             status.reason = "delay, health, and takeoff corridor are clear"
         elif transition2:
             status.coordinator_state = "UAV2_TRANSITION_ALLOWED"
-            status.reason = "UAV2 descends 28 to 24 before UAV1"
+            status.reason = "UAV2 descends {:.1f} to {:.1f} before UAV1".format(
+                self.uav2_initial_height, self.uav2_final_height)
         elif confirmed and transition1:
             status.coordinator_state = "UAV1_TRANSITION_ALLOWED"
-            status.reason = "UAV2 stable at 24 m"
+            status.reason = "UAV2 stable at {:.1f} m".format(
+                self.uav2_final_height)
         elif self.uav2_final_confirmed_ever:
             status.coordinator_state = "SECOND_LAYER_PARALLEL"
-            status.reason = "30 m and 24 m asynchronous inspection"
+            status.reason = (
+                "{:.1f} m and {:.1f} m asynchronous inspection".format(
+                    self.uav1_final_height, self.uav2_final_height))
         else:
             status.coordinator_state = "FIRST_LAYER_PARALLEL"
-            status.reason = "asynchronous independent execution"
+            status.reason = (
+                "{:.1f} m and {:.1f} m asynchronous inspection".format(
+                    self.uav1_initial_height, self.uav2_initial_height))
         self.status_pub.publish(status)
 
 

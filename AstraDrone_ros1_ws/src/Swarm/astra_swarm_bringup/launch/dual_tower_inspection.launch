@@ -4,6 +4,26 @@
   <arg name="gui" default="true"/>
   <arg name="enable_cloud_fusion" default="false"/>
   <arg name="rviz" default="false"/>
+  <arg name="task_config"
+       default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
+  <arg name="low_altitude_enabled" default="false"/>
+  <arg name="takeoff_delay" default="6.0"/>
+  <arg name="uav1_top_height" default="34.0"/>
+  <arg name="uav2_top_height" default="28.0"/>
+  <arg name="uav1_final_height" default="30.0"/>
+  <arg name="uav2_final_height" default="24.0"/>
+  <arg name="uav1_takeoff_height" default="4.0"/>
+  <arg name="uav2_takeoff_height" default="4.0"/>
+  <arg name="map_size_z" default="46.0"/>
+  <arg name="ground_height" default="-0.50"/>
+  <arg name="virtual_ceil_height" default="45.0"/>
+  <arg name="mission_maximum_height" default="45.0"/>
+  <arg name="max_vel" default="0.30"/>
+  <arg name="max_acc" default="0.50"/>
+  <arg name="planning_horizon" default="7.5"/>
+  <arg name="obstacles_inflation" default="0.40"/>
+  <arg name="uav1_report_file" default="/tmp/astra_swarm_uav1.csv"/>
+  <arg name="uav2_report_file" default="/tmp/astra_swarm_uav2.csv"/>
   <param name="/use_sim_time" value="true"/>
 
   <include if="$(arg start_sim)"
@@ -170,29 +190,57 @@
 
   <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
     <arg name="uav_ns" value="uav1"/>
+    <arg name="uav_id" value="1"/>
     <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="takeoff_delay" value="0.0"/>
     <arg name="planning_frame" value="uav1/camera_init"/>
     <arg name="mavros_frame" value="uav1/map"/>
-    <arg name="inspection_top_height" value="34.0"/>
+    <arg name="inspection_top_height" value="$(arg uav1_top_height)"/>
+    <arg name="takeoff_height" value="$(arg uav1_takeoff_height)"/>
+    <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="task_config" value="$(arg task_config)"/>
+    <arg name="map_size_z" value="$(arg map_size_z)"/>
+    <arg name="ground_height" value="$(arg ground_height)"/>
+    <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
+    <arg name="mission_maximum_height"
+         value="$(arg mission_maximum_height)"/>
+    <arg name="max_vel" value="$(arg max_vel)"/>
+    <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+    <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <arg name="tower_center_x" value="-10.0551"/>
     <arg name="crane_center_x" value="2.7535"/>
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
-    <arg name="report_file" value="/tmp/astra_swarm_uav1.csv"/>
+    <arg name="report_file" value="$(arg uav1_report_file)"/>
   </include>
 
   <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
     <arg name="uav_ns" value="uav2"/>
+    <arg name="uav_id" value="2"/>
     <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="takeoff_delay" value="$(arg takeoff_delay)"/>
     <arg name="planning_frame" value="uav2/camera_init"/>
     <arg name="mavros_frame" value="uav2/map"/>
-    <arg name="inspection_top_height" value="28.0"/>
+    <arg name="inspection_top_height" value="$(arg uav2_top_height)"/>
+    <arg name="takeoff_height" value="$(arg uav2_takeoff_height)"/>
+    <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="task_config" value="$(arg task_config)"/>
+    <arg name="map_size_z" value="$(arg map_size_z)"/>
+    <arg name="ground_height" value="$(arg ground_height)"/>
+    <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
+    <arg name="mission_maximum_height"
+         value="$(arg mission_maximum_height)"/>
+    <arg name="max_vel" value="$(arg max_vel)"/>
+    <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+    <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <!-- UAV2 local map origin is world (2,0,0). -->
     <arg name="tower_center_x" value="-12.0551"/>
     <arg name="crane_center_x" value="0.7535"/>
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav2_bridge.yaml"/>
-    <arg name="report_file" value="/tmp/astra_swarm_uav2.csv"/>
+    <arg name="report_file" value="$(arg uav2_report_file)"/>
   </include>
 
   <node pkg="astra_swarm_safety" type="swarm_safety_node.py"
@@ -210,6 +258,12 @@
         name="astra_swarm_manager" output="screen" required="true">
     <rosparam command="load"
               file="$(find astra_swarm_manager)/config/dual_tower.yaml"/>
+    <param name="takeoff_delay" value="$(arg takeoff_delay)"/>
+    <param name="uav2_takeoff_height" value="$(arg uav2_takeoff_height)"/>
+    <param name="uav1_initial_height" value="$(arg uav1_top_height)"/>
+    <param name="uav1_final_height" value="$(arg uav1_final_height)"/>
+    <param name="uav2_initial_height" value="$(arg uav2_top_height)"/>
+    <param name="uav2_final_height" value="$(arg uav2_final_height)"/>
   </node>
 
   <node if="$(arg enable_cloud_fusion)"

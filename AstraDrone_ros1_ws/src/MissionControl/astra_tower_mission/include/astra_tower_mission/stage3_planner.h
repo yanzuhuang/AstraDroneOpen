@@ -1,6 +1,7 @@
 #ifndef ASTRA_TOWER_MISSION_STAGE3_PLANNER_H_
 #define ASTRA_TOWER_MISSION_STAGE3_PLANNER_H_
 
+#include "astra_tower_mission/low_altitude_path_planner.h"
 #include "astra_tower_mission/tower_route.h"
 
 #include <geometry_msgs/Point.h>
@@ -83,6 +84,8 @@ struct EntryGateConfig {
   double preferred_radius{16.0};
   double minimum_clearance{2.0};
   double cloud_inflation{0.4};
+  bool map_points_are_inflated{false};
+  double map_additional_clearance{0.0};
   double corridor_sample_step{0.5};
   double minimum_radius{16.0};
   double maximum_radius{24.0};
@@ -106,6 +109,7 @@ struct Sector {
   double center_x{0.0};
   double center_y{0.0};
   double tower_collision_radius{0.0};
+  double minimum_tower_clearance{2.0};
   double min_angle_rad{0.0};
   double max_angle_rad{0.0};
   double min_radius{0.0};
@@ -123,6 +127,8 @@ struct CandidateFilterConfig {
   double minimum_clearance{2.0};
   double map_timeout{0.5};
   double cloud_inflation{0.4};
+  bool map_points_are_inflated{false};
+  double map_additional_clearance{0.0};
   double unknown_ratio_limit{0.25};
   bool unknown_is_hard_constraint{true};
   bool known_obstacle_is_hard_constraint{true};

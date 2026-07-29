@@ -137,6 +137,23 @@ def _include_arguments(include):
     }
 
 
+def _resolve_launch_arg(value, launch_root):
+    prefix = "$(arg "
+    if not value.startswith(prefix) or not value.endswith(")"):
+        return value
+    name = value[len(prefix):-1]
+    matches = [
+        argument.get("default")
+        for argument in launch_root.findall("arg")
+        if argument.get("name") == name
+    ]
+    if len(matches) != 1 or matches[0] is None:
+        raise DataContractError(
+            "Could not resolve launch argument {!r}".format(name)
+        )
+    return matches[0]
+
+
 def _parse_static_transform(node, source):
     tokens = (node.get("args") or "").split()
     if len(tokens) != 9:
@@ -251,7 +268,9 @@ def load_contracts(swarm_launch, bridge_launch, stack_launch):
     for name in ("uav1", "uav2"):
         arguments = includes[name]
         try:
-            report_file = Path(arguments["report_file"]).resolve()
+            report_file = Path(
+                _resolve_launch_arg(arguments["report_file"], swarm_root)
+            ).resolve()
             local_tower_xy = np.array(
                 [float(arguments["tower_center_x"]), tower_y], dtype=np.float64
             )
@@ -695,8 +714,14 @@ def main():
             args.bridge_launch.resolve(),
             args.stack_launch.resolve(),
         )
-        uav1 = load_vehicle(contracts["uav1"], args.uav1_csv)
-        uav2 = load_vehicle(contracts["uav2"], args.uav2_csv)
+        if args.uav1_csv:
+            contracts["uav1"].csv_path = args.uav1_csv.resolve()
+        if args.uav2_csv:
+            contracts["uav2"].csv_path = args.uav2_csv.resolve()
+        if contracts["uav1"].csv_path == contracts["uav2"].csv_path:
+            raise DataContractError("UAV1 and UAV2 resolve to the same report file")
+        uav1 = load_vehicle(contracts["uav1"])
+        uav2 = load_vehicle(contracts["uav2"])
         reject_duplicate_inputs(uav1, uav2)
 
         print_summary(uav1)

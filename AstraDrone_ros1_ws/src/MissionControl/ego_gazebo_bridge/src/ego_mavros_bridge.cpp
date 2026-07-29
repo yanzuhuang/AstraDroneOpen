@@ -592,6 +592,13 @@ void EgoMavrosBridge::towerYawModeCallback(
 
 void EgoMavrosBridge::commandCallback(
     const quadrotor_msgs::PositionCommand::ConstPtr& message) {
+  if (state_ == BridgeState::kLanding || state_ == BridgeState::kDone ||
+      state_ == BridgeState::kError) {
+    ROS_INFO_THROTTLE(
+        1.0,
+        "[BRIDGE] PositionCommand ignored after terminal landing ownership.");
+    return;
+  }
   if (message->trajectory_flag !=
       quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY) {
     ROS_WARN_THROTTLE(
@@ -1091,7 +1098,6 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
   }
 
   if (land_requested_ && state_ != BridgeState::kLanding) {
-    latchHoldAtCurrentPose();
     transitionTo(BridgeState::kLanding, "landing requested");
   }
 
@@ -1374,7 +1380,6 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
     }
 
     case BridgeState::kLanding: {
-      publishHold(now);
       if (fcu_state_.mode != "AUTO.LAND") {
         requestMode("AUTO.LAND", now);
       }
@@ -1428,6 +1433,22 @@ void EgoMavrosBridge::transitionTo(BridgeState next_state,
     // vehicle heading. This also isolates cancelled trajectory generations.
     have_effective_yaw_ = false;
     last_effective_yaw_time_ = ros::Time(0);
+  }
+  if (next_state == BridgeState::kLanding) {
+    // AUTO.LAND is the sole controller from this transition onward. Invalidate
+    // both the planner and bridge command generations before requesting the
+    // mode, and never publish an OFFBOARD hold/setpoint in kLanding.
+    have_valid_goal_ = false;
+    have_planner_target_ = false;
+    tracking_requested_ = false;
+    return_in_progress_ = false;
+    return_inside_tolerance_ = false;
+    tower_yaw_mode_ = false;
+    supervised_hold_ = false;
+    trajectory_gate_.cancel();
+    planning_cancel_publisher_.publish(std_msgs::Empty());
+    ROS_WARN("[BRIDGE] EGO trajectory cleared; AUTO.LAND has exclusive "
+             "control and OFFBOARD setpoint publication is stopped.");
   }
   if (next_state == BridgeState::kDone || next_state == BridgeState::kError) {
     ROS_WARN("[BRIDGE] Terminal maximum tracking error: %.3f m",
