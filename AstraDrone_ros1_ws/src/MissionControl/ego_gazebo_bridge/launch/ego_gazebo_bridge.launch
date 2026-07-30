@@ -92,7 +92,10 @@
     <arg name="trajectory_color_r" value="$(arg trajectory_color_r)"/>
     <arg name="trajectory_color_g" value="$(arg trajectory_color_g)"/>
     <arg name="trajectory_color_b" value="$(arg trajectory_color_b)"/>
-    <arg name="waypoint_topic" value="$(arg waypoint_topic)"/>
+    <!-- The EGO FSM consumes the stamped planner goal directly.  The
+         waypoint-generator Path remains available for visualization but is
+         not silently wired into a PoseStamped subscriber. -->
+    <arg name="waypoint_topic" value="$(arg planner_goal_topic)"/>
     <arg name="cancel_topic" value="$(arg planning_cancel_topic)"/>
     <arg name="bspline_topic" value="$(arg planner_bspline_topic)"/>
     <arg name="status_topic" value="$(arg planner_status_topic)"/>

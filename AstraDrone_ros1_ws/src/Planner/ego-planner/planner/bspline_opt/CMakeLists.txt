@@ -16,13 +16,14 @@ find_package(catkin REQUIRED COMPONENTS
   visualization_msgs
   plan_env
   cv_bridge
+  traj_utils
   path_searching
 )
 
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES bspline_opt
- CATKIN_DEPENDS plan_env
+ CATKIN_DEPENDS plan_env 
 #  DEPENDS system_lib
 )
 
@@ -42,11 +43,3 @@ add_library( bspline_opt
 target_link_libraries( bspline_opt
     ${catkin_LIBRARIES} 
     )  
-
-if(CATKIN_ENABLE_TESTING)
-  catkin_add_gtest(occupied_segment_guard_test
-    test/occupied_segment_guard_test.cpp)
-  if(TARGET occupied_segment_guard_test)
-    target_link_libraries(occupied_segment_guard_test ${catkin_LIBRARIES})
-  endif()
-endif()

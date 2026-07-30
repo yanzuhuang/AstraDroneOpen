@@ -19,29 +19,14 @@ find_package(catkin REQUIRED COMPONENTS
   path_searching
   bspline_opt
   traj_utils
-  message_generation
   cv_bridge
-)
-
-# Generate messages in the 'msg' folder
-add_message_files(
-  FILES
-  Bspline.msg
-  DataDisp.msg
-  )
-  
-# Generate added messages and services with any dependencies listed here
-generate_messages(
-  DEPENDENCIES
-  std_msgs
-  geometry_msgs
 )
 
 # catkin_package(CATKIN_DEPENDS message_runtime)
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES ego_planner
- CATKIN_DEPENDS astra_custom_msgs plan_env path_searching bspline_opt traj_utils message_runtime
+ CATKIN_DEPENDS astra_custom_msgs plan_env path_searching bspline_opt traj_utils
 #  DEPENDS system_lib
 )
 
@@ -62,11 +47,11 @@ add_executable(ego_planner_node
 target_link_libraries(ego_planner_node 
   ${catkin_LIBRARIES}
   )
-add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(ego_planner_node ${catkin_EXPORTED_TARGETS})
 
 add_executable(traj_server src/traj_server.cpp)
 target_link_libraries(traj_server ${catkin_LIBRARIES})
-add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(traj_server ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(goal_height_test test/goal_height_test.cpp)
@@ -81,7 +66,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(trajectory_cancellation_gate_test
     test/trajectory_cancellation_gate_test.cpp)
   if(TARGET trajectory_cancellation_gate_test)
-    target_link_libraries(trajectory_cancellation_gate_test
-      ${catkin_LIBRARIES})
+    target_link_libraries(trajectory_cancellation_gate_test ${catkin_LIBRARIES})
   endif()
 endif()
+

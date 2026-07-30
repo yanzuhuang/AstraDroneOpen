@@ -1,14 +1,15 @@
 #include "bspline_opt/uniform_bspline.h"
 #include "nav_msgs/Odometry.h"
 #include "geometry_msgs/PoseStamped.h"
-#include "ego_planner/Bspline.h"
+#include "traj_utils/Bspline.h"
 #include "plan_manage/trajectory_cancellation_gate.h"
 #include "quadrotor_msgs/PositionCommand.h"
 #include "std_msgs/Empty.h"
 #include "visualization_msgs/Marker.h"
 #include <ros/ros.h>
-
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 ros::Publisher pos_cmd_pub;
 
@@ -24,6 +25,8 @@ double traj_duration_;
 ros::Time start_time_;
 int traj_id_;
 ego_planner::TrajectoryCancellationGate cancellation_gate_;
+std::string command_frame_id_;
+double last_command_time_{0.0};
 
 void cancelCallback(const std_msgs::EmptyConstPtr &)
 {
@@ -32,31 +35,27 @@ void cancelCallback(const std_msgs::EmptyConstPtr &)
       receive_traj_ ? static_cast<std::uint32_t>(traj_id_) : 0U);
   receive_traj_ = false;
   traj_.clear();
-  ROS_WARN("[Traj server]: active trajectory cancelled; PositionCommand publication stopped.");
+  ROS_WARN("[Traj server] active trajectory cancelled; command publication stopped.");
 }
 
 void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg)
 {
   if (!cancellation_gate_.noteGoal(msg->header.stamp))
-  {
-    ROS_WARN("[Traj server]: rejected goal with zero, stale, or non-increasing timestamp %.9f.",
-             msg->header.stamp.toSec());
-  }
+    ROS_WARN_THROTTLE(1.0, "[Traj server] rejected zero, stale, or non-increasing goal stamp.");
 }
 
 // yaw control
 double last_yaw_, last_yaw_dot_;
 double time_forward_;
-std::string command_frame_id_;
 
-void bsplineCallback(ego_planner::BsplineConstPtr msg)
+void bsplineCallback(traj_utils::BsplineConstPtr msg)
 {
-  if (!cancellation_gate_.acceptsTrajectory(
-          msg->traj_id, msg->start_time))
+  if (!msg || msg->order != 3 || msg->pos_pts.size() < 4 ||
+      msg->knots.size() < msg->pos_pts.size() + msg->order + 1 ||
+      msg->start_time.isZero() ||
+      !cancellation_gate_.acceptsTrajectory(msg->traj_id, msg->start_time))
   {
-    ROS_WARN("[Traj server]: rejected cancelled or pre-goal B-spline trajectory %u (start %.9f).",
-             static_cast<unsigned int>(msg->traj_id),
-             msg->start_time.toSec());
+    ROS_WARN_THROTTLE(1.0, "[Traj server] rejected malformed or cancelled B-spline.");
     return;
   }
   // parse pos traj
@@ -76,7 +75,7 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
     pos_pts(2, i) = msg->pos_pts[i].z;
   }
 
-  UniformBspline pos_traj(pos_pts, msg->order, 0.1);
+  UniformBspline pos_traj(pos_pts, msg->order, msg->knots[1] - msg->knots[0]);
   pos_traj.setKnot(knots);
 
   // parse yaw traj
@@ -110,15 +109,9 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
   std::pair<double, double> yaw_yawdot(0, 0);
   double yaw = 0;
   double yawdot = 0;
-
-  // On the first timer callback, time_last may be initialized from the same
-  // simulated clock sample as time_now. Dividing a zero yaw error by that
-  // zero interval produces NaN and permanently contaminates last_yaw_dot_.
   const double dt = (time_now - time_last).toSec();
   if (!std::isfinite(dt) || dt <= MIN_YAW_DT)
-  {
     return std::make_pair(last_yaw_, 0.0);
-  }
 
   Eigen::Vector3d dir = t_cur + time_forward_ <= traj_duration_ ? traj_[0].evaluateDeBoorT(t_cur + time_forward_) - pos : traj_[0].evaluateDeBoorT(traj_duration_) - pos;
   double yaw_temp = dir.norm() > 0.1 ? atan2(dir(1), dir(0)) : last_yaw_;
@@ -278,51 +271,27 @@ int main(int argc, char **argv)
   ros::NodeHandle node;
   ros::NodeHandle nh("~");
 
-  std::string bspline_topic;
-  std::string cancel_topic;
-  std::string goal_topic;
-  std::string position_command_topic;
-  nh.param<std::string>("traj_server/bspline_topic", bspline_topic,
-                        "planning/bspline");
-  nh.param<std::string>("traj_server/cancel_topic", cancel_topic,
-                        "planning/cancel");
-  nh.param<std::string>("traj_server/goal_topic", goal_topic,
-                        "planning/goal");
-  nh.param<std::string>("traj_server/position_command_topic",
-                        position_command_topic, "planning/pos_cmd");
-  nh.param("traj_server/time_forward", time_forward_, -1.0);
-  nh.param<std::string>("traj_server/frame_id", command_frame_id_, "world");
-
+  std::string bspline_topic, cancel_topic, goal_topic, position_command_topic;
+  nh.param("traj_server/bspline_topic", bspline_topic, std::string("planning/bspline"));
+  nh.param("traj_server/cancel_topic", cancel_topic, std::string("planning/cancel"));
+  nh.param("traj_server/goal_topic", goal_topic, std::string("planning/goal"));
+  nh.param("traj_server/position_command_topic", position_command_topic,
+           std::string("planning/pos_cmd"));
+  nh.param("traj_server/frame_id", command_frame_id_, std::string("camera_init"));
   if (bspline_topic.empty() || cancel_topic.empty() || goal_topic.empty() ||
-      position_command_topic.empty())
+      position_command_topic.empty() || command_frame_id_.empty())
   {
-    ROS_FATAL("[Traj server]: topic parameters must not be empty.");
+    ROS_FATAL("[Traj server] topic and frame parameters must not be empty.");
     return 1;
   }
-  if (!std::isfinite(time_forward_) || time_forward_ < 0.0)
-  {
-    ROS_FATAL("[Traj server]: traj_server/time_forward must be finite and non-negative.");
-    return 1;
-  }
-  if (command_frame_id_.empty())
-  {
-    ROS_FATAL("[Traj server]: traj_server/frame_id must not be empty.");
-    return 1;
-  }
+  ros::Subscriber bspline_sub = node.subscribe(bspline_topic, 10, bsplineCallback);
+  ros::Subscriber cancel_sub = node.subscribe(cancel_topic, 1, cancelCallback);
+  ros::Subscriber goal_sub = node.subscribe(goal_topic, 1, goalCallback);
 
-  ros::Subscriber bspline_sub =
-      node.subscribe(bspline_topic, 10, bsplineCallback);
-  ros::Subscriber cancel_sub =
-      node.subscribe(cancel_topic, 1, cancelCallback);
-  ros::Subscriber goal_sub =
-      node.subscribe(goal_topic, 1, goalCallback);
+  pos_cmd_pub = node.advertise<quadrotor_msgs::PositionCommand>(
+      position_command_topic, 50);
 
-  pos_cmd_pub =
-      node.advertise<quadrotor_msgs::PositionCommand>(
-          position_command_topic, 50);
-
-  ros::Timer cmd_timer =
-      node.createTimer(ros::Duration(0.01), cmdCallback);
+  ros::Timer cmd_timer = nh.createTimer(ros::Duration(0.01), cmdCallback);
 
   /* control parameter */
   cmd.kx[0] = pos_gain[0];
@@ -333,6 +302,12 @@ int main(int argc, char **argv)
   cmd.kv[1] = vel_gain[1];
   cmd.kv[2] = vel_gain[2];
 
+  nh.param("traj_server/time_forward", time_forward_, 1.0);
+  if (!std::isfinite(time_forward_) || time_forward_ < 0.0)
+  {
+    ROS_FATAL("[Traj server] traj_server/time_forward must be finite and non-negative.");
+    return 1;
+  }
   last_yaw_ = 0.0;
   last_yaw_dot_ = 0.0;
 
