@@ -60,17 +60,36 @@ namespace ego_planner
     nh.param<std::string>("topics/status", status_topic_, "planner/status");
     nh.param<std::string>("status/frame_id", status_frame_id_, "camera_init");
     nh.param<std::string>("status/target_id", target_id_, "ego");
+    nh.param<std::string>("swarm/common_frame", swarm_common_frame_, "world");
+    double swarm_origin_x = 0.0;
+    double swarm_origin_y = 0.0;
+    double swarm_origin_z = 0.0;
+    double swarm_origin_yaw = 0.0;
+    nh.param("swarm/origin_x", swarm_origin_x, 0.0);
+    nh.param("swarm/origin_y", swarm_origin_y, 0.0);
+    nh.param("swarm/origin_z", swarm_origin_z, 0.0);
+    nh.param("swarm/origin_yaw", swarm_origin_yaw, 0.0);
+    swarm_frame_transform_ = SwarmFrameTransform(
+        swarm_origin_x, swarm_origin_y, swarm_origin_z, swarm_origin_yaw);
     nh.param("swarm/trajectory_timeout", swarm_trajectory_timeout_, 3.0);
     if (!std::isfinite(swarm_trajectory_timeout_) || swarm_trajectory_timeout_ <= 0.0)
       swarm_trajectory_timeout_ = 3.0;
     if (odom_topic_.empty() || waypoint_topic_.empty() || cancel_topic_.empty() ||
-        swarm_trajectory_topic_.empty() || status_topic_.empty())
+        swarm_trajectory_topic_.empty() || status_topic_.empty() ||
+        swarm_common_frame_.empty() || !swarm_frame_transform_.isFinite())
     {
-      ROS_FATAL("[EGO FSM] topic parameters must not be empty.");
+      ROS_FATAL("[EGO FSM] invalid topic or common-frame transform parameters.");
       return;
     }
 
     /* callback */
+    const std::string private_ns = nh.getNamespace();
+    const std::size_t last_slash = private_ns.find_last_of('/');
+    const std::string parent_ns =
+        last_slash == std::string::npos || last_slash == 0
+            ? std::string("/")
+            : private_ns.substr(0, last_slash);
+    ros::NodeHandle public_nh(parent_ns);
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::checkCollisionCallback, this);
     status_timer_ = nh.createTimer(ros::Duration(0.1), &EGOReplanFSM::statusCallback, this);
@@ -80,10 +99,10 @@ namespace ego_planner
     // All vehicles share one absolute bus.  Namespaces still isolate odometry,
     // local B-spline and command topics, while the swarm chain is deliberately
     // common so every planner can observe the same safety envelope.
-    swarm_trajs_sub_ = nh.subscribe(
+    swarm_trajs_sub_ = public_nh.subscribe(
         swarm_trajectory_topic_, 10, &EGOReplanFSM::swarmTrajsCallback, this,
         ros::TransportHints().tcpNoDelay());
-    swarm_trajs_pub_ = nh.advertise<traj_utils::MultiBsplines>(
+    swarm_trajs_pub_ = public_nh.advertise<traj_utils::MultiBsplines>(
         swarm_trajectory_topic_, 10);
 
     broadcast_bspline_pub_ = nh.advertise<traj_utils::Bspline>("planning/broadcast_bspline_from_planner", 10);
@@ -91,12 +110,14 @@ namespace ego_planner
 
     bspline_pub_ = nh.advertise<traj_utils::Bspline>("planning/bspline", 10);
     data_disp_pub_ = nh.advertise<traj_utils::DataDisp>("planning/data_display", 100);
-    cancel_sub_ = nh.subscribe(cancel_topic_, 1, &EGOReplanFSM::cancelCallback, this);
-    status_pub_ = nh.advertise<astra_custom_msgs::PlannerStatus>(status_topic_, 10, true);
+    cancel_sub_ = public_nh.subscribe(cancel_topic_, 1, &EGOReplanFSM::cancelCallback, this);
+    status_pub_ = public_nh.advertise<astra_custom_msgs::PlannerStatus>(
+        status_topic_, 10, true);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
-      waypoint_sub_ = nh.subscribe(waypoint_topic_, 1, &EGOReplanFSM::waypointCallback, this);
+      waypoint_sub_ = public_nh.subscribe(
+          waypoint_topic_, 1, &EGOReplanFSM::waypointCallback, this);
     }
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
@@ -317,6 +338,17 @@ namespace ego_planner
 
   void EGOReplanFSM::BroadcastBsplineCallback(const traj_utils::BsplinePtr &msg)
   {
+    if (!msg || msg->drone_id < 0 ||
+        msg->frame_id != swarm_common_frame_ || msg->order != 3 ||
+        msg->pos_pts.size() < 4 ||
+        msg->knots.size() < msg->pos_pts.size() + msg->order + 1 ||
+        msg->start_time.isZero())
+    {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[EGO FSM] rejected malformed or non-common-frame B-spline.");
+      return;
+    }
     size_t id = msg->drone_id;
     if ((int)id == planner_manager_->pp_.drone_id)
       return;
@@ -327,6 +359,11 @@ namespace ego_planner
                 msg->drone_id, (ros::Time::now() - msg->start_time).toSec());
       return;
     }
+
+    traj_utils::Bspline local_msg = *msg;
+    local_msg.frame_id = status_frame_id_;
+    for (auto &point : local_msg.pos_pts)
+      point = swarm_frame_transform_.commonToLocal(point);
 
     /* Fill up the buffer */
     if (planner_manager_->swarm_trajs_buf_.size() <= id)
@@ -340,9 +377,9 @@ namespace ego_planner
     }
 
     /* Test distance to the agent */
-    Eigen::Vector3d cp0(msg->pos_pts[0].x, msg->pos_pts[0].y, msg->pos_pts[0].z);
-    Eigen::Vector3d cp1(msg->pos_pts[1].x, msg->pos_pts[1].y, msg->pos_pts[1].z);
-    Eigen::Vector3d cp2(msg->pos_pts[2].x, msg->pos_pts[2].y, msg->pos_pts[2].z);
+    Eigen::Vector3d cp0(local_msg.pos_pts[0].x, local_msg.pos_pts[0].y, local_msg.pos_pts[0].z);
+    Eigen::Vector3d cp1(local_msg.pos_pts[1].x, local_msg.pos_pts[1].y, local_msg.pos_pts[1].z);
+    Eigen::Vector3d cp2(local_msg.pos_pts[2].x, local_msg.pos_pts[2].y, local_msg.pos_pts[2].z);
     Eigen::Vector3d swarm_start_pt = (cp0 + 4 * cp1 + cp2) / 6;
     if ((swarm_start_pt - odom_pos_).norm() > planning_horizen_ * 4.0f / 3.0f)
     {
@@ -351,39 +388,39 @@ namespace ego_planner
     }
 
     /* Store data */
-    Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
-    Eigen::VectorXd knots(msg->knots.size());
-    for (size_t j = 0; j < msg->knots.size(); ++j)
+    Eigen::MatrixXd pos_pts(3, local_msg.pos_pts.size());
+    Eigen::VectorXd knots(local_msg.knots.size());
+    for (size_t j = 0; j < local_msg.knots.size(); ++j)
     {
-      knots(j) = msg->knots[j];
+      knots(j) = local_msg.knots[j];
     }
-    for (size_t j = 0; j < msg->pos_pts.size(); ++j)
+    for (size_t j = 0; j < local_msg.pos_pts.size(); ++j)
     {
-      pos_pts(0, j) = msg->pos_pts[j].x;
-      pos_pts(1, j) = msg->pos_pts[j].y;
-      pos_pts(2, j) = msg->pos_pts[j].z;
+      pos_pts(0, j) = local_msg.pos_pts[j].x;
+      pos_pts(1, j) = local_msg.pos_pts[j].y;
+      pos_pts(2, j) = local_msg.pos_pts[j].z;
     }
 
     planner_manager_->swarm_trajs_buf_[id].drone_id = id;
 
-    if (msg->order % 2)
+    if (local_msg.order % 2)
     {
-      double cutback = (double)msg->order / 2 + 1.5;
-      planner_manager_->swarm_trajs_buf_[id].duration_ = msg->knots[msg->knots.size() - ceil(cutback)];
+      double cutback = (double)local_msg.order / 2 + 1.5;
+      planner_manager_->swarm_trajs_buf_[id].duration_ = local_msg.knots[local_msg.knots.size() - ceil(cutback)];
     }
     else
     {
-      double cutback = (double)msg->order / 2 + 1.5;
-      planner_manager_->swarm_trajs_buf_[id].duration_ = (msg->knots[msg->knots.size() - floor(cutback)] + msg->knots[msg->knots.size() - ceil(cutback)]) / 2;
+      double cutback = (double)local_msg.order / 2 + 1.5;
+      planner_manager_->swarm_trajs_buf_[id].duration_ = (local_msg.knots[local_msg.knots.size() - floor(cutback)] + local_msg.knots[local_msg.knots.size() - ceil(cutback)]) / 2;
     }
 
-    UniformBspline pos_traj(pos_pts, msg->order, msg->knots[1] - msg->knots[0]);
+    UniformBspline pos_traj(pos_pts, local_msg.order, local_msg.knots[1] - local_msg.knots[0]);
     pos_traj.setKnot(knots);
     planner_manager_->swarm_trajs_buf_[id].position_traj_ = pos_traj;
 
     planner_manager_->swarm_trajs_buf_[id].start_pos_ = planner_manager_->swarm_trajs_buf_[id].position_traj_.evaluateDeBoorT(0);
 
-    planner_manager_->swarm_trajs_buf_[id].start_time_ = msg->start_time;
+    planner_manager_->swarm_trajs_buf_[id].start_time_ = local_msg.start_time;
     // planner_manager_->swarm_trajs_buf_[id].start_time_ = ros::Time::now(); // Un-reliable time sync
 
     /* Check Collision */
@@ -391,6 +428,8 @@ namespace ego_planner
     {
       changeFSMExecState(REPLAN_TRAJ, "TRAJ_CHECK");
     }
+    if (static_cast<int>(id) == planner_manager_->pp_.drone_id - 1)
+      have_recv_pre_agent_ = true;
   }
 
   void EGOReplanFSM::swarmTrajsCallback(const traj_utils::MultiBsplinesPtr &msg)
@@ -404,11 +443,13 @@ namespace ego_planner
       return;
     }
     const ros::Time now = ros::Time::now();
-    for (const auto &remote : msg->traj)
+    for (std::size_t index = 0; index < msg->traj.size(); ++index)
     {
+      const auto &remote = msg->traj[index];
       if (remote.order != 3 || remote.pos_pts.size() < 4 ||
           remote.knots.size() < remote.pos_pts.size() + remote.order + 1 ||
-          remote.start_time.isZero() ||
+          remote.start_time.isZero() || remote.drone_id != static_cast<int>(index) ||
+          remote.frame_id != swarm_common_frame_ ||
           (!now.isZero() &&
            ((remote.start_time - now).toSec() > swarm_trajectory_timeout_ ||
             (now - remote.start_time).toSec() >
@@ -419,8 +460,19 @@ namespace ego_planner
       }
     }
 
-    multi_bspline_msgs_buf_.traj.clear();
-    multi_bspline_msgs_buf_ = *msg;
+    if (multi_bspline_msgs_buf_.traj.size() < msg->traj.size())
+      multi_bspline_msgs_buf_.traj.resize(msg->traj.size());
+    for (std::size_t index = 0; index < msg->traj.size(); ++index)
+    {
+      const auto &remote = msg->traj[index];
+      auto &stored = multi_bspline_msgs_buf_.traj[index];
+      if (stored.start_time.isZero() ||
+          remote.start_time >= stored.start_time)
+        stored = remote;
+    }
+    multi_bspline_msgs_buf_.drone_id_from =
+        std::max(multi_bspline_msgs_buf_.drone_id_from,
+                 msg->drone_id_from);
 
     // cout << "\033[45;33mmulti_bspline_msgs_buf.drone_id_from=" << multi_bspline_msgs_buf_.drone_id_from << " multi_bspline_msgs_buf_.traj.size()=" << multi_bspline_msgs_buf_.traj.size() << "\033[0m" << endl;
 
@@ -443,15 +495,19 @@ namespace ego_planner
     }
 
     // Step 1. receive the trajectories
-    planner_manager_->swarm_trajs_buf_.clear();
-    planner_manager_->swarm_trajs_buf_.resize(msg->traj.size());
+    if (planner_manager_->swarm_trajs_buf_.size() < msg->traj.size())
+      planner_manager_->swarm_trajs_buf_.resize(msg->traj.size());
 
     for (size_t i = 0; i < msg->traj.size(); i++)
     {
+      traj_utils::Bspline local_msg = msg->traj[i];
+      local_msg.frame_id = status_frame_id_;
+      for (auto &point : local_msg.pos_pts)
+        point = swarm_frame_transform_.commonToLocal(point);
 
-      Eigen::Vector3d cp0(msg->traj[i].pos_pts[0].x, msg->traj[i].pos_pts[0].y, msg->traj[i].pos_pts[0].z);
-      Eigen::Vector3d cp1(msg->traj[i].pos_pts[1].x, msg->traj[i].pos_pts[1].y, msg->traj[i].pos_pts[1].z);
-      Eigen::Vector3d cp2(msg->traj[i].pos_pts[2].x, msg->traj[i].pos_pts[2].y, msg->traj[i].pos_pts[2].z);
+      Eigen::Vector3d cp0(local_msg.pos_pts[0].x, local_msg.pos_pts[0].y, local_msg.pos_pts[0].z);
+      Eigen::Vector3d cp1(local_msg.pos_pts[1].x, local_msg.pos_pts[1].y, local_msg.pos_pts[1].z);
+      Eigen::Vector3d cp2(local_msg.pos_pts[2].x, local_msg.pos_pts[2].y, local_msg.pos_pts[2].z);
       Eigen::Vector3d swarm_start_pt = (cp0 + 4 * cp1 + cp2) / 6;
       if ((swarm_start_pt - odom_pos_).norm() > planning_horizen_ * 4.0f / 3.0f)
       {
@@ -459,40 +515,40 @@ namespace ego_planner
         continue;
       }
 
-      Eigen::MatrixXd pos_pts(3, msg->traj[i].pos_pts.size());
-      Eigen::VectorXd knots(msg->traj[i].knots.size());
-      for (size_t j = 0; j < msg->traj[i].knots.size(); ++j)
+      Eigen::MatrixXd pos_pts(3, local_msg.pos_pts.size());
+      Eigen::VectorXd knots(local_msg.knots.size());
+      for (size_t j = 0; j < local_msg.knots.size(); ++j)
       {
-        knots(j) = msg->traj[i].knots[j];
+        knots(j) = local_msg.knots[j];
       }
-      for (size_t j = 0; j < msg->traj[i].pos_pts.size(); ++j)
+      for (size_t j = 0; j < local_msg.pos_pts.size(); ++j)
       {
-        pos_pts(0, j) = msg->traj[i].pos_pts[j].x;
-        pos_pts(1, j) = msg->traj[i].pos_pts[j].y;
-        pos_pts(2, j) = msg->traj[i].pos_pts[j].z;
+        pos_pts(0, j) = local_msg.pos_pts[j].x;
+        pos_pts(1, j) = local_msg.pos_pts[j].y;
+        pos_pts(2, j) = local_msg.pos_pts[j].z;
       }
 
       planner_manager_->swarm_trajs_buf_[i].drone_id = i;
 
-      if (msg->traj[i].order % 2)
+      if (local_msg.order % 2)
       {
-        double cutback = (double)msg->traj[i].order / 2 + 1.5;
-        planner_manager_->swarm_trajs_buf_[i].duration_ = msg->traj[i].knots[msg->traj[i].knots.size() - ceil(cutback)];
+        double cutback = (double)local_msg.order / 2 + 1.5;
+        planner_manager_->swarm_trajs_buf_[i].duration_ = local_msg.knots[local_msg.knots.size() - ceil(cutback)];
       }
       else
       {
-        double cutback = (double)msg->traj[i].order / 2 + 1.5;
-        planner_manager_->swarm_trajs_buf_[i].duration_ = (msg->traj[i].knots[msg->traj[i].knots.size() - floor(cutback)] + msg->traj[i].knots[msg->traj[i].knots.size() - ceil(cutback)]) / 2;
+        double cutback = (double)local_msg.order / 2 + 1.5;
+        planner_manager_->swarm_trajs_buf_[i].duration_ = (local_msg.knots[local_msg.knots.size() - floor(cutback)] + local_msg.knots[local_msg.knots.size() - ceil(cutback)]) / 2;
       }
 
       // planner_manager_->swarm_trajs_buf_[i].position_traj_ =
-      UniformBspline pos_traj(pos_pts, msg->traj[i].order, msg->traj[i].knots[1] - msg->traj[i].knots[0]);
+      UniformBspline pos_traj(pos_pts, local_msg.order, local_msg.knots[1] - local_msg.knots[0]);
       pos_traj.setKnot(knots);
       planner_manager_->swarm_trajs_buf_[i].position_traj_ = pos_traj;
 
       planner_manager_->swarm_trajs_buf_[i].start_pos_ = planner_manager_->swarm_trajs_buf_[i].position_traj_.evaluateDeBoorT(0);
 
-      planner_manager_->swarm_trajs_buf_[i].start_time_ = msg->traj[i].start_time;
+      planner_manager_->swarm_trajs_buf_[i].start_time_ = local_msg.start_time;
     }
 
     have_recv_pre_agent_ = true;
@@ -791,7 +847,7 @@ namespace ego_planner
     constexpr double time_step = 0.01;
     double t_cur = (ros::Time::now() - info->start_time_).toSec();
     Eigen::Vector3d p_cur = info->position_traj_.evaluateDeBoorT(t_cur);
-    const double CLEARANCE = 1.0 * planner_manager_->getSwarmClearance();
+    const double CLEARANCE = 2.0 * planner_manager_->getSwarmClearance();
     double t_cur_global = ros::Time::now().toSec();
     double t_2_3 = info->duration_ * 2 / 3;
     for (double t = t_cur; t < info->duration_; t += time_step)
@@ -867,6 +923,8 @@ namespace ego_planner
       auto info = &planner_manager_->local_data_;
 
       traj_utils::Bspline bspline;
+      bspline.drone_id = planner_manager_->pp_.drone_id;
+      bspline.frame_id = status_frame_id_;
       bspline.order = 3;
       bspline.start_time = info->start_time_;
       bspline.traj_id = info->traj_id_;
@@ -907,6 +965,7 @@ namespace ego_planner
     auto info = &planner_manager_->local_data_;
 
     traj_utils::Bspline bspline;
+    bspline.frame_id = swarm_common_frame_;
     bspline.order = 3;
     bspline.start_time = info->start_time_;
     bspline.drone_id = planner_manager_->pp_.drone_id;
@@ -920,7 +979,7 @@ namespace ego_planner
       pt.x = pos_pts(0, i);
       pt.y = pos_pts(1, i);
       pt.z = pos_pts(2, i);
-      bspline.pos_pts.push_back(pt);
+      bspline.pos_pts.push_back(swarm_frame_transform_.localToCommon(pt));
     }
 
     Eigen::VectorXd knots = info->position_traj_.getKnot();
@@ -956,6 +1015,8 @@ namespace ego_planner
 
     /* publish traj */
     traj_utils::Bspline bspline;
+    bspline.drone_id = planner_manager_->pp_.drone_id;
+    bspline.frame_id = status_frame_id_;
     bspline.order = 3;
     bspline.start_time = info->start_time_;
     bspline.traj_id = info->traj_id_;

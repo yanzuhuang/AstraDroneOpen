@@ -68,5 +68,9 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET trajectory_cancellation_gate_test)
     target_link_libraries(trajectory_cancellation_gate_test ${catkin_LIBRARIES})
   endif()
+  catkin_add_gtest(swarm_frame_transform_test
+    test/swarm_frame_transform_test.cpp)
+  if(TARGET swarm_frame_transform_test)
+    target_link_libraries(swarm_frame_transform_test ${catkin_LIBRARIES})
+  endif()
 endif()
-

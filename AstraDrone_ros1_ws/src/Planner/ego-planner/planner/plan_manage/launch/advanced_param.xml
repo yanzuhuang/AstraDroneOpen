@@ -57,6 +57,13 @@
   <arg name="data_display_topic" default="planning/data_display"/>
   <arg name="status_topic" default="planner/status"/>
   <arg name="swarm_trajectory_topic" default="/swarm/trajectories"/>
+  <arg name="swarm_broadcast_topic" default="/swarm/broadcast_bspline"/>
+  <arg name="swarm_clearance" default="1.50"/>
+  <arg name="swarm_common_frame" default="world"/>
+  <arg name="swarm_origin_x" default="0.0"/>
+  <arg name="swarm_origin_y" default="0.0"/>
+  <arg name="swarm_origin_z" default="0.0"/>
+  <arg name="swarm_origin_yaw" default="0.0"/>
 
 
   <!-- main node -->
@@ -66,8 +73,10 @@
     <remap from="~odom_world" to="$(arg odometry_topic)"/>
     <remap from="~planning/bspline" to="$(arg bspline_topic)"/>
     <remap from="~planning/data_display" to="$(arg data_display_topic)"/>
-    <remap from="~planning/broadcast_bspline_from_planner" to = "/broadcast_bspline"/>
-    <remap from="~planning/broadcast_bspline_to_planner" to = "/broadcast_bspline"/>
+    <remap from="~planning/broadcast_bspline_from_planner"
+           to="$(arg swarm_broadcast_topic)"/>
+    <remap from="~planning/broadcast_bspline_to_planner"
+           to="$(arg swarm_broadcast_topic)"/>
 
     <remap from="~grid_map/odom" to="$(arg odometry_topic)"/>
     <remap from="~grid_map/cloud" to="$(arg cloud_topic)"/>
@@ -104,7 +113,7 @@
     <param name="fsm/waypoint4_y" value="$(arg point4_y)" type="double"/>
     <param name="fsm/waypoint4_z" value="$(arg point4_z)" type="double"/>
 
-    <param name="grid_map/resolution"      value="0.1" /> 
+    <param name="grid_map/resolution"      value="$(arg map_resolution)" />
     <param name="grid_map/map_size_x"   value="$(arg map_size_x_)" /> 
     <param name="grid_map/map_size_y"   value="$(arg map_size_y_)" /> 
     <param name="grid_map/map_size_z"   value="$(arg map_size_z_)" /> 
@@ -155,6 +164,11 @@
     <param name="topics/goal" value="$(arg waypoint_topic)"/>
     <param name="topics/cancel" value="$(arg cancel_topic)"/>
     <param name="topics/swarm_trajectories" value="$(arg swarm_trajectory_topic)"/>
+    <param name="swarm/common_frame" value="$(arg swarm_common_frame)"/>
+    <param name="swarm/origin_x" value="$(arg swarm_origin_x)" type="double"/>
+    <param name="swarm/origin_y" value="$(arg swarm_origin_y)" type="double"/>
+    <param name="swarm/origin_z" value="$(arg swarm_origin_z)" type="double"/>
+    <param name="swarm/origin_yaw" value="$(arg swarm_origin_yaw)" type="double"/>
     <param name="topics/status" value="$(arg status_topic)"/>
     <param name="status/frame_id" value="$(arg planning_frame)"/>
     <param name="status/target_id" value="drone_$(arg drone_id)"/>
@@ -169,7 +183,7 @@
     <param name="optimization/lambda_feasibility" value="0.1" type="double"/>
     <param name="optimization/lambda_fitness" value="1.0" type="double"/>
     <param name="optimization/dist0" value="0.5" type="double"/>
-    <param name="optimization/swarm_clearance" value="0.5" type="double"/>
+    <param name="optimization/swarm_clearance" value="$(arg swarm_clearance)" type="double"/>
     <param name="swarm/trajectory_timeout" value="3.0" type="double"/>
     <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
     <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/>

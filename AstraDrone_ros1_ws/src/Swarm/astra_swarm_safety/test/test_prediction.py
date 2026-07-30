@@ -1,12 +1,23 @@
 import unittest
 
 from astra_swarm_safety.prediction import (
+    pairwise_ids,
     predicted_vertical_minimum,
     separation_clear,
 )
 
 
 class PredictionTest(unittest.TestCase):
+    def test_three_vehicle_pairs_cover_uav3(self):
+        self.assertEqual(
+            pairwise_ids([1, 2, 3]), [(1, 2), (1, 3), (2, 3)])
+
+    def test_vehicle_ids_must_be_sorted_and_unique(self):
+        with self.assertRaises(ValueError):
+            pairwise_ids([1, 3, 2])
+        with self.assertRaises(ValueError):
+            pairwise_ids([1, 1])
+
     def test_future_crossing_is_rejected(self):
         clear, current, predicted = separation_clear(
             (0, 0, 34), (0, 0, 28),

@@ -3,6 +3,9 @@
   <arg name="world" default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
   <arg name="sensor_model"
        default="$(find astra_swarm_bringup)/models/iris_mid360_d435.sdf.xacro"/>
+  <arg name="uav1_spawn_x" default="0.0"/>
+  <arg name="uav2_spawn_x" default="2.0"/>
+  <arg name="spawn_y" default="0.0"/>
 
   <!-- PX4 rcS searches PATH for px4-rc.params after applying the airframe and
        before starting EKF2. This keeps the reboot-required external-vision
@@ -21,8 +24,8 @@
     <include file="$(find px4)/launch/single_vehicle_spawn.launch">
       <arg name="ID" value="0"/>
       <arg name="vehicle" value="iris_mid360_0"/>
-      <arg name="x" value="0.0"/>
-      <arg name="y" value="0.0"/>
+      <arg name="x" value="$(arg uav1_spawn_x)"/>
+      <arg name="y" value="$(arg spawn_y)"/>
       <arg name="z" value="0.06"/>
       <arg name="mavlink_udp_port" value="14560"/>
       <arg name="mavlink_tcp_port" value="4560"/>
@@ -40,12 +43,19 @@
                     robot_namespace:=/uav1 frame_prefix:=uav1
                     camera_namespace:=/uav1/d435
                     lidar_namespace:=/uav1/livox"/>
-    <include file="$(find mavros)/launch/px4.launch">
-      <arg name="fcu_url" value="udp://:14540@localhost:14580"/>
-      <arg name="gcs_url" value=""/>
-      <arg name="tgt_system" value="1"/>
-      <arg name="tgt_component" value="1"/>
-    </include>
+    <group>
+      <!-- MAVROS publishes standard ENU/NED conversion frames with generic
+           child names. Keep those internal helpers off the shared swarm TF
+           bus; the project-owned prefixed sensor/control frames stay on /tf. -->
+      <remap from="/tf" to="/uav1/mavros/tf"/>
+      <remap from="/tf_static" to="/uav1/mavros/tf_static"/>
+      <include file="$(find mavros)/launch/px4.launch">
+        <arg name="fcu_url" value="udp://:14540@localhost:14580"/>
+        <arg name="gcs_url" value=""/>
+        <arg name="tgt_system" value="1"/>
+        <arg name="tgt_component" value="1"/>
+      </include>
+    </group>
     <!-- Feed each estimator through its namespaced pose input. TF remains
          available to ROS consumers, but MAVROS does not race a second TF
          listener against two high-rate FAST-LIO trees. -->
@@ -56,8 +66,8 @@
     <include file="$(find px4)/launch/single_vehicle_spawn.launch">
       <arg name="ID" value="1"/>
       <arg name="vehicle" value="iris_mid360_1"/>
-      <arg name="x" value="2.0"/>
-      <arg name="y" value="0.0"/>
+      <arg name="x" value="$(arg uav2_spawn_x)"/>
+      <arg name="y" value="$(arg spawn_y)"/>
       <arg name="z" value="0.06"/>
       <arg name="mavlink_udp_port" value="14561"/>
       <arg name="mavlink_tcp_port" value="4561"/>
@@ -73,12 +83,16 @@
                     robot_namespace:=/uav2 frame_prefix:=uav2
                     camera_namespace:=/uav2/d435
                     lidar_namespace:=/uav2/livox"/>
-    <include file="$(find mavros)/launch/px4.launch">
-      <arg name="fcu_url" value="udp://:14541@localhost:14581"/>
-      <arg name="gcs_url" value=""/>
-      <arg name="tgt_system" value="2"/>
-      <arg name="tgt_component" value="1"/>
-    </include>
+    <group>
+      <remap from="/tf" to="/uav2/mavros/tf"/>
+      <remap from="/tf_static" to="/uav2/mavros/tf_static"/>
+      <include file="$(find mavros)/launch/px4.launch">
+        <arg name="fcu_url" value="udp://:14541@localhost:14581"/>
+        <arg name="gcs_url" value=""/>
+        <arg name="tgt_system" value="2"/>
+        <arg name="tgt_component" value="1"/>
+      </include>
+    </group>
     <param name="mavros/vision_pose/tf/listen" value="false"/>
   </group>
 </launch>

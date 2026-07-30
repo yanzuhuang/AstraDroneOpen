@@ -27,6 +27,9 @@ namespace ego_planner
     ros::Publisher a_star_list_pub;
     ros::Publisher guide_vector_pub;
     ros::Publisher intermediate_state_pub;
+    std::string frame_id_{"world"};
+    std::string marker_namespace_{"ego_trajectory"};
+    Eigen::Vector4d optimal_color_{1.0, 0.0, 0.0, 1.0};
 
   public:
     PlanningVisualization(/* args */) {}

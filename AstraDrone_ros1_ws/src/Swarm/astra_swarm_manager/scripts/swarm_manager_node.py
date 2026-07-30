@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Fail-closed permission coordinator for the two-UAV tower mission."""
+"""Fail-closed permission coordinator for the tower mission.
+
+The original policy was written for two vehicles.  The same interlocks now
+accept an explicit ``~uav_ids`` list so a third vehicle can join the common
+ROS master without creating a second, conflicting coordinator.  The legacy
+two-vehicle transition/landing fields remain unchanged for compatibility.
+"""
 
 import math
 
 import rospy
 from astra_swarm_manager.policy import (
-    landing_permissions,
+    fixed_layers_clear,
+    scheduled_takeoff_allowed,
+    serialized_landing_permissions,
     transition_permissions,
-    uav2_takeoff_allowed,
 )
 from astra_swarm_msgs.msg import CoordinationStatus, LayerConfirmation, SwarmState
 from std_msgs.msg import Bool
@@ -15,20 +22,41 @@ from std_msgs.msg import Bool
 
 class SwarmManager:
     def __init__(self):
-        self.delay = float(rospy.get_param("~takeoff_delay", 6.0))
+        configured_ids = rospy.get_param("~uav_ids", [1, 2])
+        self.uav_ids = [int(uid) for uid in configured_ids]
+        if self.uav_ids != sorted(set(self.uav_ids)) or not self.uav_ids:
+            raise rospy.ROSException("~uav_ids must be a non-empty sorted list")
+        self.takeoff_interval = float(rospy.get_param(
+            "~takeoff_interval_sec", rospy.get_param("~takeoff_delay", 6.0)))
+        if (not math.isfinite(self.takeoff_interval)
+                or self.takeoff_interval < 0.0):
+            raise rospy.ROSException(
+                "~takeoff_interval_sec must be finite and non-negative")
         self.timeout = float(rospy.get_param("~heartbeat_timeout", 1.0))
         self.height_tolerance = float(rospy.get_param(
             "~height_tolerance", 0.4))
-        self.takeoff_radius = float(rospy.get_param(
-            "~takeoff_protection_radius", 3.0))
-        self.takeoff_height = float(rospy.get_param(
-            "~uav2_takeoff_height", 4.0))
-        self.minimum_3d = float(rospy.get_param(
-            "~minimum_3d_separation", 3.0))
-        self.landing_radius = float(rospy.get_param(
-            "~landing_protection_radius", 3.0))
-        self.home1 = rospy.get_param("~uav1_home_position", [0.0, 0.0, 0.0])
-        self.home2 = rospy.get_param("~uav2_home_position", [2.0, 0.0, 0.0])
+        self.minimum_vertical = float(rospy.get_param(
+            "~minimum_vertical_separation", 4.0))
+        self.optimizer_swarm_clearance = float(rospy.get_param(
+            "~optimizer_swarm_clearance", 0.0))
+        if (not math.isfinite(self.optimizer_swarm_clearance)
+                or self.optimizer_swarm_clearance < 0.0):
+            raise rospy.ROSException(
+                "~optimizer_swarm_clearance must be finite and non-negative")
+        # EGO-Swarm uses CLEARANCE=2*swarm_clearance and scales z by 1/2
+        # in its ellipsoid, so same-XY vertical separation must be at least
+        # 4*swarm_clearance.
+        self.required_vertical = max(
+            self.minimum_vertical, 4.0 * self.optimizer_swarm_clearance)
+        self.mission_heights = [
+            float(height) for height in rospy.get_param(
+                "~mission_heights",
+                [34.0, 28.0])]
+        if len(self.mission_heights) != len(self.uav_ids):
+            raise rospy.ROSException(
+                "~mission_heights must contain one value per UAV")
+        self.configuration_safe = fixed_layers_clear(
+            self.mission_heights, self.required_vertical)
         self.uav1_initial_height = float(rospy.get_param(
             "~uav1_initial_height", 34.0))
         self.uav1_final_height = float(rospy.get_param(
@@ -41,12 +69,12 @@ class SwarmManager:
         self.received = {}
         self.safety_clear = False
         self.px4_params_ready = False
-        self.uav1_takeoff_started = None
+        self.schedule_started = None
         self.landing_owner = 0
         self.last_uav2_confirmed = False
         self.uav2_final_confirmed_ever = False
 
-        for uav_id in (1, 2):
+        for uav_id in self.uav_ids:
             rospy.Subscriber(
                 "/uav{}/swarm/state".format(uav_id), SwarmState,
                 lambda msg, uid=uav_id: self.state_cb(uid, msg), queue_size=5)
@@ -57,18 +85,18 @@ class SwarmManager:
         self.takeoff_pubs = {
             uid: rospy.Publisher("/uav{}/swarm/takeoff_permission".format(uid),
                                  Bool, queue_size=1, latch=True)
-            for uid in (1, 2)
+            for uid in self.uav_ids
         }
         self.transition_pubs = {
             uid: rospy.Publisher(
                 "/uav{}/swarm/transition_permission".format(uid),
                 Bool, queue_size=1, latch=True)
-            for uid in (1, 2)
+            for uid in self.uav_ids
         }
         self.landing_pubs = {
             uid: rospy.Publisher("/uav{}/swarm/landing_permission".format(uid),
                                  Bool, queue_size=1, latch=True)
-            for uid in (1, 2)
+            for uid in self.uav_ids
         }
         self.status_pub = rospy.Publisher(
             "/swarm/coordinator/status", CoordinationStatus,
@@ -81,11 +109,6 @@ class SwarmManager:
     def state_cb(self, uav_id, msg):
         self.states[uav_id] = msg
         self.received[uav_id] = rospy.Time.now()
-        if uav_id == 1 and self.uav1_takeoff_started is None:
-            if msg.flight_state in {
-                    "TAKEOFF", "HOVER_READY", "TRACK_EGO", "HOLD",
-                    "RETURN_HOME", "HOME_HOVER", "LANDING"}:
-                self.uav1_takeoff_started = rospy.Time.now()
 
     def safety_cb(self, msg):
         self.safety_clear = msg.data
@@ -106,26 +129,25 @@ class SwarmManager:
                 "ERROR", "FAILSAFE", "HOLD_SAFE"}
         )
 
-    @staticmethod
-    def xyz(state):
-        p = state.pose.position
-        return (p.x, p.y, p.z)
-
     def timer_cb(self, _event):
         now = rospy.Time.now()
         healthy1 = self.healthy(1, now)
-        healthy2 = self.healthy(2, now)
-        takeoff1 = healthy1 and healthy2 and self.px4_params_ready
+        healthy2 = self.healthy(2, now) if 2 in self.uav_ids else False
+        healthy_all = all(self.healthy(uid, now) for uid in self.uav_ids)
+        if (self.schedule_started is None and healthy_all
+                and self.px4_params_ready and self.configuration_safe):
+            self.schedule_started = now
         elapsed = -1.0
-        if self.uav1_takeoff_started is not None:
-            elapsed = (now - self.uav1_takeoff_started).to_sec()
-        takeoff2 = False
-        if (healthy1 and healthy2 and self.px4_params_ready
-                and elapsed >= 0.0):
-            takeoff2 = uav2_takeoff_allowed(
-                elapsed, self.delay, True, self.xyz(self.states[1]),
-                self.home2, self.takeoff_radius, self.safety_clear,
-                self.takeoff_height, self.minimum_3d)
+        if self.schedule_started is not None:
+            elapsed = (now - self.schedule_started).to_sec()
+        takeoff_permissions = {}
+        for index, uid in enumerate(self.uav_ids):
+            takeoff_permissions[uid] = scheduled_takeoff_allowed(
+                index, elapsed, self.takeoff_interval, healthy_all,
+                self.px4_params_ready, self.safety_clear,
+                self.configuration_safe)
+        takeoff1 = takeoff_permissions.get(1, False)
+        takeoff2 = takeoff_permissions.get(2, False)
 
         transition1 = transition2 = confirmed = False
         if healthy1 and healthy2:
@@ -150,39 +172,42 @@ class SwarmManager:
         self.uav2_final_confirmed_ever |= confirmed
         self.last_uav2_confirmed = confirmed
 
-        waiting1 = (healthy1 and
-                    self.states[1].flight_state == "HOME_HOVER")
-        waiting2 = (healthy2 and
-                    self.states[2].flight_state == "HOME_HOVER")
-        if not (healthy1 and healthy2):
-            # A stale or invalid peer must inhibit every new landing grant.
-            waiting1 = waiting2 = False
-        zones_overlap = math.hypot(
-            self.home1[0] - self.home2[0],
-            self.home1[1] - self.home2[1]) < 2.0 * self.landing_radius
-        if self.landing_owner == 1 and (
-                not healthy1 or self.states[1].flight_state in {
+        if self.landing_owner and (
+                not self.healthy(self.landing_owner, now)
+                or self.states[self.landing_owner].flight_state in {
                     "DONE", "ERROR", "FAILSAFE"}):
             self.landing_owner = 0
-        if self.landing_owner == 2 and (
-                not healthy2 or self.states[2].flight_state in {
-                    "DONE", "ERROR", "FAILSAFE"}):
-            self.landing_owner = 0
-        land1, land2, self.landing_owner = landing_permissions(
-            waiting1, waiting2, zones_overlap, self.landing_owner)
+        waiting_ids = [
+            uid for uid in self.uav_ids
+            if self.healthy(uid, now)
+            and self.states[uid].flight_state == "HOME_HOVER"]
+        landing_grants, self.landing_owner = (
+            serialized_landing_permissions(
+                waiting_ids if healthy_all else [], self.landing_owner))
+        landing_permissions_by_id = {
+            uid: landing_grants.get(uid, False) for uid in self.uav_ids}
+        land1 = landing_permissions_by_id.get(1, False)
+        land2 = landing_permissions_by_id.get(2, False)
 
         permissions = {
-            "takeoff": {1: takeoff1, 2: takeoff2},
+            "takeoff": takeoff_permissions,
             "transition": {1: transition1, 2: transition2},
-            "landing": {1: land1, 2: land2},
+            "landing": landing_permissions_by_id,
         }
+        for uid in self.uav_ids:
+            if uid > 2:
+                # No third-vehicle height exchange exists in the legacy
+                # CoordinationStatus message.  Keep its grants fail-closed:
+                # heartbeat, PX4 readiness and the global safety latch must
+                # all be present.
+                permissions["transition"][uid] = (
+                    self.healthy(uid, now) and self.safety_clear)
         for category, pubs in (
                 ("takeoff", self.takeoff_pubs),
                 ("transition", self.transition_pubs),
                 ("landing", self.landing_pubs)):
             for uid, publisher in pubs.items():
                 publisher.publish(Bool(data=permissions[category][uid]))
-
         status = CoordinationStatus()
         status.header.stamp = now
         status.header.frame_id = "world"
@@ -202,7 +227,12 @@ class SwarmManager:
                 "RETURN_HOME", "WAIT_LANDING_PERMISSION", "LAND", "DONE"}
             or flight1 in {"RETURN_HOME", "HOME_HOVER", "LANDING", "DONE"}
             or flight2 in {"RETURN_HOME", "HOME_HOVER", "LANDING", "DONE"})
-        if not healthy1 or not healthy2 or not self.px4_params_ready:
+        if not self.configuration_safe:
+            status.coordinator_state = "SAFETY_INHIBIT"
+            status.reason = (
+                "fixed mission layers violate {:.2f} m required vertical "
+                "separation".format(self.required_vertical))
+        elif not healthy_all or not self.px4_params_ready:
             status.coordinator_state = "SYSTEM_READY"
             status.reason = (
                 "waiting for healthy states and verified PX4 parameters")
@@ -212,7 +242,7 @@ class SwarmManager:
         elif returning:
             status.coordinator_state = "RETURN_COORDINATION"
             status.reason = "independent return and landing-zone arbitration"
-        elif self.uav1_takeoff_started is None:
+        elif self.schedule_started is None:
             status.coordinator_state = "SYSTEM_READY"
             status.reason = "UAV1 is ready for the first takeoff"
         elif not takeoff2:

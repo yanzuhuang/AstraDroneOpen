@@ -7,6 +7,14 @@ namespace ego_planner
   PlanningVisualization::PlanningVisualization(ros::NodeHandle &nh)
   {
     node = nh;
+    nh.param<std::string>("status/frame_id", frame_id_, "world");
+    nh.param<std::string>(
+        "visualization/marker_namespace", marker_namespace_,
+        "ego_trajectory");
+    nh.param("visualization/optimal_color_r", optimal_color_(0), 1.0);
+    nh.param("visualization/optimal_color_g", optimal_color_(1), 0.0);
+    nh.param("visualization/optimal_color_b", optimal_color_(2), 0.0);
+    optimal_color_(3) = 1.0;
 
     goal_point_pub = nh.advertise<visualization_msgs::Marker>("goal_point", 2);
     global_list_pub = nh.advertise<visualization_msgs::Marker>("global_list", 2);
@@ -20,7 +28,8 @@ namespace ego_planner
                                                 Eigen::Vector4d color, int id, bool show_sphere /* = true */ )
   {
     visualization_msgs::Marker sphere, line_strip;
-    sphere.header.frame_id = line_strip.header.frame_id = "world";
+    sphere.header.frame_id = line_strip.header.frame_id = frame_id_;
+    sphere.ns = line_strip.ns = marker_namespace_;
     sphere.header.stamp = line_strip.header.stamp = ros::Time::now();
     sphere.type = visualization_msgs::Marker::SPHERE_LIST;
     line_strip.type = visualization_msgs::Marker::LINE_STRIP;
@@ -55,7 +64,8 @@ namespace ego_planner
                                                        const vector<Eigen::Vector3d> &list, double scale, Eigen::Vector4d color, int id)
   {
     visualization_msgs::Marker sphere, line_strip;
-    sphere.header.frame_id = line_strip.header.frame_id = "map";
+    sphere.header.frame_id = line_strip.header.frame_id = frame_id_;
+    sphere.ns = line_strip.ns = marker_namespace_;
     sphere.header.stamp = line_strip.header.stamp = ros::Time::now();
     sphere.type = visualization_msgs::Marker::SPHERE_LIST;
     line_strip.type = visualization_msgs::Marker::LINE_STRIP;
@@ -90,7 +100,8 @@ namespace ego_planner
                                                         const vector<Eigen::Vector3d> &list, double scale, Eigen::Vector4d color, int id)
   {
     visualization_msgs::Marker arrow;
-    arrow.header.frame_id = "map";
+    arrow.header.frame_id = frame_id_;
+    arrow.ns = marker_namespace_;
     arrow.header.stamp = ros::Time::now();
     arrow.type = visualization_msgs::Marker::ARROW;
     arrow.action = visualization_msgs::Marker::ADD;
@@ -131,7 +142,8 @@ namespace ego_planner
   void PlanningVisualization::displayGoalPoint(Eigen::Vector3d goal_point, Eigen::Vector4d color, const double scale, int id)
   {
     visualization_msgs::Marker sphere;
-    sphere.header.frame_id = "world";
+    sphere.header.frame_id = frame_id_;
+    sphere.ns = marker_namespace_;
     sphere.header.stamp = ros::Time::now();
     sphere.type = visualization_msgs::Marker::SPHERE;
     sphere.action = visualization_msgs::Marker::ADD;
@@ -219,8 +231,7 @@ namespace ego_planner
       Eigen::Vector3d pt = optimal_pts.col(i).transpose();
       list.push_back(pt);
     }
-    Eigen::Vector4d color(1, 0, 0, 1);
-    displayMarkerList(optimal_list_pub, list, 0.15, color, id);
+    displayMarkerList(optimal_list_pub, list, 0.15, optimal_color_, id);
   }
 
   void PlanningVisualization::displayAStarList(std::vector<std::vector<Eigen::Vector3d>> a_star_paths, int id /* = Eigen::Vector4d(0.5,0.5,0,1)*/)

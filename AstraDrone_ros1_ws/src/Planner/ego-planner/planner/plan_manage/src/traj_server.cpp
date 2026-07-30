@@ -52,7 +52,7 @@ void bsplineCallback(traj_utils::BsplineConstPtr msg)
 {
   if (!msg || msg->order != 3 || msg->pos_pts.size() < 4 ||
       msg->knots.size() < msg->pos_pts.size() + msg->order + 1 ||
-      msg->start_time.isZero() ||
+      msg->start_time.isZero() || msg->frame_id != command_frame_id_ ||
       !cancellation_gate_.acceptsTrajectory(msg->traj_id, msg->start_time))
   {
     ROS_WARN_THROTTLE(1.0, "[Traj server] rejected malformed or cancelled B-spline.");
@@ -268,8 +268,14 @@ void cmdCallback(const ros::TimerEvent &e)
 int main(int argc, char **argv)
 {
   ros::init(argc, argv, "traj_server");
-  ros::NodeHandle node;
   ros::NodeHandle nh("~");
+  const std::string private_ns = nh.getNamespace();
+  const std::size_t last_slash = private_ns.find_last_of('/');
+  const std::string parent_ns =
+      last_slash == std::string::npos || last_slash == 0
+          ? std::string("/")
+          : private_ns.substr(0, last_slash);
+  ros::NodeHandle node(parent_ns);
 
   std::string bspline_topic, cancel_topic, goal_topic, position_command_topic;
   nh.param("traj_server/bspline_topic", bspline_topic, std::string("planning/bspline"));

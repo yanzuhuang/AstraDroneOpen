@@ -1,4 +1,13 @@
 import math
+from itertools import combinations
+
+
+def pairwise_ids(uav_ids):
+    """Return every unique vehicle pair in deterministic order."""
+    normalized = [int(uid) for uid in uav_ids]
+    if not normalized or normalized != sorted(set(normalized)):
+        raise ValueError("uav_ids must be a non-empty sorted unique list")
+    return list(combinations(normalized, 2))
 
 
 def distance(a, b):

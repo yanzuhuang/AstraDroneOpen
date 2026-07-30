@@ -1,0 +1,45 @@
+enable_control: false
+require_sim_time: true
+require_start_permission: true
+start_permission_topic: /uav3/swarm/takeoff_permission
+auto_track_on_command: false
+takeoff_height: 4.0
+return_height: 4.0
+min_relative_height: 0.3
+max_relative_height: 40.0
+max_horizontal_radius: 60.0
+cloud_timeout: 0.7
+planner_odom_timeout: 0.7
+command_timeout: 0.60
+fcu_state_timeout: 2.0
+extended_state_timeout: 2.0
+land_after_loss: 8.0
+alignment_position_tolerance: 0.75
+alignment_yaw_error_duration: 1.0
+virtual_ceil_height: 45.0
+planning_frame: uav3/camera_init
+mavros_frame: uav3/map
+command_topic: /uav3/planning/pos_cmd
+planner_odom_topic: /uav3/Odometry
+cloud_topic: /uav3/stage3/cloud_registered_filtered
+mavros_state_topic: /uav3/mavros/state
+mavros_extended_state_topic: /uav3/mavros/extended_state
+mavros_pose_topic: /uav3/mavros/local_position/pose_framed
+input_goal_topic: /uav3/move_base_simple/goal
+planner_goal_topic: /uav3/planning/goal
+setpoint_topic: /uav3/mavros/setpoint_raw/local
+arming_service: /uav3/mavros/cmd/arming
+set_mode_service: /uav3/mavros/set_mode
+planning_cancel_topic: /uav3/planning/cancel
+tower_yaw_override_enabled: true
+tower_camera_yaw_offset: 0.0
+forward_yaw_min_speed: 0.05
+tower_center_topic: /uav3/tower_mission/selected_tower_center
+tower_yaw_mode_topic: /uav3/tower_mission/face_tower
+max_yaw_rate: 0.5235987755982988
+control_topics:
+  position: [/uav3/mavros/setpoint_position/local, /uav3/mavros/setpoint_position/global, /uav3/mavros/setpoint_position/global_to_local]
+  raw_local: [/uav3/mavros/setpoint_raw/local]
+  velocity: [/uav3/mavros/setpoint_velocity/cmd_vel, /uav3/mavros/setpoint_velocity/cmd_vel_unstamped]
+  attitude: [/uav3/mavros/setpoint_attitude/attitude, /uav3/mavros/setpoint_attitude/cmd_vel, /uav3/mavros/setpoint_raw/attitude]
+  thrust: [/uav3/mavros/setpoint_attitude/thrust]

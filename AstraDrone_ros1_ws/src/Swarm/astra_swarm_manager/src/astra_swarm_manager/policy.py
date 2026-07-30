@@ -1,6 +1,7 @@
 """Pure coordination decisions kept separate from ROS transport."""
 
 import math
+from itertools import combinations
 
 
 AIRBORNE_STATES = {
@@ -64,3 +65,42 @@ def landing_permissions(uav1_waiting, uav2_waiting, zones_overlap,
     if uav2_waiting:
         return False, True, 2
     return False, False, 0
+
+
+def fixed_layers_clear(heights, minimum_vertical_separation):
+    """Validate fixed mission layers against the configured safety contract."""
+    values = [float(height) for height in heights]
+    if not values or not all(math.isfinite(value) for value in values):
+        return False
+    return all(
+        abs(first - second) >= float(minimum_vertical_separation)
+        for first, second in combinations(values, 2))
+
+
+def scheduled_takeoff_allowed(vehicle_index, elapsed, interval, healthy,
+                              px4_ready, safety_clear,
+                              configuration_safe):
+    """Apply one coordinator clock to all vehicles.
+
+    Vehicle index is zero based.  The first vehicle may establish initial
+    clearance without a pre-existing global safety latch; all later vehicles
+    require the live safety monitor.
+    """
+    if vehicle_index < 0 or elapsed < 0.0:
+        return False
+    if not healthy or not px4_ready or not configuration_safe:
+        return False
+    if elapsed < max(0.0, float(interval)) * vehicle_index:
+        return False
+    return vehicle_index == 0 or safety_clear
+
+
+def serialized_landing_permissions(waiting_ids, active_owner):
+    """Grant at most one landing permission for an arbitrary fleet."""
+    waiting = sorted(set(int(uid) for uid in waiting_ids))
+    if active_owner in waiting:
+        return {uid: uid == active_owner for uid in waiting}, active_owner
+    if waiting:
+        owner = waiting[0]
+        return {uid: uid == owner for uid in waiting}, owner
+    return {}, 0

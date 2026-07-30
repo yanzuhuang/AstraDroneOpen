@@ -3,6 +3,7 @@
   <arg name="start_sim" default="true"/>
   <arg name="gui" default="true"/>
   <arg name="enable_cloud_fusion" default="false"/>
+  <arg name="use_sim_time" default="true"/>
   <arg name="rviz" default="false"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
@@ -14,31 +15,54 @@
   <arg name="uav2_final_height" default="24.0"/>
   <arg name="uav1_takeoff_height" default="4.0"/>
   <arg name="uav2_takeoff_height" default="4.0"/>
+  <arg name="uav1_staging_height" default="$(arg uav1_takeoff_height)"/>
+  <arg name="uav2_staging_height" default="$(arg uav2_takeoff_height)"/>
+  <arg name="uav1_layer_offsets" default="[0.0, -4.0]"/>
+  <arg name="uav2_layer_offsets" default="[0.0, -4.0]"/>
+  <arg name="uav1_candidate_height_offsets" default="[0.0, -1.0, -2.0]"/>
+  <arg name="uav2_candidate_height_offsets" default="[0.0, -1.0, -2.0]"/>
+  <arg name="uav1_spawn_x" default="0.0"/>
+  <arg name="uav2_spawn_x" default="2.0"/>
+  <arg name="spawn_y" default="0.0"/>
+  <arg name="swarm_uav_ids" default="[1, 2]"/>
+  <arg name="swarm_vehicle_namespaces" default="[/uav1, /uav2]"/>
+  <arg name="swarm_mission_heights" default="[34.0, 28.0]"/>
+  <arg name="uav1_peer_state_topics" default="[/uav2/swarm/state]"/>
+  <arg name="uav2_peer_state_topics" default="[/uav1/swarm/state]"/>
   <arg name="map_size_z" default="46.0"/>
+  <arg name="map_size_x" default="90.0"/>
+  <arg name="map_size_y" default="120.0"/>
+  <arg name="map_resolution" default="0.20"/>
   <arg name="ground_height" default="-0.50"/>
   <arg name="virtual_ceil_height" default="45.0"/>
   <arg name="mission_maximum_height" default="45.0"/>
+  <arg name="uav1_mission_minimum_height" default="2.0"/>
+  <arg name="uav2_mission_minimum_height" default="2.0"/>
   <arg name="max_vel" default="0.30"/>
   <arg name="max_acc" default="0.50"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
+  <arg name="swarm_clearance" default="1.50"/>
   <arg name="uav1_report_file" default="/tmp/astra_swarm_uav1.csv"/>
   <arg name="uav2_report_file" default="/tmp/astra_swarm_uav2.csv"/>
-  <param name="/use_sim_time" value="true"/>
+  <param name="/use_sim_time" value="$(arg use_sim_time)"/>
 
   <include if="$(arg start_sim)"
            file="$(find astra_swarm_bringup)/launch/dual_px4_mavros.launch">
     <arg name="gui" value="$(arg gui)"/>
+    <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
+    <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
+    <arg name="spawn_y" value="$(arg spawn_y)"/>
   </include>
 
   <!-- Unified world to each vehicle-local control map. The planners remain
        independent; only the swarm state is expressed in world coordinates. -->
   <node pkg="tf2_ros" type="static_transform_publisher"
         name="world_to_uav1_map"
-        args="0 0 0 0 0 0 1 world uav1/map"/>
+        args="$(arg uav1_spawn_x) $(arg spawn_y) 0 0 0 0 1 world uav1/map"/>
   <node pkg="tf2_ros" type="static_transform_publisher"
         name="world_to_uav2_map"
-        args="2 0 0 0 0 0 1 world uav2/map"/>
+        args="$(arg uav2_spawn_x) $(arg spawn_y) 0 0 0 0 1 world uav2/map"/>
 
   <group ns="uav1">
     <group>
@@ -87,9 +111,10 @@
       <param name="input_topic" value="/uav1/cloud_registered"/>
       <param name="output_topic"
              value="/uav1/cloud_registered_peer_filtered"/>
-      <param name="peer_state_topic" value="/uav2/swarm/state"/>
-      <param name="home_x" value="0.0"/>
-      <param name="home_y" value="0.0"/>
+      <rosparam param="peer_state_topics"
+                subst_value="true">$(arg uav1_peer_state_topics)</rosparam>
+      <param name="home_x" value="$(arg uav1_spawn_x)"/>
+      <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
     </node>
 
@@ -98,7 +123,8 @@
             name="state_publisher" output="screen" required="true">
         <param name="uav_id" value="1"/>
         <param name="vehicle_namespace" value="/uav1"/>
-        <rosparam param="home_position">[0.0, 0.0, 0.0]</rosparam>
+        <rosparam param="home_position"
+                  subst_value="true">[$(arg uav1_spawn_x), $(arg spawn_y), 0.0]</rosparam>
         <param name="odom_topic" value="/uav1/Odometry"/>
         <param name="target_topic"
                value="/uav1/tower_mission/current_target"/>
@@ -165,9 +191,10 @@
       <param name="input_topic" value="/uav2/cloud_registered"/>
       <param name="output_topic"
              value="/uav2/cloud_registered_peer_filtered"/>
-      <param name="peer_state_topic" value="/uav1/swarm/state"/>
-      <param name="home_x" value="2.0"/>
-      <param name="home_y" value="0.0"/>
+      <rosparam param="peer_state_topics"
+                subst_value="true">$(arg uav2_peer_state_topics)</rosparam>
+      <param name="home_x" value="$(arg uav2_spawn_x)"/>
+      <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
     </node>
 
@@ -176,7 +203,8 @@
             name="state_publisher" output="screen" required="true">
         <param name="uav_id" value="2"/>
         <param name="vehicle_namespace" value="/uav2"/>
-        <rosparam param="home_position">[2.0, 0.0, 0.0]</rosparam>
+        <rosparam param="home_position"
+                  subst_value="true">[$(arg uav2_spawn_x), $(arg spawn_y), 0.0]</rosparam>
         <param name="odom_topic" value="/uav2/Odometry"/>
         <param name="target_topic"
                value="/uav2/tower_mission/current_target"/>
@@ -199,25 +227,42 @@
   <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
     <arg name="uav_ns" value="uav1"/>
     <arg name="uav_id" value="1"/>
+    <arg name="planner_drone_id" value="0"/>
     <arg name="enable_control" value="$(arg enable_control)"/>
     <arg name="takeoff_delay" value="0.0"/>
     <arg name="planning_frame" value="uav1/camera_init"/>
     <arg name="mavros_frame" value="uav1/map"/>
     <arg name="inspection_top_height" value="$(arg uav1_top_height)"/>
+    <arg name="layer_offsets" value="$(arg uav1_layer_offsets)"/>
+    <arg name="candidate_height_offsets"
+         value="$(arg uav1_candidate_height_offsets)"/>
     <arg name="takeoff_height" value="$(arg uav1_takeoff_height)"/>
+    <arg name="staging_height" value="$(arg uav1_staging_height)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="map_size_z" value="$(arg map_size_z)"/>
+    <arg name="map_size_x" value="$(arg map_size_x)"/>
+    <arg name="map_size_y" value="$(arg map_size_y)"/>
+    <arg name="map_resolution" value="$(arg map_resolution)"/>
     <arg name="ground_height" value="$(arg ground_height)"/>
     <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
     <arg name="mission_maximum_height"
          value="$(arg mission_maximum_height)"/>
+    <arg name="mission_minimum_height"
+         value="$(arg uav1_mission_minimum_height)"/>
     <arg name="max_vel" value="$(arg max_vel)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
-    <arg name="tower_center_x" value="-10.0551"/>
-    <arg name="crane_center_x" value="2.7535"/>
+    <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+    <arg name="swarm_origin_x" value="$(arg uav1_spawn_x)"/>
+    <arg name="swarm_origin_y" value="$(arg spawn_y)"/>
+    <arg name="tower_center_x"
+         value="$(eval -10.0551 - float(arg('uav1_spawn_x')))"/>
+    <arg name="tower_center_y"
+         value="$(eval 19.7104 - float(arg('spawn_y')))"/>
+    <arg name="crane_center_x"
+         value="$(eval 2.7535 - float(arg('uav1_spawn_x')))"/>
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
     <arg name="report_file" value="$(arg uav1_report_file)"/>
@@ -229,26 +274,42 @@
   <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
     <arg name="uav_ns" value="uav2"/>
     <arg name="uav_id" value="2"/>
+    <arg name="planner_drone_id" value="1"/>
     <arg name="enable_control" value="$(arg enable_control)"/>
     <arg name="takeoff_delay" value="$(arg takeoff_delay)"/>
     <arg name="planning_frame" value="uav2/camera_init"/>
     <arg name="mavros_frame" value="uav2/map"/>
     <arg name="inspection_top_height" value="$(arg uav2_top_height)"/>
+    <arg name="layer_offsets" value="$(arg uav2_layer_offsets)"/>
+    <arg name="candidate_height_offsets"
+         value="$(arg uav2_candidate_height_offsets)"/>
     <arg name="takeoff_height" value="$(arg uav2_takeoff_height)"/>
+    <arg name="staging_height" value="$(arg uav2_staging_height)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="map_size_z" value="$(arg map_size_z)"/>
+    <arg name="map_size_x" value="$(arg map_size_x)"/>
+    <arg name="map_size_y" value="$(arg map_size_y)"/>
+    <arg name="map_resolution" value="$(arg map_resolution)"/>
     <arg name="ground_height" value="$(arg ground_height)"/>
     <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
     <arg name="mission_maximum_height"
          value="$(arg mission_maximum_height)"/>
+    <arg name="mission_minimum_height"
+         value="$(arg uav2_mission_minimum_height)"/>
     <arg name="max_vel" value="$(arg max_vel)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
-    <!-- UAV2 local map origin is world (2,0,0). -->
-    <arg name="tower_center_x" value="-12.0551"/>
-    <arg name="crane_center_x" value="0.7535"/>
+    <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+    <arg name="swarm_origin_x" value="$(arg uav2_spawn_x)"/>
+    <arg name="swarm_origin_y" value="$(arg spawn_y)"/>
+    <arg name="tower_center_x"
+         value="$(eval -10.0551 - float(arg('uav2_spawn_x')))"/>
+    <arg name="tower_center_y"
+         value="$(eval 19.7104 - float(arg('spawn_y')))"/>
+    <arg name="crane_center_x"
+         value="$(eval 2.7535 - float(arg('uav2_spawn_x')))"/>
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav2_bridge.yaml"/>
     <arg name="report_file" value="$(arg uav2_report_file)"/>
@@ -261,10 +322,16 @@
         name="astra_swarm_safety" output="screen" required="true">
     <rosparam command="load"
               file="$(find astra_swarm_safety)/config/dual_tower.yaml"/>
+    <rosparam param="uav_ids"
+              subst_value="true">$(arg swarm_uav_ids)</rosparam>
+    <rosparam param="mission_heights"
+              subst_value="true">$(arg swarm_mission_heights)</rosparam>
+    <param name="optimizer_swarm_clearance" value="$(arg swarm_clearance)"/>
   </node>
   <node pkg="astra_swarm_bringup" type="px4_param_guard.py"
         name="astra_swarm_px4_param_guard" output="screen" required="true">
-    <rosparam param="vehicle_namespaces">[/uav1, /uav2]</rosparam>
+    <rosparam param="vehicle_namespaces"
+              subst_value="true">$(arg swarm_vehicle_namespaces)</rosparam>
     <param name="ekf2_hgt_ref" value="3"/>
     <param name="ekf2_ev_ctrl" value="11"/>
   </node>
@@ -272,7 +339,17 @@
         name="astra_swarm_manager" output="screen" required="true">
     <rosparam command="load"
               file="$(find astra_swarm_manager)/config/dual_tower.yaml"/>
+    <rosparam param="uav_ids"
+              subst_value="true">$(arg swarm_uav_ids)</rosparam>
+    <rosparam param="mission_heights"
+              subst_value="true">$(arg swarm_mission_heights)</rosparam>
+    <param name="optimizer_swarm_clearance" value="$(arg swarm_clearance)"/>
+    <rosparam param="uav1_home_position"
+              subst_value="true">[$(arg uav1_spawn_x), $(arg spawn_y), 0.0]</rosparam>
+    <rosparam param="uav2_home_position"
+              subst_value="true">[$(arg uav2_spawn_x), $(arg spawn_y), 0.0]</rosparam>
     <param name="takeoff_delay" value="$(arg takeoff_delay)"/>
+    <param name="takeoff_interval_sec" value="$(arg takeoff_delay)"/>
     <param name="uav2_takeoff_height" value="$(arg uav2_takeoff_height)"/>
     <param name="uav1_initial_height" value="$(arg uav1_top_height)"/>
     <param name="uav1_final_height" value="$(arg uav1_final_height)"/>

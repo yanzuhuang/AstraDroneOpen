@@ -23,6 +23,7 @@
 #include <plan_manage/planner_manager.h>
 #include <traj_utils/planning_visualization.h>
 #include <plan_manage/planning_status_tracker.h>
+#include <plan_manage/swarm_frame_transform.h>
 
 using std::vector;
 
@@ -94,7 +95,9 @@ namespace ego_planner
     ros::Publisher status_pub_;
     std::string odom_topic_, waypoint_topic_, cancel_topic_, swarm_trajectory_topic_;
     std::string status_topic_, status_frame_id_, target_id_;
+    std::string swarm_common_frame_;
     double swarm_trajectory_timeout_{3.0};
+    SwarmFrameTransform swarm_frame_transform_;
     PlanningStatusTracker status_tracker_;
     ros::Time cancel_time_;
     bool have_cancel_{false};

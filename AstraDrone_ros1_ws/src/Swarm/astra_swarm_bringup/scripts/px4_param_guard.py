@@ -10,6 +10,10 @@ class Px4ParamGuard:
     def __init__(self):
         self.namespaces = rospy.get_param(
             "~vehicle_namespaces", ["/uav1", "/uav2"])
+        if (not self.namespaces
+                or len(set(self.namespaces)) != len(self.namespaces)):
+            raise rospy.ROSException(
+                "~vehicle_namespaces must be non-empty and unique")
         self.expected = {
             "EKF2_HGT_REF": int(rospy.get_param("~ekf2_hgt_ref", 0)),
             # FAST-LIO contributes horizontal/vertical position and yaw. Its
@@ -47,8 +51,9 @@ class Px4ParamGuard:
         if ready:
             self.completed = True
             rospy.logwarn(
-                "[SWARM_PX4_GUARD] verified two PX4 instances: "
+                "[SWARM_PX4_GUARD] verified %d PX4 instances: "
                 "EKF2_HGT_REF=%d EKF2_EV_CTRL=%d",
+                len(self.namespaces),
                 self.expected["EKF2_HGT_REF"],
                 self.expected["EKF2_EV_CTRL"])
 

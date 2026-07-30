@@ -1,24 +1,39 @@
 <launch>
   <arg name="uav_ns"/>
   <arg name="uav_id"/>
+  <arg name="planner_drone_id" default="0"/>
   <arg name="enable_control" default="false"/>
   <arg name="takeoff_delay" default="0.0"/>
   <arg name="planning_frame"/>
   <arg name="mavros_frame"/>
   <arg name="inspection_top_height"/>
-  <arg name="layer_offset" default="-4.0"/>
+  <arg name="layer_offsets" default="[0.0, -4.0]"/>
   <arg name="takeoff_height" default="4.0"/>
+  <arg name="staging_height" default="$(arg takeoff_height)"/>
+  <arg name="ascent_intermediate_heights" default="[]"/>
   <arg name="low_altitude_enabled" default="false"/>
+  <arg name="coordination_enabled" default="true"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
   <arg name="map_size_z" default="46.0"/>
+  <arg name="map_size_x" default="90.0"/>
+  <arg name="map_size_y" default="120.0"/>
+  <arg name="map_resolution" default="0.20"/>
   <arg name="ground_height" default="-0.50"/>
   <arg name="virtual_ceil_height" default="45.0"/>
   <arg name="mission_maximum_height" default="45.0"/>
+  <arg name="mission_minimum_height" default="2.0"/>
+  <arg name="candidate_height_offsets" default="[0.0, -1.0, -2.0]"/>
   <arg name="max_vel" default="0.30"/>
   <arg name="max_acc" default="0.50"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
+  <arg name="swarm_clearance" default="1.50"/>
+  <arg name="swarm_common_frame" default="world"/>
+  <arg name="swarm_origin_x" default="0.0"/>
+  <arg name="swarm_origin_y" default="0.0"/>
+  <arg name="swarm_origin_z" default="0.0"/>
+  <arg name="swarm_origin_yaw" default="0.0"/>
   <arg name="tower_center_x"/>
   <arg name="tower_center_y" default="19.7104"/>
   <arg name="crane_center_x"/>
@@ -40,6 +55,7 @@
            to="/$(arg uav_ns)/grid_map/unknown"/>
     <include file="$(find ego_gazebo_bridge)/launch/ego_gazebo_bridge.launch">
       <arg name="enable_control" value="$(arg enable_control)"/>
+      <arg name="drone_id" value="$(arg planner_drone_id)"/>
       <arg name="auto_track_on_command" value="false"/>
       <arg name="rviz" value="false"/>
       <arg name="bridge_config_file" value="$(arg bridge_config)"/>
@@ -69,10 +85,10 @@
       <arg name="waypoint_topic" value="waypoint_generator/waypoints"/>
       <arg name="traj_start_trigger_topic"
            value="traj_start_trigger"/>
-      <arg name="map_size_x" value="90.0"/>
-      <arg name="map_size_y" value="120.0"/>
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
-      <arg name="map_resolution" value="0.20"/>
+      <arg name="map_resolution" value="$(arg map_resolution)"/>
       <arg name="ground_height" value="$(arg ground_height)"/>
       <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
       <arg name="max_vel" value="$(arg max_vel)"/>
@@ -81,6 +97,12 @@
       <arg name="manual_target_height" value="$(arg inspection_top_height)"/>
       <arg name="use_goal_height" value="true"/>
       <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
+      <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+      <arg name="swarm_common_frame" value="$(arg swarm_common_frame)"/>
+      <arg name="swarm_origin_x" value="$(arg swarm_origin_x)"/>
+      <arg name="swarm_origin_y" value="$(arg swarm_origin_y)"/>
+      <arg name="swarm_origin_z" value="$(arg swarm_origin_z)"/>
+      <arg name="swarm_origin_yaw" value="$(arg swarm_origin_yaw)"/>
       <arg name="marker_namespace"
            value="$(arg uav_ns)_ego_trajectory"/>
       <arg name="trajectory_color_r" value="$(arg trajectory_color_r)"/>
@@ -117,10 +139,17 @@
       <param name="mission/inspection_top_height"
              value="$(arg inspection_top_height)"/>
       <rosparam param="mission/layer_offsets"
-                subst_value="true">[0.0, $(arg layer_offset)]</rosparam>
+                subst_value="true">$(arg layer_offsets)</rosparam>
       <param name="mission/transit_height" value="$(arg takeoff_height)"/>
+      <param name="staging/height" value="$(arg staging_height)"/>
+      <rosparam param="staging/ascent_intermediate_heights"
+                subst_value="true">$(arg ascent_intermediate_heights)</rosparam>
       <param name="mission/maximum_height"
              value="$(arg mission_maximum_height)"/>
+      <param name="mission/minimum_height"
+             value="$(arg mission_minimum_height)"/>
+      <rosparam param="candidate/height_offsets_m"
+                subst_value="true">$(arg candidate_height_offsets)</rosparam>
       <param name="mission/virtual_ceil_height"
              value="$(arg virtual_ceil_height)"/>
       <param name="low_altitude/enabled"
@@ -183,8 +212,10 @@
              value="/$(arg uav_ns)/ego_mavros_bridge/return_home"/>
       <param name="services/land"
              value="/$(arg uav_ns)/ego_mavros_bridge/land"/>
-      <param name="coordination/require_transition_permission" value="true"/>
-      <param name="coordination/require_landing_permission" value="true"/>
+      <param name="coordination/require_transition_permission"
+             value="$(arg coordination_enabled)"/>
+      <param name="coordination/require_landing_permission"
+             value="$(arg coordination_enabled)"/>
       <param name="coordination/transition_permission_topic"
              value="/$(arg uav_ns)/swarm/transition_permission"/>
       <param name="coordination/landing_permission_topic"

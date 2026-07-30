@@ -6,6 +6,7 @@
     function rather than a roadmap stage number.
   -->
   <arg name="enable_control" default="false"/>
+  <arg name="drone_id" default="0"/>
   <arg name="auto_track_on_command" default="false"/>
   <arg name="rviz" default="false"/>
   <arg name="rviz_config"
@@ -49,6 +50,12 @@
   <arg name="trajectory_color_r" default="1.0"/>
   <arg name="trajectory_color_g" default="0.0"/>
   <arg name="trajectory_color_b" default="0.0"/>
+  <arg name="swarm_clearance" default="1.50"/>
+  <arg name="swarm_common_frame" default="world"/>
+  <arg name="swarm_origin_x" default="0.0"/>
+  <arg name="swarm_origin_y" default="0.0"/>
+  <arg name="swarm_origin_z" default="0.0"/>
+  <arg name="swarm_origin_yaw" default="0.0"/>
 
   <!--
     The Gazebo MID360/FAST-LIO stack and MAVROS local ENU start aligned in this
@@ -63,6 +70,7 @@
         args="0 0 0 0 0 0 1 $(arg mavros_frame) $(arg planning_frame)"/>
 
   <include file="$(find ego_planner)/launch/advanced_param.xml">
+    <arg name="drone_id" value="$(arg drone_id)"/>
     <arg name="map_size_x_" value="$(arg map_size_x)"/>
     <arg name="map_size_y_" value="$(arg map_size_y)"/>
     <arg name="map_size_z_" value="$(arg map_size_z)"/>
@@ -92,6 +100,12 @@
     <arg name="trajectory_color_r" value="$(arg trajectory_color_r)"/>
     <arg name="trajectory_color_g" value="$(arg trajectory_color_g)"/>
     <arg name="trajectory_color_b" value="$(arg trajectory_color_b)"/>
+    <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+    <arg name="swarm_common_frame" value="$(arg swarm_common_frame)"/>
+    <arg name="swarm_origin_x" value="$(arg swarm_origin_x)"/>
+    <arg name="swarm_origin_y" value="$(arg swarm_origin_y)"/>
+    <arg name="swarm_origin_z" value="$(arg swarm_origin_z)"/>
+    <arg name="swarm_origin_yaw" value="$(arg swarm_origin_yaw)"/>
     <!-- The EGO FSM consumes the stamped planner goal directly.  The
          waypoint-generator Path remains available for visualization but is
          not silently wired into a PoseStamped subscriber. -->

@@ -1,0 +1,112 @@
+<launch>
+  <arg name="gui" default="true"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="world"
+       default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
+  <arg name="sensor_model"
+       default="$(find astra_swarm_bringup)/models/iris_mid360_d435.sdf.xacro"/>
+  <arg name="uav1_spawn_x" default="0.0"/>
+  <arg name="uav2_spawn_x" default="4.0"/>
+  <arg name="uav3_spawn_x" default="8.0"/>
+  <arg name="spawn_y" default="0.0"/>
+
+  <env name="PATH"
+       value="$(find astra_swarm_bringup)/config:$(optenv PATH)"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="paused" value="false"/>
+    <arg name="verbose" value="false"/>
+  </include>
+
+  <!-- The three vehicles intentionally use the same locked PX4/MAVROS
+       versions and distinct SITL IDs/UDP ports.  No external PX4 tree is
+       edited by this launch. -->
+  <group ns="uav1">
+    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+      <arg name="ID" value="0"/>
+      <arg name="vehicle" value="iris_mid360_0"/>
+      <arg name="x" value="$(arg uav1_spawn_x)"/><arg name="y" value="$(arg spawn_y)"/><arg name="z" value="0.06"/>
+      <arg name="mavlink_udp_port" value="14560"/>
+      <arg name="mavlink_tcp_port" value="4560"/>
+      <arg name="gst_udp_port" value="5600"/><arg name="video_uri" value="5600"/>
+      <arg name="mavlink_cam_udp_port" value="14530"/>
+      <arg name="interactive" value="false"/>
+    </include>
+    <param name="sdf_iris_mid360_00"
+           command="$(find xacro)/xacro $(arg sensor_model)
+                    uav_id:=1 model_name:=uav1 base_model:=iris_without_GPS_0
+                    robot_namespace:=/uav1 frame_prefix:=uav1
+                    camera_namespace:=/uav1/d435 lidar_namespace:=/uav1/livox"/>
+    <group>
+      <!-- Keep MAVROS' generic map_ned/odom_ned/base_link_frd helpers on a
+           vehicle-local TF bus. Project-owned prefixed frames remain global. -->
+      <remap from="/tf" to="/uav1/mavros/tf"/>
+      <remap from="/tf_static" to="/uav1/mavros/tf_static"/>
+      <include file="$(find mavros)/launch/px4.launch">
+        <arg name="fcu_url" value="udp://:14540@localhost:14580"/>
+        <arg name="gcs_url" value=""/><arg name="tgt_system" value="1"/>
+        <arg name="tgt_component" value="1"/>
+      </include>
+    </group>
+    <param name="mavros/vision_pose/tf/listen" value="false"/>
+  </group>
+
+  <group ns="uav2">
+    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+      <arg name="ID" value="1"/>
+      <arg name="vehicle" value="iris_mid360_1"/>
+      <arg name="x" value="$(arg uav2_spawn_x)"/><arg name="y" value="$(arg spawn_y)"/><arg name="z" value="0.06"/>
+      <arg name="mavlink_udp_port" value="14561"/>
+      <arg name="mavlink_tcp_port" value="4561"/>
+      <arg name="gst_udp_port" value="5601"/><arg name="video_uri" value="5601"/>
+      <arg name="mavlink_cam_udp_port" value="14531"/>
+      <arg name="interactive" value="false"/>
+    </include>
+    <param name="sdf_iris_mid360_11"
+           command="$(find xacro)/xacro $(arg sensor_model)
+                    uav_id:=2 model_name:=uav2 base_model:=iris_without_GPS_1
+                    robot_namespace:=/uav2 frame_prefix:=uav2
+                    camera_namespace:=/uav2/d435 lidar_namespace:=/uav2/livox"/>
+    <group>
+      <remap from="/tf" to="/uav2/mavros/tf"/>
+      <remap from="/tf_static" to="/uav2/mavros/tf_static"/>
+      <include file="$(find mavros)/launch/px4.launch">
+        <arg name="fcu_url" value="udp://:14541@localhost:14581"/>
+        <arg name="gcs_url" value=""/><arg name="tgt_system" value="2"/>
+        <arg name="tgt_component" value="1"/>
+      </include>
+    </group>
+    <param name="mavros/vision_pose/tf/listen" value="false"/>
+  </group>
+
+  <group ns="uav3">
+    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+      <arg name="ID" value="2"/>
+      <arg name="vehicle" value="iris_mid360_2"/>
+      <arg name="x" value="$(arg uav3_spawn_x)"/><arg name="y" value="$(arg spawn_y)"/><arg name="z" value="0.06"/>
+      <arg name="mavlink_udp_port" value="14562"/>
+      <arg name="mavlink_tcp_port" value="4562"/>
+      <arg name="gst_udp_port" value="5602"/><arg name="video_uri" value="5602"/>
+      <arg name="mavlink_cam_udp_port" value="14532"/>
+      <arg name="interactive" value="false"/>
+    </include>
+    <param name="sdf_iris_mid360_22"
+           command="$(find xacro)/xacro $(arg sensor_model)
+                    uav_id:=3 model_name:=uav3 base_model:=iris_without_GPS_2
+                    robot_namespace:=/uav3 frame_prefix:=uav3
+                    camera_namespace:=/uav3/d435 lidar_namespace:=/uav3/livox"/>
+    <group>
+      <remap from="/tf" to="/uav3/mavros/tf"/>
+      <remap from="/tf_static" to="/uav3/mavros/tf_static"/>
+      <include file="$(find mavros)/launch/px4.launch">
+        <arg name="fcu_url" value="udp://:14542@localhost:14582"/>
+        <arg name="gcs_url" value=""/><arg name="tgt_system" value="3"/>
+        <arg name="tgt_component" value="1"/>
+      </include>
+    </group>
+    <param name="mavros/vision_pose/tf/listen" value="false"/>
+  </group>
+</launch>
