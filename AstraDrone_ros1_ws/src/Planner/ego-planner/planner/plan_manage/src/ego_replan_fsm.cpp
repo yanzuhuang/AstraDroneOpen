@@ -426,6 +426,9 @@ namespace ego_planner
     /* Check Collision */
     if (planner_manager_->checkCollision(id))
     {
+      ROS_WARN("[EGO_SWARM_CONFLICT] self=%d peer=%zu source=broadcast_bspline "
+               "action=REPLAN_TRAJ",
+               planner_manager_->pp_.drone_id, id);
       changeFSMExecState(REPLAN_TRAJ, "TRAJ_CHECK");
     }
     if (static_cast<int>(id) == planner_manager_->pp_.drone_id - 1)

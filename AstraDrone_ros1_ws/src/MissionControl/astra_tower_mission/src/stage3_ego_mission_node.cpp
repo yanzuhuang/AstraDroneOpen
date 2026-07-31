@@ -46,7 +46,9 @@ enum class MissionState {
   kWaitInputs,
   kStaging,
   kSegmentedClimb,
+  kWaitEntryPermission,
   kEntryGateTransit,
+  kWaitOrbitPermission,
   kEvaluate,
   kTargetLocked,
   kNavigate,
@@ -55,6 +57,7 @@ enum class MissionState {
   kRelocating,
   kRecovering,
   kLayerTransition,
+  kWaitExitPermission,
   kGoToExitGate,
   kNormalReturn,
   kReturnEgress,
@@ -69,7 +72,9 @@ const char* missionStateName(MissionState state) {
     case MissionState::kWaitInputs: return "WAIT_INPUTS";
     case MissionState::kStaging: return "STAGING_POINT";
     case MissionState::kSegmentedClimb: return "SEGMENTED_CLIMB";
+    case MissionState::kWaitEntryPermission: return "WAIT_ENTRY_PERMISSION";
     case MissionState::kEntryGateTransit: return "ENTRY_GATE_TRANSIT";
+    case MissionState::kWaitOrbitPermission: return "WAIT_ORBIT_PERMISSION";
     case MissionState::kEvaluate: return "EVALUATING";
     case MissionState::kTargetLocked: return "TARGET_LOCKED";
     case MissionState::kNavigate: return "NAVIGATING";
@@ -78,6 +83,7 @@ const char* missionStateName(MissionState state) {
     case MissionState::kRelocating: return "RELOCATING";
     case MissionState::kRecovering: return "RECOVERING";
     case MissionState::kLayerTransition: return "LAYER_TRANSITION";
+    case MissionState::kWaitExitPermission: return "WAIT_EXIT_PERMISSION";
     case MissionState::kGoToExitGate: return "GO_TO_EXIT_GATE";
     case MissionState::kNormalReturn: return "NORMAL_RETURN";
     case MissionState::kReturnEgress: return "RETURN_EGRESS";
@@ -360,12 +366,29 @@ class Stage3EgoMissionNode {
                                      "/ego_mavros_bridge/land");
     private_node_.param("coordination/require_transition_permission",
                         require_transition_permission_, false);
+    private_node_.param("coordination/require_entry_permission",
+                        require_entry_permission_, false);
+    private_node_.param("coordination/require_exit_permission",
+                        require_exit_permission_, false);
+    private_node_.param("coordination/require_orbit_permission",
+                        require_orbit_permission_, false);
     private_node_.param("coordination/require_landing_permission",
                         require_landing_permission_, false);
+    private_node_.param("coordination/permission_timeout",
+                        coordination_permission_timeout_, 1.0);
     private_node_.param<std::string>(
         "coordination/transition_permission_topic",
         transition_permission_topic_,
         "/tower_mission/transition_permission");
+    private_node_.param<std::string>(
+        "coordination/entry_permission_topic",
+        entry_permission_topic_, "/tower_mission/entry_permission");
+    private_node_.param<std::string>(
+        "coordination/exit_permission_topic",
+        exit_permission_topic_, "/tower_mission/exit_permission");
+    private_node_.param<std::string>(
+        "coordination/orbit_permission_topic",
+        orbit_permission_topic_, "/tower_mission/orbit_permission");
     private_node_.param<std::string>(
         "coordination/landing_permission_topic",
         landing_permission_topic_, "/tower_mission/landing_permission");
@@ -891,6 +914,21 @@ class Stage3EgoMissionNode {
           transition_permission_topic_, 5,
           &Stage3EgoMissionNode::transitionPermissionCallback, this);
     }
+    if (require_entry_permission_) {
+      entry_permission_sub_ = node_.subscribe(
+          entry_permission_topic_, 5,
+          &Stage3EgoMissionNode::entryPermissionCallback, this);
+    }
+    if (require_exit_permission_) {
+      exit_permission_sub_ = node_.subscribe(
+          exit_permission_topic_, 5,
+          &Stage3EgoMissionNode::exitPermissionCallback, this);
+    }
+    if (require_orbit_permission_) {
+      orbit_permission_sub_ = node_.subscribe(
+          orbit_permission_topic_, 5,
+          &Stage3EgoMissionNode::orbitPermissionCallback, this);
+    }
     if (require_landing_permission_) {
       landing_permission_sub_ = node_.subscribe(
           landing_permission_topic_, 5,
@@ -967,10 +1005,27 @@ class Stage3EgoMissionNode {
 
   void transitionPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
     transition_permission_ = msg->data;
+    transition_permission_received_ = ros::Time::now();
+  }
+
+  void entryPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    entry_permission_ = msg->data;
+    entry_permission_received_ = ros::Time::now();
+  }
+
+  void exitPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    exit_permission_ = msg->data;
+    exit_permission_received_ = ros::Time::now();
+  }
+
+  void orbitPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    orbit_permission_ = msg->data;
+    orbit_permission_received_ = ros::Time::now();
   }
 
   void landingPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
     landing_permission_ = msg->data;
+    landing_permission_received_ = ros::Time::now();
   }
 
   void commandCallback(const quadrotor_msgs::PositionCommand::ConstPtr& msg) {
@@ -2216,11 +2271,19 @@ class Stage3EgoMissionNode {
       *reason = astra_custom_msgs::PlannerStatus::CURRENT_POSITION_IN_OCCUPANCY;
       return true;
     }
+    const bool current_goal_trajectory =
+        have_command_ && command_.trajectory_id != trajectory_baseline_;
     const bool current_goal_generation =
         planner_target_baseline_.empty()
             ? !planner_status_.target_id.empty()
             : planner_status_.target_id != planner_target_baseline_;
-    if (!current_goal_generation) {
+    // The migrated EGO-Swarm status target_id identifies the vehicle
+    // ("drone_0", ...), not each goal generation.  Keep compatibility with
+    // the legacy changing target_id while accepting the authoritative fresh
+    // traj_server generation used by the bridge and cancel gate.
+    const bool current_goal_acknowledged =
+        current_goal_generation || current_goal_trajectory;
+    if (!current_goal_acknowledged) {
       if (have_sent_goal_ && !goal_sent_.isZero() &&
           now - goal_sent_ > ros::Duration(planning_timeout_)) {
         *reason = "planner goal acknowledgement timeout";
@@ -2228,8 +2291,6 @@ class Stage3EgoMissionNode {
       }
       return false;
     }
-    const bool current_goal_trajectory =
-        have_command_ && command_.trajectory_id != trajectory_baseline_;
     const bool current_goal_command_fresh =
         current_goal_trajectory &&
         fresh(now, command_received_, input_timeout_);
@@ -2410,9 +2471,18 @@ class Stage3EgoMissionNode {
       }
       // The bridge state topic is latched and event-driven, not a heartbeat.
       // Its value remains authoritative until a new state transition arrives.
+      // WAIT_ORBIT_PERMISSION deliberately disables trajectory tracking after
+      // ENTRY_GATE arrival.  In that one state, HOLD is the task-supervised
+      // result of the pause and is therefore healthy.  HOLD remains rejected
+      // everywhere else so planner, safety, and command-loss holds stay
+      // fail-closed.
+      const bool supervised_orbit_wait_hold =
+          state_ == MissionState::kWaitOrbitPermission &&
+          bridge_state_ == "HOLD";
       if (!have_bridge_state_ ||
           (bridge_state_ != "TRACK_EGO" &&
-           bridge_state_ != "HOVER_READY")) {
+           bridge_state_ != "HOVER_READY" &&
+           !supervised_orbit_wait_hold)) {
         *reason = "ENTRY_CHECK_BRIDGE_UNHEALTHY";
         return false;
       }
@@ -3129,6 +3199,49 @@ class Stage3EgoMissionNode {
         state_ == MissionState::kGoToExitGate ||
         state_ == MissionState::kNormalReturn ||
         state_ == MissionState::kReturnEgress;
+    const auto permission_ready =
+        [this, &now](bool required, bool permission,
+                     const ros::Time& received) {
+          return !required ||
+                 (permission && !received.isZero() &&
+                  fresh(now, received, coordination_permission_timeout_));
+        };
+    const bool transition_permission_ready = permission_ready(
+        require_transition_permission_, transition_permission_,
+        transition_permission_received_);
+    const bool entry_permission_ready = permission_ready(
+        require_entry_permission_, entry_permission_,
+        entry_permission_received_);
+    const bool orbit_permission_ready = permission_ready(
+        require_orbit_permission_, orbit_permission_,
+        orbit_permission_received_);
+    const bool exit_permission_ready = permission_ready(
+        require_exit_permission_, exit_permission_,
+        exit_permission_received_);
+    const bool landing_permission_ready = permission_ready(
+        require_landing_permission_, landing_permission_,
+        landing_permission_received_);
+    if (enable_control_ && require_transition_permission_ &&
+        active_mission_state && !transition_permission_ready) {
+      coordination_hold_pending_ = true;
+      phase_hold_pending_ = false;
+      requestHold("SWARM_SAFETY_INHIBIT: coordinator permission false/stale");
+      return;
+    }
+    const bool active_orbit_state =
+        state_ == MissionState::kEvaluate ||
+        state_ == MissionState::kTargetLocked ||
+        state_ == MissionState::kNavigate ||
+        state_ == MissionState::kRelocating ||
+        state_ == MissionState::kRecovering;
+    if (enable_control_ && require_orbit_permission_ &&
+        active_orbit_state && !orbit_permission_ready) {
+      coordination_hold_pending_ = true;
+      phase_hold_pending_ = true;
+      requestHold(
+          "SWARM_PHASE_HOLD: trailing vehicle reached phase lower bound");
+      return;
+    }
     if (enable_control_ && active_mission_state &&
         have_bridge_state_ && fresh(now, bridge_state_received_, 2.0) &&
         bridge_state_ == "HOLD") {
@@ -3176,7 +3289,10 @@ class Stage3EgoMissionNode {
                                 (enable_control_ && bridge_state_ == "HOVER_READY");
       if (have_odom_ && fresh(now, odom_received_, input_timeout_) &&
           mapFresh(now) &&
-          have_bridge_state_ && fresh(now, bridge_state_received_, 2.0) && bridge_ready) {
+          have_bridge_state_ && bridge_ready) {
+        // Bridge state is an intentionally latched transition topic, not a
+        // heartbeat.  Its latest exact state remains authoritative while
+        // MAVROS/odom/map freshness is monitored independently.
         if (!have_home_position_) {
           home_position_ = pointOf(odom_);
           have_home_position_ = true;
@@ -3262,7 +3378,12 @@ class Stage3EgoMissionNode {
           coverage_wait_started_ = now;
         } else if (now - coverage_wait_started_ >=
                    ros::Duration(safe_altitude_map_dwell_)) {
-          if (lockFinalEntryGate(now) && startEntryGateTransit()) {
+          if (!entry_permission_ready) {
+            coverage_wait_started_ = ros::Time(0);
+            transition(MissionState::kWaitEntryPermission,
+                       "entry hover and map are ready; waiting for exclusive "
+                       "swarm ENTRY corridor permission");
+          } else if (lockFinalEntryGate(now) && startEntryGateTransit()) {
             coverage_wait_started_ = ros::Time(0);
           } else if (!entry_gate_last_failure_.empty()) {
             entry_gate_failure_pending_ = true;
@@ -3323,6 +3444,20 @@ class Stage3EgoMissionNode {
           }
         }
       }
+    } else if (state_ == MissionState::kWaitEntryPermission) {
+      if (entry_permission_ready) {
+        if (!mapFresh(now)) {
+          ROS_INFO_THROTTLE(
+              1.0,
+              "[STAGE3_TASK] entry permission granted; waiting for a fresh map");
+        } else if (lockFinalEntryGate(now) && startEntryGateTransit()) {
+          coverage_wait_started_ = ros::Time(0);
+        } else if (!entry_gate_last_failure_.empty()) {
+          entry_gate_failure_pending_ = true;
+          entry_gate_no_safe_candidate_hold_ = true;
+          requestHold(entry_gate_last_failure_);
+        }
+      }
     } else if (state_ == MissionState::kEntryGateTransit) {
       if (entry_gate_transit_index_ >= entry_gate_transit_goals_.size()) {
         if (low_altitude_mode_) {
@@ -3333,6 +3468,11 @@ class Stage3EgoMissionNode {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = false;
           requestHold(entry_reason);
+        } else if (!orbit_permission_ready) {
+          requestTracking(false);
+          transition(
+              MissionState::kWaitOrbitPermission,
+              "ENTRY_GATE reached; waiting for measured swarm orbit phase");
         } else if (!lockDirectionalInitialSector(now)) {
           entry_gate_failure_pending_ = true;
           ascent_retry_pending_ = false;
@@ -3433,6 +3573,19 @@ class Stage3EgoMissionNode {
           }
         }
       }
+    } else if (state_ == MissionState::kWaitOrbitPermission) {
+      std::string entry_reason;
+      if (!entrySystemsHealthy(now, &entry_reason)) {
+        entry_gate_failure_pending_ = true;
+        ascent_retry_pending_ = false;
+        requestHold(entry_reason);
+      } else if (orbit_permission_ready) {
+        if (requestResume() && !lockDirectionalInitialSector(now)) {
+          entry_gate_failure_pending_ = true;
+          ascent_retry_pending_ = false;
+          requestHold("CONFIGURED_FIRST_WAYPOINT_UNSAFE_OR_UNREACHABLE");
+        }
+      }
     } else if (state_ == MissionState::kEvaluate || state_ == MissionState::kRelocating) {
       if (!mapFresh(now)) {
         if (now - state_entered_ > ros::Duration(map_timeout_)) {
@@ -3485,8 +3638,7 @@ class Stage3EgoMissionNode {
             ++completed_layer_count_;
             if (current_layer_visit_index_ + 1U <
                 layer_visit_sequence_.size()) {
-              if (require_transition_permission_ &&
-                  !transition_permission_) {
+              if (!transition_permission_ready) {
                 requestTracking(false);
                 transition(MissionState::kWaitLayerPermission,
                            "closed layer complete at transition anchor; "
@@ -3499,6 +3651,11 @@ class Stage3EgoMissionNode {
                   requestHold(transition_reason);
                 }
               }
+            } else if (!exit_permission_ready) {
+              requestTracking(false);
+              transition(MissionState::kWaitExitPermission,
+                         "final closed inspection layer completed; waiting "
+                         "for exclusive swarm EXIT/return corridor permission");
             } else if (startExitGate(
                            now,
                            "final closed inspection layer completed; "
@@ -3557,7 +3714,7 @@ class Stage3EgoMissionNode {
         }
       }
     } else if (state_ == MissionState::kWaitLayerPermission) {
-      if (!require_transition_permission_ || transition_permission_) {
+      if (transition_permission_ready) {
         std::string transition_reason;
         if (!startLayerTransition(now, &transition_reason)) {
           layer_transition_failure_pending_ = true;
@@ -3621,6 +3778,15 @@ class Stage3EgoMissionNode {
           requestHold("LAYER_TRANSITION target timeout");
         }
       }
+    } else if (state_ == MissionState::kWaitExitPermission) {
+      if (exit_permission_ready) {
+        if (requestResume() &&
+            startExitGate(
+                now,
+                "exclusive swarm EXIT/return corridor permission granted")) {
+          // The existing EXIT_GATE and return logic resumes unchanged.
+        }
+      }
     } else if (state_ == MissionState::kGoToExitGate) {
       if (!have_sent_goal_) {
         const CandidatePoint exit_gate = active_target_;
@@ -3658,7 +3824,36 @@ class Stage3EgoMissionNode {
       }
     } else if (state_ == MissionState::kHolding) {
       if (now - state_entered_ >= ros::Duration(failure_hold_duration_)) {
-        if (low_ingress_replan_pending_) {
+        if (coordination_hold_pending_) {
+          const bool coordination_restored =
+              transition_permission_ready &&
+              (!phase_hold_pending_ || orbit_permission_ready);
+          if (!coordination_restored) {
+            ROS_ERROR_THROTTLE(
+                1.0,
+                "[STAGE3_TASK] swarm safety/phase permission remains "
+                "fail-closed; the cancelled trajectory will not be resumed");
+          } else if (state_before_hold_ ==
+                     MissionState::kEntryGateTransit) {
+            coordination_hold_pending_ = false;
+            phase_hold_pending_ = false;
+            requestReturnOrLand(
+                "swarm safety restored after ENTRY safety stop; "
+                "the cancelled formal ENTRY_GATE remains isolated");
+          } else if (requestResume()) {
+            coordination_hold_pending_ = false;
+            phase_hold_pending_ = false;
+            have_sent_goal_ = false;
+            const MissionState resume_state =
+                state_before_hold_ == MissionState::kNavigate
+                    ? MissionState::kTargetLocked
+                    : state_before_hold_;
+            transition(
+                resume_state,
+                "swarm safety/phase restored; resending a fresh goal "
+                "generation");
+          }
+        } else if (low_ingress_replan_pending_) {
           low_ingress_replan_pending_ = false;
           requestReturnOrLand(
               failure_reason_ +
@@ -3862,7 +4057,7 @@ class Stage3EgoMissionNode {
       }
     } else if (state_ == MissionState::kReturnHome) {
       if (bridge_state_ == "HOME_HOVER") {
-        if (require_landing_permission_ && !landing_permission_) {
+        if (!landing_permission_ready) {
           ROS_INFO_THROTTLE(
               2.0,
               "[STAGE3_TASK] HOME_HOVER: waiting for swarm landing permission");
@@ -4071,6 +4266,7 @@ class Stage3EgoMissionNode {
   ros::Subscriber odom_sub_, command_sub_, cloud_sub_, occupancy_sub_,
       planner_status_sub_, bridge_state_sub_, fcu_state_sub_,
       extended_state_sub_, transition_permission_sub_,
+      entry_permission_sub_, orbit_permission_sub_, exit_permission_sub_,
       landing_permission_sub_;
   ros::Publisher goal_pub_, state_pub_, target_pub_,
       sector_pub_,
@@ -4088,11 +4284,21 @@ class Stage3EgoMissionNode {
       altitude_policy_topic_,
       mavros_state_topic_, mavros_extended_state_topic_, tracking_service_,
       cancel_service_, resume_service_, return_service_, land_service_,
-      transition_permission_topic_, landing_permission_topic_;
+      transition_permission_topic_, entry_permission_topic_,
+      orbit_permission_topic_,
+      exit_permission_topic_, landing_permission_topic_;
   bool enable_control_{false};
   bool require_transition_permission_{false};
+  bool require_entry_permission_{false};
+  bool require_orbit_permission_{false};
+  bool require_exit_permission_{false};
   bool require_landing_permission_{false};
+  bool coordination_hold_pending_{false};
+  bool phase_hold_pending_{false};
   bool transition_permission_{false};
+  bool entry_permission_{false};
+  bool orbit_permission_{false};
+  bool exit_permission_{false};
   bool landing_permission_{false};
   bool low_altitude_mode_{false};
   int uav_id_{0};
@@ -4100,7 +4306,8 @@ class Stage3EgoMissionNode {
   bool prefer_safe_overflight_{true};
   double loop_rate_{20.0}, input_timeout_{0.7},
       entry_fcu_state_timeout_{2.0}, map_timeout_{0.7},
-      planning_timeout_{10.0}, goal_timeout_{180.0};
+      planning_timeout_{10.0}, goal_timeout_{180.0},
+      coordination_permission_timeout_{1.0};
   double coverage_wait_timeout_{12.0}, coverage_angular_bin_deg_{2.0},
       coverage_neighborhood_radius_{3.0}, coverage_sample_resolution_{1.0},
       coverage_minimum_range_{0.5}, coverage_maximum_range_{40.0},
@@ -4221,7 +4428,10 @@ class Stage3EgoMissionNode {
   geometry_msgs::Point home_position_, coverage_origin_;
   ros::Time odom_received_, command_received_, cloud_received_,
       occupancy_received_, planner_status_received_, bridge_state_received_,
-      coverage_received_, fcu_state_received_, extended_state_received_;
+      coverage_received_, fcu_state_received_, extended_state_received_,
+      transition_permission_received_, entry_permission_received_,
+      orbit_permission_received_, exit_permission_received_,
+      landing_permission_received_;
   ros::Time state_entered_, mission_started_, goal_sent_, arrival_since_,
       last_report_, bridge_state_entered_, coverage_wait_started_,
       landing_requested_time_, channel_selected_time_, last_progress_time_,

@@ -354,7 +354,9 @@ namespace ego_planner
 
   bool EGOPlannerManager::checkCollision(int drone_id)
   {
-    if (local_data_.start_time_.toSec() < 1e9) // It means my first planning has not started
+    // Gazebo /use_sim_time starts near zero, so an epoch-sized threshold
+    // disables inter-UAV collision checks for the entire SITL run.
+    if (local_data_.start_time_.isZero()) // My first planning has not started.
       return false;
 
     double my_traj_start_time = local_data_.start_time_.toSec();

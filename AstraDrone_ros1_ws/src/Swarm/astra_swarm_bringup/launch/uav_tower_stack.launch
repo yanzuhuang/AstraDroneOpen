@@ -11,10 +11,19 @@
   <arg name="takeoff_height" default="4.0"/>
   <arg name="staging_height" default="$(arg takeoff_height)"/>
   <arg name="ascent_intermediate_heights" default="[]"/>
+  <arg name="entry_sector" default="7"/>
+  <arg name="entry_target_timeout" default="120.0"/>
+  <arg name="inspection_laps" default="1"/>
+  <arg name="mission_overall_timeout" default="1200.0"/>
   <arg name="low_altitude_enabled" default="false"/>
+  <arg name="low_altitude_floor_height" default="1.6"/>
+  <arg name="low_altitude_ceiling_height" default="3.0"/>
   <arg name="coordination_enabled" default="true"/>
+  <arg name="orbit_permission_enabled" default="false"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
+  <arg name="low_altitude_ego_config"
+       default="$(find astra_swarm_bringup)/config/swarm_low_altitude_ego.yaml"/>
   <arg name="map_size_z" default="46.0"/>
   <arg name="map_size_x" default="90.0"/>
   <arg name="map_size_y" default="120.0"/>
@@ -113,17 +122,24 @@
     <node pkg="astra_tower_mission" type="occupancy_stamp_adapter_node"
           name="occupancy_stamp_adapter" output="screen" required="true">
       <param name="input_topic"
-             value="/$(arg uav_ns)/grid_map/occupancy_inflate"/>
+             value="/$(arg uav_ns)/drone_$(arg planner_drone_id)_ego_planner_node/grid_map/occupancy_inflate"/>
       <param name="output_topic"
              value="/$(arg uav_ns)/stage3/occupancy_inflate"/>
       <param name="planning_frame" value="$(arg planning_frame)"/>
     </node>
 
     <rosparam if="$(arg low_altitude_enabled)" command="load"
-              file="$(arg task_config)" ns="ego_planner_node"/>
+              file="$(arg low_altitude_ego_config)"
+              ns="drone_$(arg planner_drone_id)_ego_planner_node"/>
     <param if="$(arg low_altitude_enabled)"
-           name="ego_planner_node/fsm/manual_target_height"
+           name="drone_$(arg planner_drone_id)_ego_planner_node/fsm/manual_target_height"
            value="$(arg inspection_top_height)"/>
+    <param if="$(arg low_altitude_enabled)"
+           name="drone_$(arg planner_drone_id)_ego_planner_node/grid_map/ground_height"
+           value="$(arg low_altitude_floor_height)"/>
+    <param if="$(arg low_altitude_enabled)"
+           name="drone_$(arg planner_drone_id)_ego_planner_node/grid_map/virtual_ceil_height"
+           value="$(arg low_altitude_ceiling_height)"/>
 
     <node pkg="astra_tower_mission" type="stage3_ego_mission_node"
           name="tower_mission" output="screen" required="true">
@@ -150,13 +166,24 @@
              value="$(arg mission_minimum_height)"/>
       <rosparam param="candidate/height_offsets_m"
                 subst_value="true">$(arg candidate_height_offsets)</rosparam>
+      <!-- The worksite oak occupies the outer half of the 240 to 300 degree
+           sector.  Keep the nominal common ring, but let the task hand EGO a
+           same-sector inward endpoint when the live map blocks an outer one. -->
+      <rosparam param="candidate/radius_offsets_m">
+        [0.0, -2.0, -4.0, 2.0, 4.0]
+      </rosparam>
       <param name="mission/virtual_ceil_height"
              value="$(arg virtual_ceil_height)"/>
       <param name="low_altitude/enabled"
              value="$(arg low_altitude_enabled)"/>
       <param name="low_altitude/entry_height"
              value="$(arg inspection_top_height)"/>
+      <param name="entry_gate/entry_sector" value="$(arg entry_sector)"/>
+      <param name="entry_gate/target_timeout"
+             value="$(arg entry_target_timeout)"/>
       <param name="mission/direction" value="counter_clockwise"/>
+      <param name="mission/inspection_laps" value="$(arg inspection_laps)"/>
+      <param name="overall_timeout" value="$(arg mission_overall_timeout)"/>
       <param name="tower/frame_id" value="$(arg mavros_frame)"/>
       <param name="tower/center/x" value="$(arg tower_center_x)"/>
       <param name="tower/center/y" value="$(arg tower_center_y)"/>
@@ -214,10 +241,23 @@
              value="/$(arg uav_ns)/ego_mavros_bridge/land"/>
       <param name="coordination/require_transition_permission"
              value="$(arg coordination_enabled)"/>
+      <param name="coordination/require_entry_permission"
+             value="$(arg coordination_enabled)"/>
+      <param name="coordination/require_orbit_permission"
+             value="$(arg orbit_permission_enabled)"/>
+      <param name="coordination/require_exit_permission"
+             value="$(arg coordination_enabled)"/>
       <param name="coordination/require_landing_permission"
              value="$(arg coordination_enabled)"/>
+      <param name="coordination/permission_timeout" value="1.0"/>
       <param name="coordination/transition_permission_topic"
              value="/$(arg uav_ns)/swarm/transition_permission"/>
+      <param name="coordination/entry_permission_topic"
+             value="/$(arg uav_ns)/swarm/entry_permission"/>
+      <param name="coordination/orbit_permission_topic"
+             value="/$(arg uav_ns)/swarm/orbit_permission"/>
+      <param name="coordination/exit_permission_topic"
+             value="/$(arg uav_ns)/swarm/exit_permission"/>
       <param name="coordination/landing_permission_topic"
              value="/$(arg uav_ns)/swarm/landing_permission"/>
     </node>

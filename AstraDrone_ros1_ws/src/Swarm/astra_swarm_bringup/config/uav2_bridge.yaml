@@ -9,6 +9,7 @@ min_relative_height: 0.3
 max_relative_height: 40.0
 max_horizontal_radius: 60.0
 cloud_timeout: 0.7
+mavros_pose_timeout: 1.5
 planner_odom_timeout: 0.7
 command_timeout: 0.60
 fcu_state_timeout: 2.0

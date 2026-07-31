@@ -4,9 +4,19 @@
   <arg name="gui" default="true"/>
   <arg name="use_sim_time" default="true"/>
   <arg name="task_config"
-       default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
+       default="$(find astra_tower_mission)/config/stage3_low_altitude.yaml"/>
   <arg name="takeoff_interval_sec" default="3.0"/>
-  <arg name="low_altitude_enabled" default="false"/>
+  <arg name="desired_phase_separation_degrees" default="120.0"/>
+  <arg name="phase_tolerance_degrees" default="15.0"/>
+  <arg name="entry_nominal_speed" default="0.20"/>
+  <arg name="orbit_nominal_speed" default="0.14"/>
+  <arg name="low_altitude_enabled" default="true"/>
+  <arg name="uav1_entry_sector" default="7"/>
+  <arg name="uav2_entry_sector" default="2"/>
+  <arg name="uav3_entry_sector" default="1"/>
+  <arg name="entry_target_timeout" default="360.0"/>
+  <arg name="inspection_laps" default="2"/>
+  <arg name="mission_overall_timeout" default="3600.0"/>
   <arg name="uav1_top_height" default="2.0"/>
   <arg name="uav2_top_height" default="3.0"/>
   <arg name="uav3_top_height" default="4.0"/>
@@ -17,6 +27,10 @@
   <arg name="uav2_spawn_x" default="4.0"/>
   <arg name="uav3_spawn_x" default="8.0"/>
   <arg name="spawn_y" default="0.0"/>
+  <arg name="uav3_static_pine_x"
+       default="$(eval -21.0347 - float(arg('uav3_spawn_x')))"/>
+  <arg name="static_pine_y"
+       default="$(eval 24.6252 - float(arg('spawn_y')))"/>
   <arg name="map_size_z" default="46.0"/>
   <arg name="map_size_x" default="60.0"/>
   <arg name="map_size_y" default="80.0"/>
@@ -27,7 +41,7 @@
   <arg name="uav1_mission_minimum_height" default="1.0"/>
   <arg name="uav2_mission_minimum_height" default="2.0"/>
   <arg name="uav3_mission_minimum_height" default="3.0"/>
-  <arg name="max_vel" default="0.30"/>
+  <arg name="max_vel" default="0.20"/>
   <arg name="max_acc" default="0.50"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
@@ -35,6 +49,10 @@
   <arg name="uav1_report_file" default="/tmp/astra_swarm_uav1.csv"/>
   <arg name="uav2_report_file" default="/tmp/astra_swarm_uav2.csv"/>
   <arg name="uav3_report_file" default="/tmp/astra_swarm_uav3.csv"/>
+  <arg name="evidence_csv_file"
+       default="/tmp/astra_swarm_three_uav_evidence.csv"/>
+  <arg name="evidence_summary_file"
+       default="/tmp/astra_swarm_three_uav_summary.json"/>
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
 
   <include if="$(arg start_sim)"
@@ -56,6 +74,8 @@
     <arg name="use_sim_time" value="$(arg use_sim_time)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="orbit_permission_enabled"
+         value="$(arg low_altitude_enabled)"/>
     <arg name="takeoff_delay" value="$(arg takeoff_interval_sec)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
@@ -72,6 +92,20 @@
     <arg name="uav2_layer_offsets" value="[0.0]"/>
     <arg name="uav1_candidate_height_offsets" value="[0.0]"/>
     <arg name="uav2_candidate_height_offsets" value="[0.0]"/>
+    <arg name="uav1_entry_sector" value="$(arg uav1_entry_sector)"/>
+    <arg name="uav2_entry_sector" value="$(arg uav2_entry_sector)"/>
+    <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
+    <arg name="inspection_laps" value="$(arg inspection_laps)"/>
+    <arg name="mission_overall_timeout"
+         value="$(arg mission_overall_timeout)"/>
+    <arg name="uav1_low_floor"
+         value="$(eval float(arg('uav1_top_height')) - 0.4)"/>
+    <arg name="uav2_low_floor"
+         value="$(eval float(arg('uav2_top_height')) - 0.4)"/>
+    <arg name="uav1_low_ceiling"
+         value="$(eval float(arg('uav1_top_height')) + 1.5)"/>
+    <arg name="uav2_low_ceiling"
+         value="$(eval float(arg('uav2_top_height')) + 1.5)"/>
     <arg name="map_size_z" value="$(arg map_size_z)"/>
     <arg name="map_size_x" value="$(arg map_size_x)"/>
     <arg name="map_size_y" value="$(arg map_size_y)"/>
@@ -94,6 +128,18 @@
     <arg name="swarm_vehicle_namespaces" value="[/uav1, /uav2, /uav3]"/>
     <arg name="swarm_mission_heights"
          value="[$(arg uav1_top_height), $(arg uav2_top_height), $(arg uav3_top_height)]"/>
+    <arg name="swarm_phase_degrees" value="[270.0, 45.0, 0.0]"/>
+    <arg name="swarm_tower_center" value="[-10.0551, 19.7104]"/>
+    <arg name="desired_phase_separation_degrees"
+         value="$(arg desired_phase_separation_degrees)"/>
+    <arg name="phase_tolerance_degrees"
+         value="$(arg phase_tolerance_degrees)"/>
+    <arg name="entry_nominal_speed" value="$(arg entry_nominal_speed)"/>
+    <arg name="orbit_nominal_speed" value="$(arg orbit_nominal_speed)"/>
+    <arg name="swarm_home_positions"
+         value="[[$(arg uav1_spawn_x), $(arg spawn_y), 0.0], [$(arg uav2_spawn_x), $(arg spawn_y), 0.0], [$(arg uav3_spawn_x), $(arg spawn_y), 0.0]]"/>
+    <arg name="swarm_takeoff_heights"
+         value="[$(arg uav1_takeoff_height), $(arg uav2_takeoff_height), $(arg uav3_takeoff_height)]"/>
     <arg name="uav1_peer_state_topics"
          value="[/uav2/swarm/state, /uav3/swarm/state]"/>
     <arg name="uav2_peer_state_topics"
@@ -153,6 +199,23 @@
       <param name="home_x" value="$(arg uav3_spawn_x)"/>
       <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/x"
+                subst_value="true">[$(arg uav3_static_pine_x)]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/y"
+                subst_value="true">[$(arg static_pine_y)]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/z_min">[0.15]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/z_max">[4.70]</rosparam>
+      <!-- Conservative envelope: larger than the measured 1.65 m trunk
+           radius while using a coarser cached lattice so three planners do
+           not starve MAVROS callbacks. -->
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/radius">[1.90]</rosparam>
+      <param if="$(arg low_altitude_enabled)"
+             name="static_cylinders/resolution" value="0.50"/>
     </node>
     <group ns="swarm">
       <node pkg="astra_swarm_manager" type="swarm_state_publisher.py"
@@ -173,8 +236,8 @@
         <param name="trajectory_prediction_period" value="0.25"/>
         <param name="velocity_filter_alpha" value="0.25"/>
         <param name="acceleration_filter_alpha" value="0.15"/>
-        <param name="maximum_prediction_speed" value="3.0"/>
-        <param name="maximum_prediction_acceleration" value="2.0"/>
+        <param name="maximum_prediction_speed" value="$(arg max_vel)"/>
+        <param name="maximum_prediction_acceleration" value="$(arg max_acc)"/>
         <param name="heartbeat_timeout" value="1.0"/>
       </node>
     </group>
@@ -194,6 +257,17 @@
     <arg name="staging_height"
          value="$(eval float(arg('uav3_top_height')) - 0.5)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="orbit_permission_enabled"
+         value="$(arg low_altitude_enabled)"/>
+    <arg name="entry_sector" value="$(arg uav3_entry_sector)"/>
+    <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
+    <arg name="inspection_laps" value="$(arg inspection_laps)"/>
+    <arg name="mission_overall_timeout"
+         value="$(arg mission_overall_timeout)"/>
+    <arg name="low_altitude_floor_height"
+         value="$(eval float(arg('uav3_top_height')) - 0.4)"/>
+    <arg name="low_altitude_ceiling_height"
+         value="$(eval float(arg('uav3_top_height')) + 1.5)"/>
     <arg name="coordination_enabled" value="true"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="map_size_z" value="$(arg map_size_z)"/>
@@ -226,4 +300,12 @@
     <arg name="trajectory_color_g" value="1.0"/>
     <arg name="trajectory_color_b" value="0.2"/>
   </include>
+
+  <node pkg="astra_swarm_bringup" type="swarm_evidence_recorder.py"
+        name="astra_swarm_evidence_recorder" output="screen">
+    <rosparam param="uav_ids">[1, 2, 3]</rosparam>
+    <rosparam param="tower_center">[-10.0551, 19.7104]</rosparam>
+    <param name="csv_file" value="$(arg evidence_csv_file)"/>
+    <param name="summary_file" value="$(arg evidence_summary_file)"/>
+  </node>
 </launch>

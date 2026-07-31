@@ -4,6 +4,7 @@
 #include <sensor_msgs/point_cloud2_iterator.h>
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@ class TeammateCloudFilter {
     pnh_.param("home_z", home_z_, 0.0);
     pnh_.param("safety_envelope_radius", radius_, 1.2);
     pnh_.param("peer_timeout", timeout_, 1.0);
+    loadStaticCylinders();
     std::string input, output;
     pnh_.param<std::string>("input_topic", input, "cloud_registered");
     pnh_.param<std::string>("output_topic", output,
@@ -48,6 +50,12 @@ class TeammateCloudFilter {
   }
 
  private:
+  struct StaticPoint {
+    float x{0.0F};
+    float y{0.0F};
+    float z{0.0F};
+  };
+
   struct Peer {
     double x{0.0};
     double y{0.0};
@@ -55,6 +63,63 @@ class TeammateCloudFilter {
     bool valid{false};
     ros::Time received;
   };
+
+  void loadStaticCylinders() {
+    std::vector<double> xs, ys, z_mins, z_maxs, radii;
+    const bool any =
+        pnh_.getParam("static_cylinders/x", xs) ||
+        pnh_.getParam("static_cylinders/y", ys) ||
+        pnh_.getParam("static_cylinders/z_min", z_mins) ||
+        pnh_.getParam("static_cylinders/z_max", z_maxs) ||
+        pnh_.getParam("static_cylinders/radius", radii);
+    if (!any) return;
+    pnh_.getParam("static_cylinders/x", xs);
+    pnh_.getParam("static_cylinders/y", ys);
+    pnh_.getParam("static_cylinders/z_min", z_mins);
+    pnh_.getParam("static_cylinders/z_max", z_maxs);
+    pnh_.getParam("static_cylinders/radius", radii);
+    if (xs.empty() || xs.size() != ys.size() ||
+        xs.size() != z_mins.size() || xs.size() != z_maxs.size() ||
+        xs.size() != radii.size()) {
+      throw std::runtime_error(
+          "static_cylinders arrays must have equal nonzero length");
+    }
+    double resolution = 0.35;
+    pnh_.param("static_cylinders/resolution", resolution, resolution);
+    if (!std::isfinite(resolution) || resolution < 0.1 ||
+        resolution > 1.0) {
+      throw std::runtime_error(
+          "static_cylinders/resolution must be in [0.1, 1.0]");
+    }
+    for (std::size_t index = 0; index < xs.size(); ++index) {
+      if (!std::isfinite(xs[index]) || !std::isfinite(ys[index]) ||
+          !std::isfinite(z_mins[index]) ||
+          !std::isfinite(z_maxs[index]) ||
+          !std::isfinite(radii[index]) || radii[index] <= 0.0 ||
+          z_maxs[index] <= z_mins[index]) {
+        throw std::runtime_error("invalid static cylinder geometry");
+      }
+      const double radius_squared = radii[index] * radii[index];
+      for (double z = z_mins[index];
+           z <= z_maxs[index] + 0.5 * resolution; z += resolution) {
+        for (double dx = -radii[index];
+             dx <= radii[index] + 0.5 * resolution; dx += resolution) {
+          for (double dy = -radii[index];
+               dy <= radii[index] + 0.5 * resolution; dy += resolution) {
+            if (dx * dx + dy * dy > radius_squared) continue;
+            StaticPoint point;
+            point.x = static_cast<float>(xs[index] + dx);
+            point.y = static_cast<float>(ys[index] + dy);
+            point.z = static_cast<float>(z);
+            static_points_.push_back(point);
+          }
+        }
+      }
+    }
+    ROS_WARN("[SWARM_PERCEPTION] augmenting every live map cloud with %zu "
+             "points representing configured measured static geometry",
+             static_points_.size());
+  }
 
   void peerCb(const astra_swarm_msgs::SwarmState::ConstPtr& message,
               std::size_t index) {
@@ -74,7 +139,7 @@ class TeammateCloudFilter {
       have_live_peer |= (
           peer.valid && now - peer.received <= ros::Duration(timeout_));
     }
-    if (!have_live_peer) {
+    if (!have_live_peer && static_points_.empty()) {
       cloud_pub_.publish(message);
       return;
     }
@@ -84,7 +149,8 @@ class TeammateCloudFilter {
     output.is_dense = false;
     sensor_msgs::PointCloud2Modifier modifier(output);
     modifier.setPointCloud2FieldsByString(1, "xyz");
-    modifier.resize(message->width * message->height);
+    modifier.resize(
+        message->width * message->height + static_points_.size());
     sensor_msgs::PointCloud2ConstIterator<float> in_x(*message, "x");
     sensor_msgs::PointCloud2ConstIterator<float> in_y(*message, "y");
     sensor_msgs::PointCloud2ConstIterator<float> in_z(*message, "z");
@@ -121,6 +187,15 @@ class TeammateCloudFilter {
       ++out_z;
       ++kept;
     }
+    for (const StaticPoint& point : static_points_) {
+      *out_x = point.x;
+      *out_y = point.y;
+      *out_z = point.z;
+      ++out_x;
+      ++out_y;
+      ++out_z;
+      ++kept;
+    }
     modifier.resize(kept);
     output.width = static_cast<std::uint32_t>(kept);
     cloud_pub_.publish(output);
@@ -133,6 +208,7 @@ class TeammateCloudFilter {
   double home_x_{0.0}, home_y_{0.0}, home_z_{0.0};
   double radius_{1.2}, timeout_{1.0};
   std::vector<Peer> peers_;
+  std::vector<StaticPoint> static_points_;
 };
 
 int main(int argc, char** argv) {

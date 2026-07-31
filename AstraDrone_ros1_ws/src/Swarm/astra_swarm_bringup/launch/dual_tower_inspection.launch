@@ -8,6 +8,8 @@
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
   <arg name="low_altitude_enabled" default="false"/>
+  <arg name="orbit_permission_enabled"
+       default="$(arg low_altitude_enabled)"/>
   <arg name="takeoff_delay" default="6.0"/>
   <arg name="uav1_top_height" default="34.0"/>
   <arg name="uav2_top_height" default="28.0"/>
@@ -21,12 +23,36 @@
   <arg name="uav2_layer_offsets" default="[0.0, -4.0]"/>
   <arg name="uav1_candidate_height_offsets" default="[0.0, -1.0, -2.0]"/>
   <arg name="uav2_candidate_height_offsets" default="[0.0, -1.0, -2.0]"/>
+  <arg name="uav1_entry_sector" default="7"/>
+  <arg name="uav2_entry_sector" default="2"/>
+  <arg name="entry_target_timeout" default="120.0"/>
+  <arg name="inspection_laps" default="1"/>
+  <arg name="mission_overall_timeout" default="1200.0"/>
+  <arg name="uav1_low_floor" default="1.6"/>
+  <arg name="uav2_low_floor" default="2.6"/>
+  <arg name="uav1_low_ceiling" default="3.0"/>
+  <arg name="uav2_low_ceiling" default="4.0"/>
   <arg name="uav1_spawn_x" default="0.0"/>
   <arg name="uav2_spawn_x" default="2.0"/>
   <arg name="spawn_y" default="0.0"/>
+  <arg name="uav1_static_pine_x"
+       default="$(eval -21.0347 - float(arg('uav1_spawn_x')))"/>
+  <arg name="uav2_static_pine_x"
+       default="$(eval -21.0347 - float(arg('uav2_spawn_x')))"/>
+  <arg name="static_pine_y"
+       default="$(eval 24.6252 - float(arg('spawn_y')))"/>
   <arg name="swarm_uav_ids" default="[1, 2]"/>
   <arg name="swarm_vehicle_namespaces" default="[/uav1, /uav2]"/>
   <arg name="swarm_mission_heights" default="[34.0, 28.0]"/>
+  <arg name="swarm_phase_degrees" default="[270.0, 45.0]"/>
+  <arg name="swarm_tower_center" default="[-10.0551, 19.7104]"/>
+  <arg name="desired_phase_separation_degrees" default="120.0"/>
+  <arg name="phase_tolerance_degrees" default="15.0"/>
+  <arg name="entry_nominal_speed" default="0.20"/>
+  <arg name="orbit_nominal_speed" default="0.14"/>
+  <arg name="swarm_home_positions"
+       default="[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]"/>
+  <arg name="swarm_takeoff_heights" default="[4.0, 4.0]"/>
   <arg name="uav1_peer_state_topics" default="[/uav2/swarm/state]"/>
   <arg name="uav2_peer_state_topics" default="[/uav1/swarm/state]"/>
   <arg name="map_size_z" default="46.0"/>
@@ -116,6 +142,23 @@
       <param name="home_x" value="$(arg uav1_spawn_x)"/>
       <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
+      <!-- The worksite pine collision mesh is sparse foliage.  At 2 to 4 m,
+           stamp its measured 1.59 m mesh envelope into every local cloud so
+           EGO cannot plan through holes between visual triangles. -->
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/x"
+                subst_value="true">[$(arg uav1_static_pine_x)]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/y"
+                subst_value="true">[$(arg static_pine_y)]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/z_min">[0.15]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/z_max">[4.70]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/radius">[1.90]</rosparam>
+      <param if="$(arg low_altitude_enabled)"
+             name="static_cylinders/resolution" value="0.50"/>
     </node>
 
     <group ns="swarm">
@@ -137,8 +180,8 @@
         <param name="trajectory_prediction_period" value="0.25"/>
         <param name="velocity_filter_alpha" value="0.25"/>
         <param name="acceleration_filter_alpha" value="0.15"/>
-        <param name="maximum_prediction_speed" value="3.0"/>
-        <param name="maximum_prediction_acceleration" value="2.0"/>
+        <param name="maximum_prediction_speed" value="$(arg max_vel)"/>
+        <param name="maximum_prediction_acceleration" value="$(arg max_acc)"/>
         <param name="heartbeat_timeout" value="1.0"/>
       </node>
     </group>
@@ -196,6 +239,20 @@
       <param name="home_x" value="$(arg uav2_spawn_x)"/>
       <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/x"
+                subst_value="true">[$(arg uav2_static_pine_x)]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/y"
+                subst_value="true">[$(arg static_pine_y)]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/z_min">[0.15]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/z_max">[4.70]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_cylinders/radius">[1.90]</rosparam>
+      <param if="$(arg low_altitude_enabled)"
+             name="static_cylinders/resolution" value="0.50"/>
     </node>
 
     <group ns="swarm">
@@ -217,8 +274,8 @@
         <param name="trajectory_prediction_period" value="0.25"/>
         <param name="velocity_filter_alpha" value="0.25"/>
         <param name="acceleration_filter_alpha" value="0.15"/>
-        <param name="maximum_prediction_speed" value="3.0"/>
-        <param name="maximum_prediction_acceleration" value="2.0"/>
+        <param name="maximum_prediction_speed" value="$(arg max_vel)"/>
+        <param name="maximum_prediction_acceleration" value="$(arg max_acc)"/>
         <param name="heartbeat_timeout" value="1.0"/>
       </node>
     </group>
@@ -239,6 +296,15 @@
     <arg name="takeoff_height" value="$(arg uav1_takeoff_height)"/>
     <arg name="staging_height" value="$(arg uav1_staging_height)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="orbit_permission_enabled"
+         value="$(arg orbit_permission_enabled)"/>
+    <arg name="entry_sector" value="$(arg uav1_entry_sector)"/>
+    <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
+    <arg name="inspection_laps" value="$(arg inspection_laps)"/>
+    <arg name="mission_overall_timeout"
+         value="$(arg mission_overall_timeout)"/>
+    <arg name="low_altitude_floor_height" value="$(arg uav1_low_floor)"/>
+    <arg name="low_altitude_ceiling_height" value="$(arg uav1_low_ceiling)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="map_size_z" value="$(arg map_size_z)"/>
     <arg name="map_size_x" value="$(arg map_size_x)"/>
@@ -286,6 +352,15 @@
     <arg name="takeoff_height" value="$(arg uav2_takeoff_height)"/>
     <arg name="staging_height" value="$(arg uav2_staging_height)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="orbit_permission_enabled"
+         value="$(arg orbit_permission_enabled)"/>
+    <arg name="entry_sector" value="$(arg uav2_entry_sector)"/>
+    <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
+    <arg name="inspection_laps" value="$(arg inspection_laps)"/>
+    <arg name="mission_overall_timeout"
+         value="$(arg mission_overall_timeout)"/>
+    <arg name="low_altitude_floor_height" value="$(arg uav2_low_floor)"/>
+    <arg name="low_altitude_ceiling_height" value="$(arg uav2_low_ceiling)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="map_size_z" value="$(arg map_size_z)"/>
     <arg name="map_size_x" value="$(arg map_size_x)"/>
@@ -326,6 +401,14 @@
               subst_value="true">$(arg swarm_uav_ids)</rosparam>
     <rosparam param="mission_heights"
               subst_value="true">$(arg swarm_mission_heights)</rosparam>
+    <rosparam param="phase_degrees"
+              subst_value="true">$(arg swarm_phase_degrees)</rosparam>
+    <rosparam param="tower_center"
+              subst_value="true">$(arg swarm_tower_center)</rosparam>
+    <rosparam param="home_positions"
+              subst_value="true">$(arg swarm_home_positions)</rosparam>
+    <rosparam param="takeoff_heights"
+              subst_value="true">$(arg swarm_takeoff_heights)</rosparam>
     <param name="optimizer_swarm_clearance" value="$(arg swarm_clearance)"/>
   </node>
   <node pkg="astra_swarm_bringup" type="px4_param_guard.py"
@@ -343,6 +426,14 @@
               subst_value="true">$(arg swarm_uav_ids)</rosparam>
     <rosparam param="mission_heights"
               subst_value="true">$(arg swarm_mission_heights)</rosparam>
+    <rosparam param="phase_degrees"
+              subst_value="true">$(arg swarm_phase_degrees)</rosparam>
+    <rosparam param="tower_center"
+              subst_value="true">$(arg swarm_tower_center)</rosparam>
+    <rosparam param="home_positions"
+              subst_value="true">$(arg swarm_home_positions)</rosparam>
+    <rosparam param="takeoff_heights"
+              subst_value="true">$(arg swarm_takeoff_heights)</rosparam>
     <param name="optimizer_swarm_clearance" value="$(arg swarm_clearance)"/>
     <rosparam param="uav1_home_position"
               subst_value="true">[$(arg uav1_spawn_x), $(arg spawn_y), 0.0]</rosparam>
@@ -350,6 +441,15 @@
               subst_value="true">[$(arg uav2_spawn_x), $(arg spawn_y), 0.0]</rosparam>
     <param name="takeoff_delay" value="$(arg takeoff_delay)"/>
     <param name="takeoff_interval_sec" value="$(arg takeoff_delay)"/>
+    <param name="minimum_3d_separation" value="3.0"/>
+    <param name="trajectory_timeout" value="1.0"/>
+    <param name="orbit_radius" value="12.5"/>
+    <param name="desired_phase_separation_degrees"
+           value="$(arg desired_phase_separation_degrees)"/>
+    <param name="phase_tolerance_degrees"
+           value="$(arg phase_tolerance_degrees)"/>
+    <param name="entry_nominal_speed" value="$(arg entry_nominal_speed)"/>
+    <param name="orbit_nominal_speed" value="$(arg orbit_nominal_speed)"/>
     <param name="uav2_takeoff_height" value="$(arg uav2_takeoff_height)"/>
     <param name="uav1_initial_height" value="$(arg uav1_top_height)"/>
     <param name="uav1_final_height" value="$(arg uav1_final_height)"/>

@@ -31,16 +31,33 @@ def predicted_vertical_minimum(first, second):
     return min(abs(first[i][2] - second[i][2]) for i in range(count))
 
 
+def ellipsoid_distance(a, b):
+    """EGO-Swarm's peer metric: horizontal axes 1, vertical axis 2."""
+    return math.sqrt(
+        (a[0] - b[0]) ** 2 +
+        (a[1] - b[1]) ** 2 +
+        ((a[2] - b[2]) / 2.0) ** 2)
+
+
+def predicted_ellipsoid_minimum(first, second):
+    if not first or not second:
+        return float("inf")
+    count = min(len(first), len(second))
+    return min(ellipsoid_distance(first[i], second[i])
+               for i in range(count))
+
+
 def separation_clear(position1, position2, prediction1, prediction2,
-                     minimum_3d, minimum_vertical, enforce_vertical):
+                     minimum_3d, swarm_clearance):
     current = distance(position1, position2)
     predicted = predicted_minimum(prediction1, prediction2)
-    vertical = abs(position1[2] - position2[2])
-    predicted_vertical = predicted_vertical_minimum(prediction1, prediction2)
-    okay = current >= minimum_3d and predicted >= minimum_3d
-    if enforce_vertical:
-        okay = (
-            okay
-            and vertical >= minimum_vertical
-            and predicted_vertical >= minimum_vertical)
+    ellipsoid_limit = 2.0 * float(swarm_clearance)
+    current_ellipsoid = ellipsoid_distance(position1, position2)
+    predicted_ellipsoid = predicted_ellipsoid_minimum(
+        prediction1, prediction2)
+    okay = (
+        current >= minimum_3d
+        and predicted >= minimum_3d
+        and current_ellipsoid >= ellipsoid_limit
+        and predicted_ellipsoid >= ellipsoid_limit)
     return okay, current, predicted

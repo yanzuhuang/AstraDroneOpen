@@ -3,6 +3,50 @@
 import math
 
 
+def bounded_prediction(position, velocity, acceleration, horizon,
+                       sample_period, maximum_speed,
+                       maximum_acceleration):
+    """Integrate a physically bounded constant-acceleration prediction.
+
+    Applying ``p + v*t + 0.5*a*t^2`` independently at every sample lets a
+    short estimator acceleration transient exceed the configured vehicle
+    speed for most of the prediction horizon.  Integrating sample by sample
+    and limiting both vectors keeps the fail-closed prediction conservative
+    without inventing motion that the configured planner cannot execute.
+    """
+    position = [float(value) for value in position]
+    velocity = KinematicEstimator.limit_vector(
+        [float(value) for value in velocity], float(maximum_speed))
+    acceleration = KinematicEstimator.limit_vector(
+        [float(value) for value in acceleration],
+        float(maximum_acceleration))
+    horizon = float(horizon)
+    sample_period = float(sample_period)
+    if (len(position) != 3 or len(velocity) != 3 or len(acceleration) != 3
+            or horizon <= 0.0 or sample_period <= 0.0
+            or maximum_speed <= 0.0 or maximum_acceleration <= 0.0
+            or not all(math.isfinite(value)
+                       for value in position + velocity + acceleration
+                       + [horizon, sample_period, float(maximum_speed),
+                          float(maximum_acceleration)])):
+        raise ValueError("prediction inputs must be finite and positive")
+
+    points = [tuple(position)]
+    steps = int(horizon / sample_period)
+    for _ in range(steps):
+        next_velocity = KinematicEstimator.limit_vector(
+            [velocity[index] + acceleration[index] * sample_period
+             for index in range(3)],
+            float(maximum_speed))
+        position = [
+            position[index]
+            + 0.5 * (velocity[index] + next_velocity[index]) * sample_period
+            for index in range(3)]
+        velocity = next_velocity
+        points.append(tuple(position))
+    return points
+
+
 class KinematicEstimator:
     def __init__(self, velocity_alpha=0.25, acceleration_alpha=0.15,
                  maximum_speed=3.0, maximum_acceleration=2.0):

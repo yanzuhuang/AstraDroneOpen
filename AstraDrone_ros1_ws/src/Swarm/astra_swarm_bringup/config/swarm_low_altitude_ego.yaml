@@ -1,0 +1,17 @@
+# Planner-only overrides for the three-vehicle low-altitude tower mission.
+# Mission targets remain at 2/3/4 m.  The larger local window and conservative
+# static-obstacle cost give the mapper time to retain the worksite tree/guy-wire
+# passage before a following lap reaches it.  Swarm collision parameters are
+# deliberately absent: launch keeps optimization/swarm_clearance at 1.5 m.
+grid_map:
+  local_update_range_x: 12.5
+  local_update_range_y: 12.5
+  local_update_range_z: 4.5
+  max_ray_length: 12.0
+
+optimization:
+  lambda_smooth: 1.0
+  lambda_collision: 3
+  lambda_feasibility: 0.1
+  lambda_fitness: 2.0
+  dist0: 1.2

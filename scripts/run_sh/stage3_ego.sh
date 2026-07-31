@@ -15,6 +15,11 @@ usage() {
                 [--sector-limit 1..8] [--cycles N] [--bag FILE] [--attach]
   stage3_ego.sh --control [--gui] [--rviz] [--world FILE]
                 [--report FILE] [--sector-limit 1..8] [--cycles N]
+                [--top-height M] [--layer-offsets YAML]
+                [--takeoff-height M] [--mission-min-height M]
+                [--staging-height M] [--transit-height M]
+                [--low-floor M] [--low-ceiling M]
+                [--low-altitude] [--planner-drone-id N]
                 [--bag FILE] [--attach]
   stage3_ego.sh --stop
 
@@ -103,7 +108,13 @@ run_component() {
             fi
             exec roslaunch astra_tower_mission stage3_ego.launch \
                 enable_control:="$1" rviz:="$2" report_file:="$3" \
-                sector_limit:="$4" planned_cycles:="$5"
+                sector_limit:="$4" planned_cycles:="$5" \
+                inspection_top_height:="$7" layer_offsets:="$8" \
+                takeoff_height:="$9" mission_minimum_height:="${10}" \
+                low_altitude_enabled:="${11}" planner_drone_id:="${12}" \
+                mission_transit_height:="${13}" staging_height:="${14}" \
+                low_altitude_floor_height:="${15}" \
+                low_altitude_ceiling_height:="${16}"
             ;;
         *)
             echo "未知内部组件：$component" >&2
@@ -129,6 +140,16 @@ report_file=""
 sector_limit=8
 planned_cycles=1
 bag_file=""
+inspection_top_height=34.0
+layer_offsets="[0.0, -4.0]"
+takeoff_height=4.0
+staging_height=""
+mission_minimum_height=2.0
+mission_transit_height=""
+low_altitude_enabled=false
+low_altitude_floor_height=1.6
+low_altitude_ceiling_height=3.0
+planner_drone_id=0
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -163,12 +184,60 @@ while [[ "$#" -gt 0 ]]; do
             }
             planned_cycles="$2"; shift 2
             ;;
+        --top-height)
+            [[ "$#" -ge 2 ]] || { echo "--top-height 缺少值" >&2; exit 2; }
+            inspection_top_height="$2"; shift 2
+            ;;
+        --layer-offsets)
+            [[ "$#" -ge 2 ]] || { echo "--layer-offsets 缺少值" >&2; exit 2; }
+            layer_offsets="$2"; shift 2
+            ;;
+        --takeoff-height)
+            [[ "$#" -ge 2 ]] || { echo "--takeoff-height 缺少值" >&2; exit 2; }
+            takeoff_height="$2"; shift 2
+            ;;
+        --staging-height)
+            [[ "$#" -ge 2 ]] || { echo "--staging-height 缺少值" >&2; exit 2; }
+            staging_height="$2"; shift 2
+            ;;
+        --mission-min-height)
+            [[ "$#" -ge 2 ]] || { echo "--mission-min-height 缺少值" >&2; exit 2; }
+            mission_minimum_height="$2"; shift 2
+            ;;
+        --transit-height)
+            [[ "$#" -ge 2 ]] || { echo "--transit-height 缺少值" >&2; exit 2; }
+            mission_transit_height="$2"; shift 2
+            ;;
+        --low-altitude) low_altitude_enabled=true; shift ;;
+        --low-floor)
+            [[ "$#" -ge 2 ]] || { echo "--low-floor 缺少值" >&2; exit 2; }
+            low_altitude_floor_height="$2"; shift 2
+            ;;
+        --low-ceiling)
+            [[ "$#" -ge 2 ]] || { echo "--low-ceiling 缺少值" >&2; exit 2; }
+            low_altitude_ceiling_height="$2"; shift 2
+            ;;
+        --planner-drone-id)
+            [[ "$#" -ge 2 ]] || { echo "--planner-drone-id 缺少值" >&2; exit 2; }
+            [[ "$2" =~ ^[0-9]+$ ]] || {
+                echo "--planner-drone-id 必须是非负整数" >&2
+                exit 2
+            }
+            planner_drone_id="$2"; shift 2
+            ;;
         --attach) attach=true; shift ;;
         --stop) stop=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "未知参数：$1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [[ -z "$mission_transit_height" ]]; then
+    mission_transit_height="$takeoff_height"
+fi
+if [[ -z "$staging_height" ]]; then
+    staging_height="$takeoff_height"
+fi
 
 if [[ "$enable_control" == true && "$sector_limit" != 8 ]]; then
     echo "阶段三带控制运行只允许完整 8 扇区；较小 sector-limit 仅供无控制测试。" >&2
@@ -321,9 +390,13 @@ if [[ -n "$bag_file" ]]; then
     printf -v recorder_command '%q --component recorder %q' \
         "$script_path" "$bag_file"
 fi
-printf -v integration_command '%q --component integration %q %q %q %q %q %q' \
+printf -v integration_command \
+    '%q --component integration %q %q %q %q %q %q %q %q %q %q %q %q %q %q %q %q' \
     "$script_path" "$enable_control" "$rviz" "$report_file" "$sector_limit" \
-    "$planned_cycles" "$record_bag"
+    "$planned_cycles" "$record_bag" "$inspection_top_height" "$layer_offsets" \
+    "$takeoff_height" "$mission_minimum_height" "$low_altitude_enabled" \
+    "$planner_drone_id" "$mission_transit_height" "$staging_height" \
+    "$low_altitude_floor_height" "$low_altitude_ceiling_height"
 
 tmux new-session -d -s "$session_name" -n px4_gazebo "$px4_command"
 tmux set-option -t "$session_name" @stage3_bag_file "$bag_file"
@@ -336,6 +409,7 @@ tmux new-window -d -t "$session_name:" -n integration "$integration_command"
 tmux select-window -t "$session_name:integration"
 
 echo "阶段三已启动：control=$enable_control sector_limit=$sector_limit cycles=$planned_cycles"
+echo "任务参数：drone_id=$planner_drone_id top=$inspection_top_height layers=$layer_offsets takeoff=$takeoff_height staging=$staging_height transit=$mission_transit_height low_altitude=$low_altitude_enabled band=[$low_altitude_floor_height,$low_altitude_ceiling_height]"
 echo "证据 CSV：$report_file"
 [[ "$record_bag" == true ]] && echo "完整 rosbag：$bag_file"
 echo "查看日志：tmux attach -t $session_name"

@@ -5,7 +5,10 @@ import copy
 import math
 
 import rospy
-from astra_swarm_manager.kinematics import KinematicEstimator
+from astra_swarm_manager.kinematics import (
+    KinematicEstimator,
+    bounded_prediction,
+)
 from astra_swarm_msgs.msg import PredictedTrajectory, SwarmState
 from geometry_msgs.msg import Point, PoseStamped
 from mavros_msgs.msg import State
@@ -122,16 +125,18 @@ class StatePublisher:
         prediction.uav_id = self.uav_id
         prediction.horizon = rospy.Duration(self.horizon)
         prediction.sample_period = rospy.Duration(self.sample_period)
-        steps = int(self.horizon / self.sample_period) + 1
-        for index in range(steps):
-            t = index * self.sample_period
+        predicted_points = bounded_prediction(
+            (state.pose.position.x, state.pose.position.y,
+             state.pose.position.z),
+            (state.velocity.x, state.velocity.y, state.velocity.z),
+            (state.acceleration.x, state.acceleration.y,
+             state.acceleration.z),
+            self.horizon, self.sample_period,
+            self.maximum_prediction_speed,
+            self.maximum_prediction_acceleration)
+        for values in predicted_points:
             point = Point()
-            point.x = (state.pose.position.x + state.velocity.x * t +
-                       0.5 * state.acceleration.x * t * t)
-            point.y = (state.pose.position.y + state.velocity.y * t +
-                       0.5 * state.acceleration.y * t * t)
-            point.z = (state.pose.position.z + state.velocity.z * t +
-                       0.5 * state.acceleration.z * t * t)
+            point.x, point.y, point.z = values
             prediction.points.append(point)
         self.trajectory_pub.publish(prediction)
 

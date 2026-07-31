@@ -19,17 +19,15 @@ class SafetyMonitor:
     def __init__(self):
         self.minimum_3d = float(rospy.get_param(
             "~minimum_3d_separation", 3.0))
-        self.minimum_vertical = float(rospy.get_param(
-            "~minimum_vertical_separation", 4.0))
-        optimizer_clearance = float(rospy.get_param(
+        self.optimizer_clearance = float(rospy.get_param(
             "~optimizer_swarm_clearance", 0.0))
-        if (not math.isfinite(optimizer_clearance)
-                or optimizer_clearance < 0.0):
+        if (not math.isfinite(self.optimizer_clearance)
+                or self.optimizer_clearance <= 0.0):
             raise rospy.ROSException(
-                "~optimizer_swarm_clearance must be finite and non-negative")
-        self.minimum_vertical = max(
-            self.minimum_vertical, 4.0 * optimizer_clearance)
+                "~optimizer_swarm_clearance must be finite and positive")
         self.timeout = float(rospy.get_param("~heartbeat_timeout", 1.0))
+        self.trajectory_timeout = float(rospy.get_param(
+            "~trajectory_timeout", self.timeout))
         self.uav_ids = [
             int(uid) for uid in rospy.get_param("~uav_ids", [1, 2])]
         try:
@@ -38,6 +36,7 @@ class SafetyMonitor:
             raise rospy.ROSException(str(exc))
         self.states = {}
         self.trajectories = {}
+        self.trajectory_received = {}
         self.received = {}
         for uid in self.uav_ids:
             rospy.Subscriber(
@@ -59,6 +58,7 @@ class SafetyMonitor:
 
     def trajectory_cb(self, uid, msg):
         self.trajectories[uid] = msg
+        self.trajectory_received[uid] = rospy.Time.now()
 
     @staticmethod
     def tuple_point(point):
@@ -77,6 +77,11 @@ class SafetyMonitor:
         event.current_distance = current
         event.predicted_minimum_distance = predicted
         self.event_pub.publish(event)
+        rospy.logwarn_throttle(
+            1.0,
+            "[SWARM_SAFETY] code=%s uav=%d peer=%d current=%.3f "
+            "predicted=%.3f detail=%s",
+            code, uav_id, peer_id, current, predicted, detail)
 
     def timer_cb(self, _event):
         now = rospy.Time.now()
@@ -91,9 +96,30 @@ class SafetyMonitor:
                     "HEARTBEAT_OR_LOCALIZATION_TIMEOUT",
                     "new permissions are inhibited", SafetyEvent.STOP)
                 return
-        if any(uid not in self.trajectories for uid in self.uav_ids):
-            self.clear_pub.publish(Bool(data=False))
-            return
+        for uid in self.uav_ids:
+            trajectory = self.trajectories.get(uid)
+            received = self.trajectory_received.get(uid)
+            valid = (
+                trajectory is not None and received is not None
+                and trajectory.uav_id == uid
+                and trajectory.header.frame_id == "world"
+                and not trajectory.header.stamp.is_zero()
+                and (now - received).to_sec() <= self.trajectory_timeout
+                and (now - trajectory.header.stamp).to_sec()
+                <= self.trajectory_timeout
+                and trajectory.horizon.to_sec() > 0.0
+                and trajectory.sample_period.to_sec() > 0.0
+                and bool(trajectory.points)
+                and all(math.isfinite(value)
+                        for point in trajectory.points
+                        for value in (point.x, point.y, point.z)))
+            if not valid:
+                self.clear_pub.publish(Bool(data=False))
+                self.publish_event(
+                    uid, 0, "TRAJECTORY_TIMEOUT_OR_INVALID",
+                    "fresh world-frame future trajectory is required",
+                    SafetyEvent.STOP)
+                return
         for first_id, second_id in self.vehicle_pairs:
             first = self.states[first_id]
             second = self.states[second_id]
@@ -105,12 +131,9 @@ class SafetyMonitor:
             trajectory2 = [
                 self.tuple_point(p)
                 for p in self.trajectories[second_id].points]
-            enforce_vertical = (
-                first.flight_state in ACTIVE
-                and second.flight_state in ACTIVE)
             clear, current, predicted = separation_clear(
                 position1, position2, trajectory1, trajectory2,
-                self.minimum_3d, self.minimum_vertical, enforce_vertical)
+                self.minimum_3d, self.optimizer_clearance)
             if not clear:
                 self.clear_pub.publish(Bool(data=False))
                 self.publish_event(
