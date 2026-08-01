@@ -14,6 +14,8 @@
   <exec_depend>astra_swarm_manager</exec_depend>
   <exec_depend>astra_swarm_msgs</exec_depend>
   <exec_depend>astra_custom_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>astra_swarm_perception</exec_depend>
   <exec_depend>astra_swarm_safety</exec_depend>
   <exec_depend>astra_swarm_tf</exec_depend>
@@ -25,6 +27,7 @@
   <exec_depend>px4</exec_depend>
   <exec_depend>rviz</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>traj_utils</exec_depend>
   <exec_depend>xacro</exec_depend>
 </package>

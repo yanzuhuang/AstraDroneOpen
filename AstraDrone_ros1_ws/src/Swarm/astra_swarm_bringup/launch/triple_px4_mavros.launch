@@ -8,6 +8,9 @@
   <arg name="uav1_spawn_x" default="0.0"/>
   <arg name="uav2_spawn_x" default="4.0"/>
   <arg name="uav3_spawn_x" default="8.0"/>
+  <arg name="uav1_enabled" default="true"/>
+  <arg name="uav2_enabled" default="true"/>
+  <arg name="uav3_enabled" default="true"/>
   <arg name="spawn_y" default="0.0"/>
 
   <env name="PATH"
@@ -24,7 +27,7 @@
   <!-- The three vehicles intentionally use the same locked PX4/MAVROS
        versions and distinct SITL IDs/UDP ports.  No external PX4 tree is
        edited by this launch. -->
-  <group ns="uav1">
+  <group if="$(arg uav1_enabled)" ns="uav1">
     <include file="$(find px4)/launch/single_vehicle_spawn.launch">
       <arg name="ID" value="0"/>
       <arg name="vehicle" value="iris_mid360_0"/>
@@ -54,7 +57,7 @@
     <param name="mavros/vision_pose/tf/listen" value="false"/>
   </group>
 
-  <group ns="uav2">
+  <group if="$(arg uav2_enabled)" ns="uav2">
     <include file="$(find px4)/launch/single_vehicle_spawn.launch">
       <arg name="ID" value="1"/>
       <arg name="vehicle" value="iris_mid360_1"/>
@@ -82,7 +85,7 @@
     <param name="mavros/vision_pose/tf/listen" value="false"/>
   </group>
 
-  <group ns="uav3">
+  <group if="$(arg uav3_enabled)" ns="uav3">
     <include file="$(find px4)/launch/single_vehicle_spawn.launch">
       <arg name="ID" value="2"/>
       <arg name="vehicle" value="iris_mid360_2"/>

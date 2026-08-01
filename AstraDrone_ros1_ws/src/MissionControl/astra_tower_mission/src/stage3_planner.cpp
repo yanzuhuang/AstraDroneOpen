@@ -254,6 +254,16 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       current_position, target, cloud_points, no_static_obstacles,
       map_required_clearance + map_inflation,
       config.corridor_sample_step);
+  // Known world geometry is deterministic and already carries its audited
+  // physical envelope.  Letting a fixed sector leg cross it and hoping for a
+  // late local detour can place the vehicle inside an inflated cell before
+  // the next task update.  Reject only this known-static corridor here;
+  // live-map corridor occupancy remains a soft EGO replanning hint below.
+  if (!static_corridor_safe &&
+      config.known_obstacle_corridor_is_hard_constraint) {
+    candidate->straight_corridor_blocked = true;
+    return reject("KNOWN_OBSTACLE_CORRIDOR");
+  }
   candidate->straight_corridor_blocked =
       !static_corridor_safe || !map_corridor_safe;
   if (candidate->straight_corridor_blocked) {

@@ -15,6 +15,7 @@ from astra_swarm_manager.policy import (
     rotate_xy_about_center,
     scheduled_takeoff_allowed,
     serialized_permissions,
+    task_start_barrier_ready,
 )
 from astra_swarm_msgs.msg import (
     CoordinationStatus,
@@ -118,6 +119,11 @@ class SwarmManager:
         self.exit_owner = 0
         self.orbit_released = set()
         self.phase_held = set()
+        self.task_started = False
+        self.last_permissions = {}
+        self.last_coordinator_state = ""
+        self.last_coordinator_reason = ""
+        self.condition_started = rospy.Time.now()
 
         for uid in self.uav_ids:
             rospy.Subscriber(
@@ -134,7 +140,7 @@ class SwarmManager:
             lambda msg: setattr(self, "px4_ready", msg.data), queue_size=1)
         self.pubs = {}
         for category in (
-                "takeoff", "entry", "orbit", "exit",
+                "takeoff", "task_start", "entry", "orbit", "exit",
                 "transition", "landing"):
             self.pubs[category] = {
                 uid: rospy.Publisher(
@@ -249,6 +255,16 @@ class SwarmManager:
                 self.px4_ready, self.safety_clear,
                 self.geometry_safe, corridor_ok)
 
+        health = {uid: self.healthy(uid, now) for uid in self.uav_ids}
+        barrier_ready = task_start_barrier_ready(
+            self.uav_ids, self.states, health, globally_clear)
+        if not self.task_started and barrier_ready:
+            self.task_started = True
+            rospy.logwarn(
+                "[SWARM_COORD] all UAVs HOVER_READY; unified task-start "
+                "barrier released uavs=%s takeoff_interval=%.3f",
+                self.uav_ids, self.interval)
+
         # ENTRY is exclusive until the owner has established its configured
         # orbit phase.  Loss of owner health keeps ownership latched and stops
         # all new entrants.
@@ -357,6 +373,9 @@ class SwarmManager:
 
         permissions = {
             "takeoff": takeoff,
+            "task_start": {
+                uid: bool(globally_clear and self.task_started)
+                for uid in self.uav_ids},
             "entry": {
                 uid: bool(globally_clear and uid == self.entry_owner)
                 for uid in self.uav_ids},
@@ -378,6 +397,22 @@ class SwarmManager:
         for category, publishers in self.pubs.items():
             for uid, publisher in publishers.items():
                 publisher.publish(Bool(data=permissions[category][uid]))
+                key = (category, uid)
+                previous = self.last_permissions.get(key)
+                current = permissions[category][uid]
+                if previous is not None and previous != current:
+                    state = self.states.get(uid)
+                    rospy.logwarn(
+                        "[SWARM_COORD] uav=%d permission=%s value=%s "
+                        "mission_state=%s flight_state=%s entry_owner=%d "
+                        "exit_owner=%d phase_held=%s action=%s",
+                        uid, category, current,
+                        getattr(state, "mission_phase", "MISSING"),
+                        getattr(state, "flight_state", "MISSING"),
+                        self.entry_owner, self.exit_owner,
+                        sorted(self.phase_held),
+                        "RELEASE" if current else "FAIL_CLOSED_HOLD")
+                self.last_permissions[key] = current
 
         status = CoordinationStatus()
         status.header.stamp = now
@@ -425,6 +460,23 @@ class SwarmManager:
         else:
             status.coordinator_state = "ORBIT_COORDINATION"
             status.reason = "phase-separated mission geometry is clear"
+        if (status.coordinator_state != self.last_coordinator_state or
+                status.reason != self.last_coordinator_reason):
+            duration = max(0.0, (now - self.condition_started).to_sec())
+            rospy.logwarn(
+                "[SWARM_COORD] state=%s previous=%s duration=%.3fs "
+                "reason=%s entry_owner=%d exit_owner=%d phase_held=%s "
+                "task_barrier=%s action=%s",
+                status.coordinator_state,
+                self.last_coordinator_state or "INIT", duration,
+                status.reason, self.entry_owner, self.exit_owner,
+                sorted(self.phase_held), self.task_started,
+                "INHIBIT_NEW_PERMISSIONS"
+                if status.coordinator_state == "SAFETY_INHIBIT"
+                else "CONTINUE_COORDINATION")
+            self.last_coordinator_state = status.coordinator_state
+            self.last_coordinator_reason = status.reason
+            self.condition_started = now
         self.status_pub.publish(status)
 
 

@@ -4,9 +4,10 @@
 import math
 
 import rospy
+from astra_custom_msgs.msg import PlannerStatus
 from astra_swarm_msgs.msg import PredictedTrajectory, SafetyEvent, SwarmState
 from astra_swarm_safety.prediction import pairwise_ids, separation_clear
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, UInt32
 
 
 ACTIVE = {
@@ -38,6 +39,11 @@ class SafetyMonitor:
         self.trajectories = {}
         self.trajectory_received = {}
         self.received = {}
+        self.sectors = {}
+        self.planner_status = {}
+        self.planner_received = {}
+        self.active_event = None
+        self.active_event_started = None
         for uid in self.uav_ids:
             rospy.Subscriber(
                 "/uav{}/swarm/state".format(uid), SwarmState,
@@ -46,6 +52,12 @@ class SafetyMonitor:
                 "/uav{}/swarm/predicted_trajectory".format(uid),
                 PredictedTrajectory,
                 lambda msg, u=uid: self.trajectory_cb(u, msg), queue_size=5)
+            rospy.Subscriber(
+                "/uav{}/tower_mission/current_sector".format(uid), UInt32,
+                lambda msg, u=uid: self.sector_cb(u, msg), queue_size=5)
+            rospy.Subscriber(
+                "/uav{}/planner/status".format(uid), PlannerStatus,
+                lambda msg, u=uid: self.planner_cb(u, msg), queue_size=5)
         self.clear_pub = rospy.Publisher(
             "/swarm/safety/clear", Bool, queue_size=1, latch=True)
         self.event_pub = rospy.Publisher(
@@ -60,20 +72,59 @@ class SafetyMonitor:
         self.trajectories[uid] = msg
         self.trajectory_received[uid] = rospy.Time.now()
 
+    def sector_cb(self, uid, msg):
+        self.sectors[uid] = int(msg.data) + 1
+
+    def planner_cb(self, uid, msg):
+        self.planner_status[uid] = msg
+        self.planner_received[uid] = rospy.Time.now()
+
     @staticmethod
     def tuple_point(point):
         return (point.x, point.y, point.z)
 
     def publish_event(self, uav_id, peer_id, code, detail, severity,
                       current=0.0, predicted=0.0):
+        now = rospy.Time.now()
+        key = (int(uav_id), int(peer_id), str(code))
+        if key != self.active_event:
+            self.active_event = key
+            self.active_event_started = now
+        duration = max(
+            0.0, (now - self.active_event_started).to_sec())
+        state = self.states.get(uav_id)
+        planner = self.planner_status.get(uav_id)
+        trajectory_received = self.trajectory_received.get(uav_id)
+        trajectory_age = (
+            (now - trajectory_received).to_sec()
+            if trajectory_received is not None else float("inf"))
+        target = getattr(state, "current_target", None)
+        enriched_detail = (
+            "{}; mission_state={}; flight_state={}; sector={}; "
+            "target=({:.3f},{:.3f},{:.3f}); condition={}; "
+            "ego_replan_result={}; planner_reason={}; "
+            "trajectory_expired={}; predicted_swarm_conflict={}; "
+            "state_duration={:.3f}s; action=SAFETY_INHIBIT_HOLD"
+        ).format(
+            detail,
+            getattr(state, "mission_phase", "MISSING"),
+            getattr(state, "flight_state", "MISSING"),
+            self.sectors.get(uav_id, -1),
+            getattr(target, "x", 0.0), getattr(target, "y", 0.0),
+            getattr(target, "z", 0.0), code,
+            ("SUCCESS" if getattr(planner, "last_plan_success", False)
+             else "FAILED_OR_UNKNOWN"),
+            getattr(planner, "failure_reason", "NO_PLANNER_STATUS"),
+            trajectory_age > self.trajectory_timeout,
+            code == "PREDICTED_SEPARATION_CONFLICT", duration)
         event = SafetyEvent()
-        event.header.stamp = rospy.Time.now()
+        event.header.stamp = now
         event.header.frame_id = "world"
         event.severity = severity
         event.uav_id = uav_id
         event.peer_id = peer_id
         event.code = code
-        event.detail = detail
+        event.detail = enriched_detail
         event.current_distance = current
         event.predicted_minimum_distance = predicted
         self.event_pub.publish(event)
@@ -81,7 +132,7 @@ class SafetyMonitor:
             1.0,
             "[SWARM_SAFETY] code=%s uav=%d peer=%d current=%.3f "
             "predicted=%.3f detail=%s",
-            code, uav_id, peer_id, current, predicted, detail)
+            code, uav_id, peer_id, current, predicted, enriched_detail)
 
     def timer_cb(self, _event):
         now = rospy.Time.now()
@@ -142,6 +193,15 @@ class SafetyMonitor:
                     "hold current safe layer; inhibit takeoff/transition",
                     SafetyEvent.STOP, current, predicted)
                 return
+        if self.active_event is not None:
+            duration = max(
+                0.0, (now - self.active_event_started).to_sec())
+            rospy.logwarn(
+                "[SWARM_SAFETY] condition cleared event=%s duration=%.3fs "
+                "final_action=RELEASE_PERMISSIONS_IF_ALL_GATES_CLEAR",
+                self.active_event, duration)
+            self.active_event = None
+            self.active_event_started = None
         self.clear_pub.publish(Bool(data=True))
 
 

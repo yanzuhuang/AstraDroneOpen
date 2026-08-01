@@ -132,6 +132,7 @@ struct CandidateFilterConfig {
   double unknown_ratio_limit{0.25};
   bool unknown_is_hard_constraint{true};
   bool known_obstacle_is_hard_constraint{true};
+  bool known_obstacle_corridor_is_hard_constraint{false};
   double corridor_sample_step{0.5};
   double tower_extra_clearance{0.0};
   double score_clearance_weight{0.2};

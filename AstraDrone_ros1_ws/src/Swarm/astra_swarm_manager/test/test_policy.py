@@ -17,6 +17,7 @@ from astra_swarm_manager.policy import (
     rotate_xy_about_center,
     scheduled_takeoff_allowed,
     serialized_landing_permissions,
+    task_start_barrier_ready,
     transition_permissions,
     uav2_takeoff_allowed,
 )
@@ -176,6 +177,23 @@ class PolicyTest(unittest.TestCase):
             2, 6.0, 3.0, *common))
         self.assertTrue(scheduled_takeoff_allowed(
             2, 0.0, 0.0, *common))
+
+    def test_task_start_barrier_requires_every_hover_ready(self):
+        states = {
+            uid: SimpleNamespace(
+                mission_phase="WAIT_INPUTS", flight_state="HOVER_READY")
+            for uid in (1, 2, 3)
+        }
+        health = {uid: True for uid in states}
+        self.assertTrue(task_start_barrier_ready(
+            [1, 2, 3], states, health, True))
+        states[3].flight_state = "TAKEOFF"
+        self.assertFalse(task_start_barrier_ready(
+            [1, 2, 3], states, health, True))
+        states[3].flight_state = "HOVER_READY"
+        health[2] = False
+        self.assertFalse(task_start_barrier_ready(
+            [1, 2, 3], states, health, True))
 
     def test_three_vehicle_landing_is_serialized(self):
         grants, owner = serialized_landing_permissions([1, 2, 3], 0)

@@ -386,6 +386,31 @@ TEST(Stage3Planner, BlockedStraightCorridorIsSoftRisk) {
   EXPECT_EQ(point.risk_reason, "STRAIGHT_CORRIDOR_BLOCKED");
 }
 
+TEST(Stage3Planner, BlockedKnownObstacleCorridorIsRejectedWhenHard) {
+  Sector sector = makeSector();
+  CandidatePoint point = candidate(8.0, 0.0);
+  geometry_msgs::Point current;
+  current.x = 8.0;
+  current.y = -6.0;
+  current.z = 5.0;
+  StaticObstacle tree;
+  tree.id = "tree";
+  tree.x = 8.0;
+  tree.y = -3.0;
+  tree.radius = 0.5;
+  tree.z_min = 0.0;
+  tree.z_max = 8.0;
+  CandidateFilterConfig config;
+  config.minimum_clearance = 1.0;
+  config.cloud_inflation = 0.5;
+  config.known_obstacle_is_hard_constraint = true;
+  config.known_obstacle_corridor_is_hard_constraint = true;
+  EXPECT_FALSE(evaluateCandidate(&point, sector, current, {}, {tree}, true,
+                                 config));
+  EXPECT_TRUE(point.straight_corridor_blocked);
+  EXPECT_EQ(point.rejection_reason, "KNOWN_OBSTACLE_CORRIDOR");
+}
+
 TEST(Stage3Planner, SafeCandidateIsAcceptedAndHysteresisKeepsLock) {
   Sector sector = makeSector();
   geometry_msgs::Point current;

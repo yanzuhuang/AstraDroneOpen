@@ -1,16 +1,37 @@
 <launch>
   <arg name="enable_control" default="false"/>
+  <arg name="uav1_enable_control" default="$(arg enable_control)"/>
+  <arg name="uav2_enable_control" default="$(arg enable_control)"/>
+  <arg name="uav3_enable_control" default="$(arg enable_control)"/>
+  <arg name="uav1_mission_enabled" default="true"/>
+  <arg name="uav2_mission_enabled" default="true"/>
+  <arg name="uav3_mission_enabled" default="true"/>
+  <arg name="uav1_enabled" default="true"/>
+  <arg name="uav2_enabled" default="true"/>
+  <arg name="uav3_enabled" default="true"/>
+  <arg name="uav1_coordination_enabled" default="true"/>
+  <arg name="uav2_coordination_enabled" default="true"/>
+  <arg name="uav3_coordination_enabled" default="true"/>
+  <arg name="swarm_services_enabled" default="true"/>
+  <arg name="swarm_vehicle_namespaces" default="[/uav1, /uav2, /uav3]"/>
   <arg name="start_sim" default="true"/>
   <arg name="gui" default="true"/>
+  <arg name="start_rviz" default="true"/>
   <arg name="use_sim_time" default="true"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/stage3_low_altitude.yaml"/>
-  <arg name="takeoff_interval_sec" default="3.0"/>
+  <arg name="takeoff_interval_sec" default="0.0"/>
   <arg name="desired_phase_separation_degrees" default="120.0"/>
   <arg name="phase_tolerance_degrees" default="15.0"/>
   <arg name="entry_nominal_speed" default="0.20"/>
   <arg name="orbit_nominal_speed" default="0.14"/>
   <arg name="low_altitude_enabled" default="true"/>
+  <arg name="uav1_orbit_permission_enabled"
+       default="$(arg low_altitude_enabled)"/>
+  <arg name="uav2_orbit_permission_enabled"
+       default="$(arg low_altitude_enabled)"/>
+  <arg name="uav3_orbit_permission_enabled"
+       default="$(arg low_altitude_enabled)"/>
   <arg name="uav1_entry_sector" default="7"/>
   <arg name="uav2_entry_sector" default="2"/>
   <arg name="uav3_entry_sector" default="1"/>
@@ -62,20 +83,36 @@
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
     <arg name="uav3_spawn_x" value="$(arg uav3_spawn_x)"/>
+    <arg name="uav1_enabled" value="$(arg uav1_enabled)"/>
+    <arg name="uav2_enabled" value="$(arg uav2_enabled)"/>
+    <arg name="uav3_enabled" value="$(arg uav3_enabled)"/>
     <arg name="spawn_y" value="$(arg spawn_y)"/>
   </include>
 
   <!-- Reuse the audited uav1/uav2 sensor, mission and safety wiring.  The
        include does not start a second Gazebo/PX4 instance. -->
   <include file="$(find astra_swarm_bringup)/launch/dual_tower_inspection.launch">
-    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="enable_control" value="false"/>
+    <arg name="uav1_enable_control" value="$(arg uav1_enable_control)"/>
+    <arg name="uav2_enable_control" value="$(arg uav2_enable_control)"/>
+    <arg name="uav1_mission_enabled" value="$(arg uav1_mission_enabled)"/>
+    <arg name="uav2_mission_enabled" value="$(arg uav2_mission_enabled)"/>
+    <arg name="uav1_enabled" value="$(arg uav1_enabled)"/>
+    <arg name="uav2_enabled" value="$(arg uav2_enabled)"/>
+    <arg name="uav1_coordination_enabled"
+         value="$(arg uav1_coordination_enabled)"/>
+    <arg name="uav2_coordination_enabled"
+         value="$(arg uav2_coordination_enabled)"/>
+    <arg name="swarm_services_enabled" value="$(arg swarm_services_enabled)"/>
     <arg name="start_sim" value="false"/>
     <arg name="gui" value="$(arg gui)"/>
     <arg name="use_sim_time" value="$(arg use_sim_time)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
-    <arg name="orbit_permission_enabled"
-         value="$(arg low_altitude_enabled)"/>
+    <arg name="uav1_orbit_permission_enabled"
+         value="$(arg uav1_orbit_permission_enabled)"/>
+    <arg name="uav2_orbit_permission_enabled"
+         value="$(arg uav2_orbit_permission_enabled)"/>
     <arg name="takeoff_delay" value="$(arg takeoff_interval_sec)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
@@ -125,7 +162,7 @@
     <arg name="uav1_report_file" value="$(arg uav1_report_file)"/>
     <arg name="uav2_report_file" value="$(arg uav2_report_file)"/>
     <arg name="swarm_uav_ids" value="[1, 2, 3]"/>
-    <arg name="swarm_vehicle_namespaces" value="[/uav1, /uav2, /uav3]"/>
+    <arg name="swarm_vehicle_namespaces" value="$(arg swarm_vehicle_namespaces)"/>
     <arg name="swarm_mission_heights"
          value="[$(arg uav1_top_height), $(arg uav2_top_height), $(arg uav3_top_height)]"/>
     <arg name="swarm_phase_degrees" value="[270.0, 45.0, 0.0]"/>
@@ -146,11 +183,12 @@
          value="[/uav1/swarm/state, /uav3/swarm/state]"/>
   </include>
 
-  <node pkg="tf2_ros" type="static_transform_publisher"
+  <node if="$(arg uav3_enabled)"
+        pkg="tf2_ros" type="static_transform_publisher"
         name="world_to_uav3_map"
         args="$(arg uav3_spawn_x) $(arg spawn_y) 0 0 0 0 1 world uav3/map"/>
 
-  <group ns="uav3">
+  <group if="$(arg uav3_enabled)" ns="uav3">
     <group>
       <remap from="/livox/lidar" to="/uav3/livox/lidar"/>
       <remap from="/livox/imu" to="/uav3/livox/imu"/>
@@ -243,11 +281,15 @@
     </group>
   </group>
 
-  <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+  <include if="$(arg uav3_enabled)"
+           file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+    <arg name="mission_enabled" value="$(arg uav3_mission_enabled)"/>
+    <arg name="require_start_permission"
+         value="$(arg uav3_coordination_enabled)"/>
     <arg name="uav_ns" value="uav3"/>
     <arg name="uav_id" value="3"/>
     <arg name="planner_drone_id" value="2"/>
-    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="enable_control" value="$(arg uav3_enable_control)"/>
     <arg name="takeoff_delay" value="0.0"/>
     <arg name="planning_frame" value="uav3/camera_init"/>
     <arg name="mavros_frame" value="uav3/map"/>
@@ -258,7 +300,7 @@
          value="$(eval float(arg('uav3_top_height')) - 0.5)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
     <arg name="orbit_permission_enabled"
-         value="$(arg low_altitude_enabled)"/>
+         value="$(arg uav3_orbit_permission_enabled)"/>
     <arg name="entry_sector" value="$(arg uav3_entry_sector)"/>
     <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
     <arg name="inspection_laps" value="$(arg inspection_laps)"/>
@@ -268,7 +310,7 @@
          value="$(eval float(arg('uav3_top_height')) - 0.4)"/>
     <arg name="low_altitude_ceiling_height"
          value="$(eval float(arg('uav3_top_height')) + 1.5)"/>
-    <arg name="coordination_enabled" value="true"/>
+    <arg name="coordination_enabled" value="$(arg uav3_coordination_enabled)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="map_size_z" value="$(arg map_size_z)"/>
     <arg name="map_size_x" value="$(arg map_size_x)"/>
@@ -308,4 +350,20 @@
     <param name="csv_file" value="$(arg evidence_csv_file)"/>
     <param name="summary_file" value="$(arg evidence_summary_file)"/>
   </node>
+
+  <node pkg="astra_swarm_bringup" type="swarm_rviz_diagnostics.py"
+        name="astra_swarm_rviz_diagnostics" output="screen" required="true">
+    <rosparam param="uav_ids">[1, 2, 3]</rosparam>
+    <rosparam param="tower_center">[-10.0551, 19.7104]</rosparam>
+    <param name="orbit_radius" value="12.5"/>
+    <param name="entry_gate_radius" value="15.0"/>
+    <rosparam param="mission_heights"
+              subst_value="true">[$(arg uav1_top_height), $(arg uav2_top_height), $(arg uav3_top_height)]</rosparam>
+    <rosparam param="entry_sectors"
+              subst_value="true">[$(arg uav1_entry_sector), $(arg uav2_entry_sector), $(arg uav3_entry_sector)]</rosparam>
+  </node>
+
+  <node if="$(arg start_rviz)" pkg="rviz" type="rviz"
+        name="astra_swarm_three_uav_rviz" output="screen"
+        args="-f world -d $(find astra_swarm_bringup)/config/triple_tower.rviz"/>
 </launch>

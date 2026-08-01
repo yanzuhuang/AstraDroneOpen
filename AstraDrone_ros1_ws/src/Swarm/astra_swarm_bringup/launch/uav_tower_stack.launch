@@ -3,6 +3,8 @@
   <arg name="uav_id"/>
   <arg name="planner_drone_id" default="0"/>
   <arg name="enable_control" default="false"/>
+  <arg name="mission_enabled" default="true"/>
+  <arg name="require_start_permission" default="true"/>
   <arg name="takeoff_delay" default="0.0"/>
   <arg name="planning_frame"/>
   <arg name="mavros_frame"/>
@@ -45,6 +47,26 @@
   <arg name="swarm_origin_yaw" default="0.0"/>
   <arg name="tower_center_x"/>
   <arg name="tower_center_y" default="19.7104"/>
+  <arg name="worksite_crane_x"
+       default="$(eval 6.36257 - float(arg('swarm_origin_x')))"/>
+  <arg name="worksite_crane_y"
+       default="$(eval 21.7297 - float(arg('swarm_origin_y')))"/>
+  <arg name="telephone_pole_west_x"
+       default="$(eval -21.958 - float(arg('swarm_origin_x')))"/>
+  <arg name="telephone_pole_west_y"
+       default="$(eval 19.0 - float(arg('swarm_origin_y')))"/>
+  <arg name="telephone_pole_southwest_x"
+       default="$(eval -21.8672 - float(arg('swarm_origin_x')))"/>
+  <arg name="telephone_pole_southwest_y"
+       default="$(eval 10.0 - float(arg('swarm_origin_y')))"/>
+  <arg name="telephone_pole_northwest_x"
+       default="$(eval -22.0129 - float(arg('swarm_origin_x')))"/>
+  <arg name="telephone_pole_northwest_y"
+       default="$(eval 28.0 - float(arg('swarm_origin_y')))"/>
+  <arg name="worksite_pine_northwest_x"
+       default="$(eval -21.0347 - float(arg('swarm_origin_x')))"/>
+  <arg name="worksite_pine_northwest_y"
+       default="$(eval 24.6252 - float(arg('swarm_origin_y')))"/>
   <arg name="crane_center_x"/>
   <arg name="bridge_config"/>
   <arg name="report_file"/>
@@ -64,6 +86,8 @@
            to="/$(arg uav_ns)/grid_map/unknown"/>
     <include file="$(find ego_gazebo_bridge)/launch/ego_gazebo_bridge.launch">
       <arg name="enable_control" value="$(arg enable_control)"/>
+      <arg name="require_start_permission"
+           value="$(arg require_start_permission)"/>
       <arg name="drone_id" value="$(arg planner_drone_id)"/>
       <arg name="auto_track_on_command" value="false"/>
       <arg name="rviz" value="false"/>
@@ -141,7 +165,8 @@
            name="drone_$(arg planner_drone_id)_ego_planner_node/grid_map/virtual_ceil_height"
            value="$(arg low_altitude_ceiling_height)"/>
 
-    <node pkg="astra_tower_mission" type="stage3_ego_mission_node"
+    <node if="$(arg mission_enabled)"
+          pkg="astra_tower_mission" type="stage3_ego_mission_node"
           name="tower_mission" output="screen" required="true">
       <rosparam command="load"
                 file="$(arg task_config)"/>
@@ -190,6 +215,29 @@
       <rosparam unless="$(arg low_altitude_enabled)"
                 param="static_obstacles/x"
                 subst_value="true">[$(arg crane_center_x)]</rosparam>
+      <!-- Gazebo Classic applies the <state> poses in worksite.world.  Stamp
+           those measured envelopes into task-level candidate validation as a
+           conservative supplement to each UAV's independent live map. -->
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_obstacles/names">
+        [worksite_crane, telephone_pole_west, telephone_pole_southwest, telephone_pole_northwest, pine_northwest]
+      </rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_obstacles/x" subst_value="true">
+        [$(arg worksite_crane_x), $(arg telephone_pole_west_x), $(arg telephone_pole_southwest_x), $(arg telephone_pole_northwest_x), $(arg worksite_pine_northwest_x)]
+      </rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_obstacles/y" subst_value="true">
+        [$(arg worksite_crane_y), $(arg telephone_pole_west_y), $(arg telephone_pole_southwest_y), $(arg telephone_pole_northwest_y), $(arg worksite_pine_northwest_y)]
+      </rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_obstacles/z">[0.0, 0.0, 0.0, 0.0, 0.0]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_obstacles/radius">[3.70, 0.10, 0.10, 0.10, 1.90]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_obstacles/z_min">[-0.50, -0.50, -0.50, -0.50, 0.15]</rosparam>
+      <rosparam if="$(arg low_altitude_enabled)"
+                param="static_obstacles/z_max">[50.0, 8.70, 8.70, 8.70, 4.70]</rosparam>
       <param name="topics/odom" value="/$(arg uav_ns)/Odometry"/>
       <param name="topics/command"
              value="/$(arg uav_ns)/planning/pos_cmd"/>
@@ -241,6 +289,8 @@
              value="/$(arg uav_ns)/ego_mavros_bridge/land"/>
       <param name="coordination/require_transition_permission"
              value="$(arg coordination_enabled)"/>
+      <param name="coordination/require_task_start_permission"
+             value="$(arg coordination_enabled)"/>
       <param name="coordination/require_entry_permission"
              value="$(arg coordination_enabled)"/>
       <param name="coordination/require_orbit_permission"
@@ -250,6 +300,8 @@
       <param name="coordination/require_landing_permission"
              value="$(arg coordination_enabled)"/>
       <param name="coordination/permission_timeout" value="1.0"/>
+      <param name="coordination/task_start_permission_topic"
+             value="/$(arg uav_ns)/swarm/task_start_permission"/>
       <param name="coordination/transition_permission_topic"
              value="/$(arg uav_ns)/swarm/transition_permission"/>
       <param name="coordination/entry_permission_topic"

@@ -6,6 +6,7 @@
     function rather than a roadmap stage number.
   -->
   <arg name="enable_control" default="false"/>
+  <arg name="require_start_permission" default="true"/>
   <arg name="drone_id" default="0"/>
   <arg name="auto_track_on_command" default="false"/>
   <arg name="rviz" default="false"/>
@@ -169,6 +170,8 @@
         name="ego_mavros_bridge" output="screen" required="true">
     <rosparam command="load" file="$(arg bridge_config_file)"/>
     <param name="enable_control" value="$(arg enable_control)"/>
+    <param name="require_start_permission"
+           value="$(arg require_start_permission)"/>
     <param name="auto_track_on_command" value="$(arg auto_track_on_command)"/>
     <param name="planning_frame" value="$(arg planning_frame)"/>
     <param name="mavros_frame" value="$(arg mavros_frame)"/>

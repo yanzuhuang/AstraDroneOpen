@@ -1,5 +1,17 @@
 <launch>
   <arg name="enable_control" default="false"/>
+  <arg name="uav1_enable_control" default="$(arg enable_control)"/>
+  <arg name="uav2_enable_control" default="$(arg enable_control)"/>
+  <arg name="uav1_mission_enabled" default="true"/>
+  <arg name="uav2_mission_enabled" default="true"/>
+  <arg name="uav1_enabled" default="true"/>
+  <arg name="uav2_enabled" default="true"/>
+  <arg name="uav1_coordination_enabled" default="true"/>
+  <arg name="uav2_coordination_enabled" default="true"/>
+  <!-- Disable only the fleet-wide coordinator/guard/safety processes for a
+       deliberately isolated single-UAV reproduction.  Per-UAV bridge,
+       planner, localization, timestamp and obstacle gates stay enabled. -->
+  <arg name="swarm_services_enabled" default="true"/>
   <arg name="start_sim" default="true"/>
   <arg name="gui" default="true"/>
   <arg name="enable_cloud_fusion" default="false"/>
@@ -10,6 +22,10 @@
   <arg name="low_altitude_enabled" default="false"/>
   <arg name="orbit_permission_enabled"
        default="$(arg low_altitude_enabled)"/>
+  <arg name="uav1_orbit_permission_enabled"
+       default="$(arg orbit_permission_enabled)"/>
+  <arg name="uav2_orbit_permission_enabled"
+       default="$(arg orbit_permission_enabled)"/>
   <arg name="takeoff_delay" default="6.0"/>
   <arg name="uav1_top_height" default="34.0"/>
   <arg name="uav2_top_height" default="28.0"/>
@@ -83,14 +99,16 @@
 
   <!-- Unified world to each vehicle-local control map. The planners remain
        independent; only the swarm state is expressed in world coordinates. -->
-  <node pkg="tf2_ros" type="static_transform_publisher"
+  <node if="$(arg uav1_enabled)"
+        pkg="tf2_ros" type="static_transform_publisher"
         name="world_to_uav1_map"
         args="$(arg uav1_spawn_x) $(arg spawn_y) 0 0 0 0 1 world uav1/map"/>
-  <node pkg="tf2_ros" type="static_transform_publisher"
+  <node if="$(arg uav2_enabled)"
+        pkg="tf2_ros" type="static_transform_publisher"
         name="world_to_uav2_map"
         args="$(arg uav2_spawn_x) $(arg spawn_y) 0 0 0 0 1 world uav2/map"/>
 
-  <group ns="uav1">
+  <group if="$(arg uav1_enabled)" ns="uav1">
     <group>
       <remap from="/livox/lidar" to="/uav1/livox/lidar"/>
       <remap from="/livox/imu" to="/uav1/livox/imu"/>
@@ -187,7 +205,7 @@
     </group>
   </group>
 
-  <group ns="uav2">
+  <group if="$(arg uav2_enabled)" ns="uav2">
     <group>
       <remap from="/livox/lidar" to="/uav2/livox/lidar"/>
       <remap from="/livox/imu" to="/uav2/livox/imu"/>
@@ -281,11 +299,15 @@
     </group>
   </group>
 
-  <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+  <include if="$(arg uav1_enabled)"
+           file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+    <arg name="mission_enabled" value="$(arg uav1_mission_enabled)"/>
+    <arg name="require_start_permission"
+         value="$(arg uav1_coordination_enabled)"/>
     <arg name="uav_ns" value="uav1"/>
     <arg name="uav_id" value="1"/>
     <arg name="planner_drone_id" value="0"/>
-    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="enable_control" value="$(arg uav1_enable_control)"/>
     <arg name="takeoff_delay" value="0.0"/>
     <arg name="planning_frame" value="uav1/camera_init"/>
     <arg name="mavros_frame" value="uav1/map"/>
@@ -296,8 +318,9 @@
     <arg name="takeoff_height" value="$(arg uav1_takeoff_height)"/>
     <arg name="staging_height" value="$(arg uav1_staging_height)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="coordination_enabled" value="$(arg uav1_coordination_enabled)"/>
     <arg name="orbit_permission_enabled"
-         value="$(arg orbit_permission_enabled)"/>
+         value="$(arg uav1_orbit_permission_enabled)"/>
     <arg name="entry_sector" value="$(arg uav1_entry_sector)"/>
     <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
     <arg name="inspection_laps" value="$(arg inspection_laps)"/>
@@ -337,11 +360,15 @@
     <arg name="trajectory_color_b" value="0.0"/>
   </include>
 
-  <include file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+  <include if="$(arg uav2_enabled)"
+           file="$(find astra_swarm_bringup)/launch/uav_tower_stack.launch">
+    <arg name="mission_enabled" value="$(arg uav2_mission_enabled)"/>
+    <arg name="require_start_permission"
+         value="$(arg uav2_coordination_enabled)"/>
     <arg name="uav_ns" value="uav2"/>
     <arg name="uav_id" value="2"/>
     <arg name="planner_drone_id" value="1"/>
-    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="enable_control" value="$(arg uav2_enable_control)"/>
     <arg name="takeoff_delay" value="$(arg takeoff_delay)"/>
     <arg name="planning_frame" value="uav2/camera_init"/>
     <arg name="mavros_frame" value="uav2/map"/>
@@ -352,8 +379,9 @@
     <arg name="takeoff_height" value="$(arg uav2_takeoff_height)"/>
     <arg name="staging_height" value="$(arg uav2_staging_height)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
+    <arg name="coordination_enabled" value="$(arg uav2_coordination_enabled)"/>
     <arg name="orbit_permission_enabled"
-         value="$(arg orbit_permission_enabled)"/>
+         value="$(arg uav2_orbit_permission_enabled)"/>
     <arg name="entry_sector" value="$(arg uav2_entry_sector)"/>
     <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
     <arg name="inspection_laps" value="$(arg inspection_laps)"/>
@@ -393,6 +421,7 @@
     <arg name="trajectory_color_b" value="1.0"/>
   </include>
 
+  <group if="$(arg swarm_services_enabled)">
   <node pkg="astra_swarm_safety" type="swarm_safety_node.py"
         name="astra_swarm_safety" output="screen" required="true">
     <rosparam command="load"
@@ -411,6 +440,7 @@
               subst_value="true">$(arg swarm_takeoff_heights)</rosparam>
     <param name="optimizer_swarm_clearance" value="$(arg swarm_clearance)"/>
   </node>
+  </group>
   <node pkg="astra_swarm_bringup" type="px4_param_guard.py"
         name="astra_swarm_px4_param_guard" output="screen" required="true">
     <rosparam param="vehicle_namespaces"
@@ -418,6 +448,7 @@
     <param name="ekf2_hgt_ref" value="3"/>
     <param name="ekf2_ev_ctrl" value="11"/>
   </node>
+  <group if="$(arg swarm_services_enabled)">
   <node pkg="astra_swarm_manager" type="swarm_manager_node.py"
         name="astra_swarm_manager" output="screen" required="true">
     <rosparam command="load"
@@ -456,6 +487,7 @@
     <param name="uav2_initial_height" value="$(arg uav2_top_height)"/>
     <param name="uav2_final_height" value="$(arg uav2_final_height)"/>
   </node>
+  </group>
 
   <node if="$(arg enable_cloud_fusion)"
         pkg="astra_swarm_perception" type="world_cloud_fusion_node"

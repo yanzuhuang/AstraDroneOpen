@@ -99,6 +99,7 @@ enum class GoalKind {
   kStaging,
   kEntryGate,
   kSector,
+  kSectorDetour,
   kRecovery,
   kLayerTransition,
   kExitGate,
@@ -366,6 +367,8 @@ class Stage3EgoMissionNode {
                                      "/ego_mavros_bridge/land");
     private_node_.param("coordination/require_transition_permission",
                         require_transition_permission_, false);
+    private_node_.param("coordination/require_task_start_permission",
+                        require_task_start_permission_, false);
     private_node_.param("coordination/require_entry_permission",
                         require_entry_permission_, false);
     private_node_.param("coordination/require_exit_permission",
@@ -376,6 +379,9 @@ class Stage3EgoMissionNode {
                         require_landing_permission_, false);
     private_node_.param("coordination/permission_timeout",
                         coordination_permission_timeout_, 1.0);
+    private_node_.param<std::string>(
+        "coordination/task_start_permission_topic",
+        task_start_permission_topic_, "/tower_mission/task_start_permission");
     private_node_.param<std::string>(
         "coordination/transition_permission_topic",
         transition_permission_topic_,
@@ -531,6 +537,9 @@ class Stage3EgoMissionNode {
     private_node_.param("candidate/known_obstacle_is_hard_constraint",
                         filter_config_.known_obstacle_is_hard_constraint,
                         true);
+    private_node_.param(
+        "candidate/known_obstacle_corridor_is_hard_constraint",
+        filter_config_.known_obstacle_corridor_is_hard_constraint, false);
     private_node_.param("candidate/corridor_sample_step",
                         filter_config_.corridor_sample_step, 0.5);
     private_node_.param("candidate/blocked_corridor_penalty",
@@ -914,6 +923,11 @@ class Stage3EgoMissionNode {
           transition_permission_topic_, 5,
           &Stage3EgoMissionNode::transitionPermissionCallback, this);
     }
+    if (require_task_start_permission_) {
+      task_start_permission_sub_ = node_.subscribe(
+          task_start_permission_topic_, 5,
+          &Stage3EgoMissionNode::taskStartPermissionCallback, this);
+    }
     if (require_entry_permission_) {
       entry_permission_sub_ = node_.subscribe(
           entry_permission_topic_, 5,
@@ -1001,6 +1015,14 @@ class Stage3EgoMissionNode {
         !std::isfinite(msg->pose.pose.position.y) ||
         !std::isfinite(msg->pose.pose.position.z)) return;
     odom_ = *msg; have_odom_ = true; odom_received_ = ros::Time::now();
+    if (low_altitude_mode_ && state_ == MissionState::kEntryGateTransit) {
+      recordIngressTrace(msg->pose.pose.position);
+    }
+  }
+
+  void taskStartPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    task_start_permission_ = msg->data;
+    task_start_permission_received_ = ros::Time::now();
   }
 
   void transitionPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
@@ -1024,6 +1046,12 @@ class Stage3EgoMissionNode {
   }
 
   void landingPermissionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    if (msg->data && !landing_permission_) {
+      ROS_WARN("[STAGE3_DIAG] uav=%d landing permission granted "
+               "mission_state=%s sector=%d target=%s action=REQUEST_SAFE_LAND",
+               uav_id_, missionStateName(state_), activeSectorId(),
+               active_target_.id.empty() ? "none" : active_target_.id.c_str());
+    }
     landing_permission_ = msg->data;
     landing_permission_received_ = ros::Time::now();
   }
@@ -1034,6 +1062,17 @@ class Stage3EgoMissionNode {
     if (!std::isfinite(msg->position.x) || !std::isfinite(msg->position.y) ||
         !std::isfinite(msg->position.z)) return;
     command_ = *msg; have_command_ = true; command_received_ = ros::Time::now();
+    if (awaiting_fresh_trajectory_ &&
+        msg->trajectory_id != trajectory_baseline_) {
+      awaiting_fresh_trajectory_ = false;
+      ROS_WARN("[STAGE3_DIAG] uav=%d EGO generated fresh trajectory "
+               "trajectory_id=%u baseline=%u mission_state=%s sector=%d "
+               "target=%s ego_replan_result=SUCCESS trajectory_expired=false "
+               "action=TRACK_FRESH_BSPLINE",
+               uav_id_, msg->trajectory_id, trajectory_baseline_,
+               missionStateName(state_), activeSectorId(),
+               active_target_.id.empty() ? "none" : active_target_.id.c_str());
+    }
   }
 
   void cloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
@@ -1200,6 +1239,13 @@ class Stage3EgoMissionNode {
   void bridgeStateCallback(const std_msgs::String::ConstPtr& msg) {
     if (!have_bridge_state_ || bridge_state_ != msg->data) {
       bridge_state_entered_ = ros::Time::now();
+      if (msg->data == "HOME_HOVER") {
+        ROS_WARN("[STAGE3_DIAG] uav=%d home hover reached "
+                 "mission_state=%s sector=%d target=(%.2f,%.2f,%.2f) "
+                 "action=WAIT_LANDING_PERMISSION",
+                 uav_id_, missionStateName(state_), activeSectorId(),
+                 active_target_.x, active_target_.y, active_target_.z);
+      }
     }
     bridge_state_ = msg->data; have_bridge_state_ = true;
     bridge_state_received_ = ros::Time::now();
@@ -1624,6 +1670,8 @@ class Stage3EgoMissionNode {
       entry_gate_relocation_pending_ = false;
       entry_gate_no_safe_candidate_hold_ = false;
       low_ingress_replan_pending_ = false;
+      successful_ingress_trace_.clear();
+      recordIngressTrace(current);
       transition(MissionState::kEntryGateTransit,
                  "entry hover complete; direct ENTRY_GATE handed to EGO");
       ROS_WARN("[STAGE3_TASK] LOW_ALTITUDE formal ENTRY_GATE "
@@ -2082,6 +2130,7 @@ class Stage3EgoMissionNode {
 
   bool evaluateSector(const ros::Time& now) {
     if (current_sector_ >= sectors_.size()) return false;
+    sector_detour_active_ = false;
     auto& sector = sectors_[current_sector_];
     sector.state = SectorState::kEvaluating;
     const CandidatePoint* previous = nullptr;
@@ -2179,6 +2228,30 @@ class Stage3EgoMissionNode {
                                        : nullptr;
     const int selected = chooseBestCandidate(sector, locked, target_replacement_margin_);
     if (selected < 0) {
+      CandidatePoint detour;
+      CandidatePoint final_target;
+      int final_index = -1;
+      if (low_altitude_mode_ &&
+          buildStaticSectorDetour(sector, &detour, &final_target,
+                                  &final_index)) {
+        sector.locked_index = final_index;
+        sector.state = SectorState::kTargetLocked;
+        pending_sector_target_ = final_target;
+        active_target_ = detour;
+        sector_detour_active_ = true;
+        current_target_plan_attempt_ = 0;
+        ROS_WARN("[STAGE3_TASK] uav=%d sector=%d known-obstacle "
+                 "corridor detour selected: intermediate=%s"
+                 "(%.2f,%.2f,%.2f) final=%s(%.2f,%.2f,%.2f); "
+                 "both static segments clear; EGO will generate fresh "
+                 "local trajectories for each segment",
+                 uav_id_, sector.sector_id + 1, detour.id.c_str(),
+                 detour.x, detour.y, detour.z, final_target.id.c_str(),
+                 final_target.x, final_target.y, final_target.z);
+        transition(MissionState::kTargetLocked,
+                   "same-sector known-obstacle corridor detour locked");
+        return true;
+      }
       sector.failure_reason = mapFresh(now) ? "ALL_CANDIDATES_REJECTED" : "MAP_STALE";
       sector.state = SectorState::kRelocating;
       return false;
@@ -2190,6 +2263,106 @@ class Stage3EgoMissionNode {
     active_target_ = sector.candidates[selected];
     transition(MissionState::kTargetLocked, "safe candidate locked: " + active_target_.id);
     return true;
+  }
+
+  bool buildStaticSectorDetour(const Sector& sector,
+                               CandidatePoint* detour,
+                               CandidatePoint* final_target,
+                               int* final_index) const {
+    if (!have_odom_ || detour == nullptr || final_target == nullptr ||
+        final_index == nullptr) {
+      return false;
+    }
+    const geometry_msgs::Point current = pointOf(odom_);
+    const double current_angle = std::atan2(
+        current.y - route_.center_y, current.x - route_.center_x);
+    const double direction_sign =
+        route_.direction == OrbitDirection::kCounterClockwise ? 1.0 : -1.0;
+    const double clearance = filter_config_.minimum_clearance +
+                             filter_config_.cloud_inflation;
+    static const std::vector<geometry_msgs::Point> no_map_points;
+    const std::vector<double> radius_offsets{0.0, 2.0, 4.0, -2.0, -4.0};
+    double best_score = std::numeric_limits<double>::infinity();
+
+    for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
+      const CandidatePoint& candidate = sector.candidates[index];
+      if (candidate.rejection_reason != "KNOWN_OBSTACLE_CORRIDOR" ||
+          planner_unreachable_candidates_.count(candidate.id) > 0U) {
+        continue;
+      }
+      geometry_msgs::Point final_point;
+      final_point.x = candidate.x;
+      final_point.y = candidate.y;
+      final_point.z = candidate.z;
+      double directional_delta = direction_sign * normalizeAngle(
+          std::atan2(final_point.y - route_.center_y,
+                     final_point.x - route_.center_x) - current_angle);
+      if (directional_delta < 0.0) directional_delta += 2.0 * kPi;
+      if (directional_delta <= 5.0 * kPi / 180.0 ||
+          directional_delta > 90.0 * kPi / 180.0) {
+        continue;
+      }
+      for (double step_deg = 5.0;
+           step_deg * kPi / 180.0 < directional_delta - 1.0e-6;
+           step_deg += 5.0) {
+        const double theta = normalizeAngle(
+            current_angle + direction_sign * step_deg * kPi / 180.0);
+        for (double radius_offset : radius_offsets) {
+          const double radius = route_.radius + radius_offset;
+          if (radius < route_.radius - sector_radius_half_width_ ||
+              radius > route_.radius + sector_radius_half_width_) {
+            continue;
+          }
+          CandidatePoint intermediate;
+          intermediate.id = "SECTOR_" +
+                            std::to_string(sector.sector_id + 1) +
+                            "_STATIC_DETOUR_" + candidate.id;
+          intermediate.sector_id = sector.sector_id;
+          intermediate.layer_id = candidate.layer_id;
+          intermediate.x = route_.center_x + radius * std::cos(theta);
+          intermediate.y = route_.center_y + radius * std::sin(theta);
+          intermediate.z = candidate.z;
+          intermediate.yaw = normalizeAngle(std::atan2(
+              route_.center_y - intermediate.y,
+              route_.center_x - intermediate.x));
+          geometry_msgs::Point intermediate_point;
+          intermediate_point.x = intermediate.x;
+          intermediate_point.y = intermediate.y;
+          intermediate_point.z = intermediate.z;
+          bool endpoint_clear = true;
+          for (const auto& obstacle : obstacles_) {
+            if (pointInObstacle(intermediate_point, obstacle, clearance)) {
+              endpoint_clear = false;
+              break;
+            }
+          }
+          if (!endpoint_clear || !mappedEndpointClear(intermediate)) continue;
+          if (!lineCorridorSafe(current, intermediate_point, no_map_points,
+                                obstacles_, clearance,
+                                filter_config_.corridor_sample_step) ||
+              !lineCorridorSafe(intermediate_point, final_point,
+                                no_map_points, obstacles_, clearance,
+                                filter_config_.corridor_sample_step)) {
+            continue;
+          }
+          const double total_distance =
+              std::hypot(intermediate.x - current.x,
+                         intermediate.y - current.y) +
+              std::hypot(candidate.x - intermediate.x,
+                         candidate.y - intermediate.y);
+          const double score = total_distance +
+                               2.0 * std::abs(radius_offset) +
+                               candidate.nominal_deviation;
+          if (score < best_score) {
+            best_score = score;
+            *detour = intermediate;
+            *final_target = candidate;
+            *final_index = static_cast<int>(index);
+          }
+        }
+      }
+    }
+    return *final_index >= 0;
   }
 
   bool requestTracking(bool enabled) {
@@ -2206,6 +2379,29 @@ class Stage3EgoMissionNode {
   bool requestHold(const std::string& reason) {
     failure_reason_ = reason;
     state_before_hold_ = state_;
+    const ros::Time now = ros::Time::now();
+    const double state_duration = state_entered_.isZero()
+                                      ? 0.0
+                                      : (now - state_entered_).toSec();
+    const bool trajectory_expired =
+        have_command_ && !fresh(now, command_received_, input_timeout_);
+    ROS_ERROR("[STAGE3_DIAG] uav=%d HOLD requested mission_state=%s "
+              "sector=%d target=%s(%.2f,%.2f,%.2f) condition=\"%s\" "
+              "ego_replan_result=%s planner_reason=%s trajectory_expired=%s "
+              "predicted_swarm_conflict=%s state_duration=%.3fs "
+              "action=CANCEL_TRAJECTORY_AND_HOLD",
+              uav_id_, missionStateName(state_), activeSectorId(),
+              active_target_.id.empty() ? "none" : active_target_.id.c_str(),
+              active_target_.x, active_target_.y, active_target_.z,
+              reason.c_str(),
+              have_planner_status_
+                  ? (planner_status_.last_plan_success ? "SUCCESS" : "FAILED")
+                  : "UNKNOWN",
+              have_planner_status_
+                  ? planner_status_.failure_reason.c_str()
+                  : "NO_PLANNER_STATUS",
+              trajectory_expired ? "true" : "false",
+              phase_hold_pending_ ? "true" : "false", state_duration);
     if (enable_control_) {
       std_srvs::Trigger cancel;
       const bool cancelled = cancel_client_.call(cancel) && cancel.response.success;
@@ -2255,12 +2451,23 @@ class Stage3EgoMissionNode {
   bool requestResume() {
     if (!enable_control_) return true;
     std_srvs::Trigger service;
+    bool resumed = false;
     if (!resume_client_.call(service) || !service.response.success) {
       ROS_WARN("[STAGE3_TASK] EGO resume pending: %s",
                service.response.message.c_str());
-      return requestTracking(true);
+      resumed = requestTracking(true);
+    } else {
+      resumed = true;
     }
-    return true;
+    if (resumed) {
+      // Bridge state arrives asynchronously.  Ignore only the previously
+      // latched HOLD during this bounded acknowledgement window; if the
+      // bridge does not leave HOLD within one second, the normal gate below
+      // cancels again and remains fail-closed.
+      bridge_resume_grace_until_ =
+          ros::Time::now() + ros::Duration(1.0);
+    }
+    return resumed;
   }
 
   bool plannerFailure(const ros::Time& now, std::string* reason) const {
@@ -2764,7 +2971,11 @@ class Stage3EgoMissionNode {
 
   bool startNormalReturn(const std::string& reason,
                          bool include_exit_gate = true) {
-    if (successful_ingress_goals_.empty() ||
+    const std::vector<CandidatePoint>& ingress_reference =
+        low_altitude_mode_ && successful_ingress_trace_.size() >= 2U
+            ? successful_ingress_trace_
+            : successful_ingress_goals_;
+    if (ingress_reference.empty() ||
         (include_exit_gate &&
          (!entry_gate_locked_ || provisional_entry_gate_.layer_id !=
                                       current_layer_))) {
@@ -2784,8 +2995,17 @@ class Stage3EgoMissionNode {
                "xyz=(%.2f, %.2f, %.2f); no previous-layer gate retained",
                current_layer_, exit_gate.x, exit_gate.y, exit_gate.z);
     }
-    for (auto iterator = successful_ingress_goals_.rbegin();
-         iterator != successful_ingress_goals_.rend(); ++iterator) {
+    const geometry_msgs::Point current = pointOf(odom_);
+    for (auto iterator = ingress_reference.rbegin();
+         iterator != ingress_reference.rend(); ++iterator) {
+      const double current_separation = std::sqrt(
+          (iterator->x - current.x) * (iterator->x - current.x) +
+          (iterator->y - current.y) * (iterator->y - current.y) +
+          (iterator->z - current.z) * (iterator->z - current.z));
+      if (current_separation <
+          return_egress_config_.minimum_goal_separation) {
+        continue;
+      }
       if (!normal_return_goals_.empty()) {
         const double separation = std::sqrt(
             (iterator->x - normal_return_goals_.back().x) *
@@ -2811,6 +3031,11 @@ class Stage3EgoMissionNode {
     arrival_since_ = ros::Time(0);
     transition(MissionState::kNormalReturn,
                reason + "; reverse ingress goals selected");
+    ROS_WARN("[STAGE3_DIAG] uav=%d return state entered "
+             "reference=REVERSE_ACTUAL_INGRESS goals=%zu current=(%.2f,%.2f,%.2f) "
+             "action=PUBLISH_FRESH_GOALS_TO_LOCAL_EGO",
+             uav_id_, normal_return_goals_.size(), current.x, current.y,
+             current.z);
     return true;
   }
 
@@ -3007,7 +3232,8 @@ class Stage3EgoMissionNode {
     active_target_.face_tower =
         !low_velocity_facing_ingress &&
         (kind == GoalKind::kStaging || kind == GoalKind::kEntryGate ||
-         kind == GoalKind::kSector || kind == GoalKind::kRecovery ||
+         kind == GoalKind::kSector || kind == GoalKind::kSectorDetour ||
+         kind == GoalKind::kRecovery ||
          kind == GoalKind::kLayerTransition || kind == GoalKind::kExitGate);
     if (!active_target_.face_tower) {
       active_target_.require_arrival_yaw = false;
@@ -3022,6 +3248,7 @@ class Stage3EgoMissionNode {
     noteEgoGoalPublication(active_target_, mission_target_id,
                            last_transition_reason_, "TASK_POSESTAMPED");
     goal_pub_.publish(goal); target_pub_.publish(goal);
+    awaiting_fresh_trajectory_ = true;
     const double goal_xy_change =
         std::hypot(active_target_.x - previous_target.x,
                    active_target_.y - previous_target.y);
@@ -3068,11 +3295,14 @@ class Stage3EgoMissionNode {
     best_goal_distance_ = std::numeric_limits<double>::infinity();
     last_progress_time_ = goal_sent_;
     have_sent_goal_ = true;
-    if (kind == GoalKind::kSector) {
-      ++current_target_plan_attempt_;
-    }
-    if (kind == GoalKind::kSector) {
-      transition(MissionState::kNavigate, "sector target sent to EGO");
+    if (kind == GoalKind::kSector || kind == GoalKind::kSectorDetour) {
+      if (kind == GoalKind::kSector) {
+        ++current_target_plan_attempt_;
+      }
+      transition(MissionState::kNavigate,
+                 kind == GoalKind::kSectorDetour
+                     ? "known-obstacle corridor detour sent to EGO"
+                     : "sector target sent to EGO");
     }
   }
 
@@ -3105,6 +3335,58 @@ class Stage3EgoMissionNode {
             (position.z - active_target_.z));
   }
 
+  std::string sectorFailureDetail() const {
+    if (current_sector_ >= sectors_.size()) {
+      return "SECTOR_INDEX_INVALID";
+    }
+    const Sector& sector = sectors_[current_sector_];
+    std::unordered_map<std::string, int> counts;
+    for (const CandidatePoint& candidate : sector.candidates) {
+      const std::string key = candidate.rejection_reason.empty()
+                                  ? "UNSPECIFIED_REJECTION"
+                                  : candidate.rejection_reason;
+      ++counts[key];
+    }
+    std::ostringstream stream;
+    stream << "SECTOR_" << (sector.sector_id + 1)
+           << "_NO_SAFE_REACHABLE_CANDIDATE total="
+           << sector.candidates.size() << " reasons=";
+    bool first = true;
+    for (const auto& item : counts) {
+      if (!first) stream << '|';
+      stream << item.first << ':' << item.second;
+      first = false;
+    }
+    return stream.str();
+  }
+
+  int activeSectorId() const {
+    return current_sector_ < sectors_.size()
+               ? sectors_[current_sector_].sector_id + 1
+               : -1;
+  }
+
+  void recordIngressTrace(const geometry_msgs::Point& point) {
+    if (!low_altitude_mode_) return;
+    if (!successful_ingress_trace_.empty()) {
+      const CandidatePoint& previous = successful_ingress_trace_.back();
+      if (std::sqrt((point.x - previous.x) * (point.x - previous.x) +
+                    (point.y - previous.y) * (point.y - previous.y) +
+                    (point.z - previous.z) * (point.z - previous.z)) < 2.0) {
+        return;
+      }
+    }
+    CandidatePoint sample;
+    sample.id = "INGRESS_TRACE_" +
+                std::to_string(successful_ingress_trace_.size());
+    sample.x = point.x;
+    sample.y = point.y;
+    sample.z = point.z;
+    sample.require_arrival_yaw = false;
+    sample.face_tower = false;
+    successful_ingress_trace_.push_back(sample);
+  }
+
   bool noProgressTimedOut(const ros::Time& now) {
     const double distance = activeGoalDistance();
     if (!std::isfinite(distance)) return true;
@@ -3132,17 +3414,22 @@ class Stage3EgoMissionNode {
   void transition(MissionState next, const std::string& reason) {
     last_transition_reason_ = reason;
     if (state_ == next) return;
-    ROS_WARN("[STAGE3_TASK] %s -> %s: %s; layer=%d height=%.2f "
+    const double previous_duration = state_entered_.isZero()
+                                         ? 0.0
+                                         : (ros::Time::now() - state_entered_).toSec();
+    ROS_WARN("[STAGE3_TASK] uav=%d %s -> %s: %s; layer=%d height=%.2f "
              "waypoint_index=%zu active=%s(%.2f, %.2f, %.2f) "
-             "cycle=%d/%d final_return=%s",
-             missionStateName(state_), missionStateName(next), reason.c_str(),
+             "sector=%d cycle=%d/%d final_return=%s state_duration=%.3fs",
+             uav_id_, missionStateName(state_), missionStateName(next), reason.c_str(),
              current_layer_, route_.height, visit_cursor_,
              active_target_.id.empty() ? "none" : active_target_.id.c_str(),
              active_target_.x, active_target_.y, active_target_.z,
+             activeSectorId(),
              static_cast<int>(current_layer_visit_index_ /
                               inspection_heights_.size()) +
                  1,
-             planned_cycles_, final_return_ ? "true" : "false");
+             planned_cycles_, final_return_ ? "true" : "false",
+             previous_duration);
     state_ = next; state_entered_ = ros::Time::now(); publishState();
   }
 
@@ -3209,6 +3496,9 @@ class Stage3EgoMissionNode {
     const bool transition_permission_ready = permission_ready(
         require_transition_permission_, transition_permission_,
         transition_permission_received_);
+    const bool task_start_permission_ready = permission_ready(
+        enable_control_ && require_task_start_permission_, task_start_permission_,
+        task_start_permission_received_);
     const bool entry_permission_ready = permission_ready(
         require_entry_permission_, entry_permission_,
         entry_permission_received_);
@@ -3243,6 +3533,8 @@ class Stage3EgoMissionNode {
       return;
     }
     if (enable_control_ && active_mission_state &&
+        (bridge_resume_grace_until_.isZero() ||
+         now >= bridge_resume_grace_until_) &&
         have_bridge_state_ && fresh(now, bridge_state_received_, 2.0) &&
         bridge_state_ == "HOLD") {
       // A bridge-local safety HOLD must be acknowledged by the mission before
@@ -3289,7 +3581,7 @@ class Stage3EgoMissionNode {
                                 (enable_control_ && bridge_state_ == "HOVER_READY");
       if (have_odom_ && fresh(now, odom_received_, input_timeout_) &&
           mapFresh(now) &&
-          have_bridge_state_ && bridge_ready) {
+          have_bridge_state_ && bridge_ready && task_start_permission_ready) {
         // Bridge state is an intentionally latched transition topic, not a
         // heartbeat.  Its latest exact state remains authoritative while
         // MAVROS/odom/map freshness is monitored independently.
@@ -3323,7 +3615,15 @@ class Stage3EgoMissionNode {
         } else {
           transition(MissionState::kStaging,
                      "odom/map ready; home-local ascent channel locked");
-        }
+          }
+      } else if (enable_control_ && require_task_start_permission_ &&
+                 have_bridge_state_ && bridge_ready &&
+                 !task_start_permission_ready) {
+        ROS_INFO_THROTTLE(
+            1.0,
+            "[STAGE3_DIAG] uav=%d HOVER_READY waiting unified task-start "
+            "barrier mission_state=%s action=HOLD_HOVER_FAIL_CLOSED",
+            uav_id_, missionStateName(state_));
       }
     } else if (state_ == MissionState::kStaging) {
       if (!have_sent_goal_) {
@@ -3608,12 +3908,14 @@ class Stage3EgoMissionNode {
           publishGoal(active_target_, GoalKind::kSector);
         }
       } else {
-        requestHold("no safe candidate in sector");
+        requestHold(sectorFailureDetail());
       }
     } else if (state_ == MissionState::kTargetLocked) {
       // The locked endpoint is the formal numbered waypoint. Do not replace
       // it with task-level A* vertices or planning-horizon subgoals.
-      publishGoal(active_target_, GoalKind::kSector);
+      publishGoal(active_target_, sector_detour_active_
+                                      ? GoalKind::kSectorDetour
+                                      : GoalKind::kSector);
     } else if (state_ == MissionState::kNavigate) {
       // In low-altitude inspection, the unchanged 0.5 m position tolerance is
       // only a pass-through trigger. It must not wait for low speed, dwell,
@@ -3624,6 +3926,22 @@ class Stage3EgoMissionNode {
         if (arrival_since_.isZero()) arrival_since_ = now;
         if (low_altitude_mode_ ||
             now - arrival_since_ >= ros::Duration(arrival_hold_duration_)) {
+          if (sector_detour_active_ &&
+              active_goal_kind_ == GoalKind::kSectorDetour) {
+            ROS_WARN("[STAGE3_TASK] uav=%d sector=%d static detour reached; "
+                     "publishing final same-sector target %s with a fresh "
+                     "EGO trajectory",
+                     uav_id_, activeSectorId(),
+                     pending_sector_target_.id.c_str());
+            active_target_ = pending_sector_target_;
+            sector_detour_active_ = false;
+            have_sent_goal_ = false;
+            arrival_since_ = ros::Time(0);
+            transition(MissionState::kTargetLocked,
+                       "static detour reached; final same-sector target "
+                       "locked");
+            return;
+          }
           sectors_[current_sector_].state = SectorState::kCovered;
           initial_waypoint_pending_ = false;
           last_inspection_target_ = active_target_;
@@ -3636,6 +3954,10 @@ class Stage3EgoMissionNode {
           if (visit_cursor_ >= lap_visit_sequence_.size()) {
             completed_laps_ = inspection_laps_;
             ++completed_layer_count_;
+            ROS_WARN("[STAGE3_DIAG] uav=%d orbit complete laps=%d "
+                     "sector=%d target=%s action=REQUEST_EXIT_PERMISSION",
+                     uav_id_, completed_laps_, activeSectorId(),
+                     active_target_.id.c_str());
             if (current_layer_visit_index_ + 1U <
                 layer_visit_sequence_.size()) {
               if (!transition_permission_ready) {
@@ -3656,6 +3978,10 @@ class Stage3EgoMissionNode {
               transition(MissionState::kWaitExitPermission,
                          "final closed inspection layer completed; waiting "
                          "for exclusive swarm EXIT/return corridor permission");
+              ROS_WARN("[STAGE3_DIAG] uav=%d exit permission requested "
+                       "mission_state=%s sector=%d target=%s",
+                       uav_id_, missionStateName(state_), activeSectorId(),
+                       active_target_.id.c_str());
             } else if (startExitGate(
                            now,
                            "final closed inspection layer completed; "
@@ -3780,6 +4106,10 @@ class Stage3EgoMissionNode {
       }
     } else if (state_ == MissionState::kWaitExitPermission) {
       if (exit_permission_ready) {
+        ROS_WARN("[STAGE3_DIAG] uav=%d exit permission granted "
+                 "mission_state=%s sector=%d target=%s action=MOVE_TO_EXIT_GATE",
+                 uav_id_, missionStateName(state_), activeSectorId(),
+                 active_target_.id.c_str());
         if (requestResume() &&
             startExitGate(
                 now,
@@ -3798,13 +4128,18 @@ class Stage3EgoMissionNode {
             now - arrival_since_ >=
                 ros::Duration(arrival_hold_duration_)) {
           if (low_altitude_mode_) {
-            ROS_WARN("[STAGE3_TASK] current-layer EXIT_GATE reached: "
-                     "layer=%d xyz=(%.3f, %.3f, %.3f); leaving tower-facing "
-                     "mode and publishing the single formal HOME_HOVER goal",
-                     current_layer_, active_target_.x, active_target_.y,
-                     active_target_.z);
-            requestBridgeReturnOrLand(
-                "current-layer EXIT_GATE reached; direct formal HOME_HOVER");
+            recordIngressTrace(pointOf(odom_));
+            ROS_WARN("[STAGE3_DIAG] uav=%d exit gate reached layer=%d "
+                     "sector=%d xyz=(%.3f,%.3f,%.3f) "
+                     "action=REVERSE_ACTUAL_INGRESS_WITH_FRESH_EGO_PLANS",
+                     uav_id_, current_layer_, activeSectorId(),
+                     active_target_.x, active_target_.y, active_target_.z);
+            if (!startNormalReturn(
+                    "current-layer EXIT_GATE reached; reverse actual ingress",
+                    false)) {
+              requestReturnOrLand(
+                  "EXIT_GATE reached but reverse ingress reference unavailable");
+            }
           } else {
             requestBridgeReturnOrLand(
                 "current-layer EXIT_GATE reached; direct EGO return home");
@@ -3825,21 +4160,47 @@ class Stage3EgoMissionNode {
     } else if (state_ == MissionState::kHolding) {
       if (now - state_entered_ >= ros::Duration(failure_hold_duration_)) {
         if (coordination_hold_pending_) {
+          const bool resuming_entry =
+              state_before_hold_ == MissionState::kEntryGateTransit;
           const bool coordination_restored =
               transition_permission_ready &&
-              (!phase_hold_pending_ || orbit_permission_ready);
+              (!phase_hold_pending_ || orbit_permission_ready) &&
+              (!resuming_entry || entry_permission_ready);
           if (!coordination_restored) {
             ROS_ERROR_THROTTLE(
                 1.0,
                 "[STAGE3_TASK] swarm safety/phase permission remains "
                 "fail-closed; the cancelled trajectory will not be resumed");
-          } else if (state_before_hold_ ==
-                     MissionState::kEntryGateTransit) {
+          } else if (resuming_entry) {
             coordination_hold_pending_ = false;
             phase_hold_pending_ = false;
-            requestReturnOrLand(
-                "swarm safety restored after ENTRY safety stop; "
-                "the cancelled formal ENTRY_GATE remains isolated");
+            const double hold_duration = (now - state_entered_).toSec();
+            // The safety layer cancelled the old B-spline, so it must never
+            // be resumed or replayed.  Once both global safety and the
+            // per-drone ENTRY ownership are fresh again, hand the unchanged
+            // locked gate to EGO as a new goal generation.  The existing
+            // ENTRY planner/no-progress/target and overall mission timeouts
+            // remain the bounded failure path if the corridor cannot be
+            // traversed after coordination is restored.
+            if (requestResume() && entry_gate_locked_ &&
+                startEntryGateTransit()) {
+              ROS_WARN(
+                  "[STAGE3_DIAG] uav=%d ENTRY safety HOLD recovered "
+                  "mission_state=%s sector=%d target=%s(%.2f,%.2f,%.2f) "
+                  "condition=SWARM_SAFETY_RESTORED "
+                  "ego_replan_result=FRESH_GOAL_REQUESTED "
+                  "trajectory_expired=true predicted_swarm_conflict=false "
+                  "state_duration=%.3fs action=REPUBLISH_LOCKED_ENTRY_GATE",
+                  uav_id_, missionStateName(state_), activeSectorId(),
+                  provisional_entry_gate_.id.c_str(),
+                  provisional_entry_gate_.x, provisional_entry_gate_.y,
+                  provisional_entry_gate_.z,
+                  hold_duration);
+            } else {
+              requestReturnOrLand(
+                  "swarm safety restored after ENTRY safety stop but fresh "
+                  "ENTRY goal generation was rejected");
+            }
           } else if (requestResume()) {
             coordination_hold_pending_ = false;
             phase_hold_pending_ = false;
@@ -4002,6 +4363,15 @@ class Stage3EgoMissionNode {
           normal_return_failure_pending_ = true;
           requestHold("normal return endpoint invalid in latest map");
         } else {
+          ROS_WARN("[STAGE3_DIAG] uav=%d return goal published "
+                   "index=%zu/%zu target=%s(%.2f,%.2f,%.2f) "
+                   "map_fresh=true action=EGO_FRESH_REPLAN",
+                   uav_id_, normal_return_index_ + 1U,
+                   normal_return_goals_.size(),
+                   normal_return_goals_[normal_return_index_].id.c_str(),
+                   normal_return_goals_[normal_return_index_].x,
+                   normal_return_goals_[normal_return_index_].y,
+                   normal_return_goals_[normal_return_index_].z);
           publishGoal(normal_return_goals_[normal_return_index_],
                       GoalKind::kNormalReturn);
         }
@@ -4176,6 +4546,12 @@ class Stage3EgoMissionNode {
           home_hover, "HOME_HOVER",
           reason + "; bridge return_home published the EGO goal",
           "BRIDGE_RETURN_SERVICE");
+      awaiting_fresh_trajectory_ = true;
+      ROS_WARN("[STAGE3_DIAG] uav=%d bridge accepted goal service=return_home "
+               "target=HOME_HOVER(%.2f,%.2f,%.2f) namespace_goal=%s "
+               "action=WAIT_FRESH_EGO_TRAJECTORY",
+               uav_id_, home_hover.x, home_hover.y, home_hover.z,
+               goal_topic_.c_str());
       transition(MissionState::kReturnHome, reason + "; return requested");
     } else {
       ROS_ERROR("[STAGE3_TASK] return rejected: %s", service.response.message.c_str());
@@ -4265,7 +4641,7 @@ class Stage3EgoMissionNode {
   ros::NodeHandle node_, private_node_;
   ros::Subscriber odom_sub_, command_sub_, cloud_sub_, occupancy_sub_,
       planner_status_sub_, bridge_state_sub_, fcu_state_sub_,
-      extended_state_sub_, transition_permission_sub_,
+      extended_state_sub_, task_start_permission_sub_, transition_permission_sub_,
       entry_permission_sub_, orbit_permission_sub_, exit_permission_sub_,
       landing_permission_sub_;
   ros::Publisher goal_pub_, state_pub_, target_pub_,
@@ -4284,10 +4660,11 @@ class Stage3EgoMissionNode {
       altitude_policy_topic_,
       mavros_state_topic_, mavros_extended_state_topic_, tracking_service_,
       cancel_service_, resume_service_, return_service_, land_service_,
-      transition_permission_topic_, entry_permission_topic_,
+      task_start_permission_topic_, transition_permission_topic_, entry_permission_topic_,
       orbit_permission_topic_,
       exit_permission_topic_, landing_permission_topic_;
   bool enable_control_{false};
+  bool require_task_start_permission_{false};
   bool require_transition_permission_{false};
   bool require_entry_permission_{false};
   bool require_orbit_permission_{false};
@@ -4295,6 +4672,7 @@ class Stage3EgoMissionNode {
   bool require_landing_permission_{false};
   bool coordination_hold_pending_{false};
   bool phase_hold_pending_{false};
+  bool task_start_permission_{false};
   bool transition_permission_{false};
   bool entry_permission_{false};
   bool orbit_permission_{false};
@@ -4360,6 +4738,7 @@ class Stage3EgoMissionNode {
   std::vector<CandidatePoint> approach_goals_;
   std::vector<CandidatePoint> entry_gate_transit_goals_;
   std::vector<CandidatePoint> successful_ingress_goals_;
+  std::vector<CandidatePoint> successful_ingress_trace_;
   std::vector<CandidatePoint> normal_return_goals_;
   std::vector<CandidatePoint> return_egress_goals_;
   std::vector<CandidatePoint> entry_gate_candidates_;
@@ -4398,6 +4777,7 @@ class Stage3EgoMissionNode {
       last_inspection_target_, layer_start_anchor_, layer_transition_anchor_,
       pending_layer_start_anchor_;
   CandidatePoint active_target_, last_published_target_;
+  CandidatePoint pending_sector_target_;
   GoalKind active_goal_kind_{GoalKind::kEntryGate};
   MissionState state_{MissionState::kWaitInputs};
   MissionState state_before_hold_{MissionState::kWaitInputs};
@@ -4409,6 +4789,7 @@ class Stage3EgoMissionNode {
   mavros_msgs::ExtendedState extended_state_;
   bool have_odom_{false}, have_command_{false}, have_cloud_{false}, have_occupancy_{false}, have_planner_status_{false},
       have_bridge_state_{false}, have_sent_goal_{false};
+  bool awaiting_fresh_trajectory_{false};
   bool have_home_position_{false}, entry_gate_failure_pending_{false},
       entry_gate_relocation_pending_{false},
       entry_gate_no_safe_candidate_hold_{false},
@@ -4424,14 +4805,14 @@ class Stage3EgoMissionNode {
       have_last_published_target_{false},
       have_fcu_state_{false}, have_extended_state_{false},
       horizontal_path_available_{false}, vertical_escape_allowed_{false},
-      low_ingress_replan_pending_{false};
+      low_ingress_replan_pending_{false}, sector_detour_active_{false};
   geometry_msgs::Point home_position_, coverage_origin_;
   ros::Time odom_received_, command_received_, cloud_received_,
       occupancy_received_, planner_status_received_, bridge_state_received_,
       coverage_received_, fcu_state_received_, extended_state_received_,
-      transition_permission_received_, entry_permission_received_,
+      task_start_permission_received_, transition_permission_received_, entry_permission_received_,
       orbit_permission_received_, exit_permission_received_,
-      landing_permission_received_;
+      landing_permission_received_, bridge_resume_grace_until_;
   ros::Time state_entered_, mission_started_, goal_sent_, arrival_since_,
       last_report_, bridge_state_entered_, coverage_wait_started_,
       landing_requested_time_, channel_selected_time_, last_progress_time_,

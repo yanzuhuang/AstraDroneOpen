@@ -75,6 +75,23 @@ def scheduled_takeoff_allowed(vehicle_index, elapsed, interval, healthy,
     return elapsed >= max(0.0, float(interval)) * vehicle_index
 
 
+def task_start_barrier_ready(uav_ids, states, health, globally_clear):
+    """Release the formal mission only after every vehicle is hover-ready.
+
+    Takeoff permission and task-start permission are intentionally separate.
+    This makes a zero takeoff interval a real simultaneous launch while still
+    preventing a faster vehicle from leaving its hover point before its peers.
+    """
+    if not globally_clear or not uav_ids:
+        return False
+    return all(
+        uid in states
+        and bool(health.get(uid, False))
+        and states[uid].flight_state == "HOVER_READY"
+        and states[uid].mission_phase == "WAIT_INPUTS"
+        for uid in uav_ids)
+
+
 def entry_candidate_allowed(healthy, mission_phase, flight_state):
     """Only an armed-flight hover may receive a new ENTRY corridor lease.
 

@@ -31,7 +31,9 @@ mission:
   observation_radius_offset: 5.0
   observation_angle_deg: -67.5
   approach_segment_length: 5.0
-  sector_angle_half_width_deg: 12.0
+  # Use the full configured 45-degree sector for bounded target relocation.
+  # This does not skip a sector or change direction/radius preference.
+  sector_angle_half_width_deg: 22.0
   sector_radius_half_width: 4.0
   sector_height_half_width: 1.0
   maximum_temporary_descent: 1.0
@@ -139,7 +141,7 @@ candidate:
   # endpoint may move only inside the configured angular/radial sector.
   # Height remains fixed at the active layer and no path-intermediate goals
   # are generated.
-  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0]
+  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -15.0, 15.0, -20.0, 20.0]
   radius_offsets_m: [0.0, 2.0, 4.0]
   height_offsets_m: [0.0]
   minimum_clearance: 1.0
@@ -155,6 +157,7 @@ candidate:
   score_distance_weight: 0.1
   score_continuity_weight: 0.2
   known_obstacle_is_hard_constraint: true
+  known_obstacle_corridor_is_hard_constraint: true
   unknown_is_hard_constraint: false
 
 recovery:
