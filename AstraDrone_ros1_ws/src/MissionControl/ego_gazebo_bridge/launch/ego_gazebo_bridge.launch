@@ -7,6 +7,9 @@
   -->
   <arg name="enable_control" default="false"/>
   <arg name="require_start_permission" default="true"/>
+  <arg name="require_orbit_speed_scale" default="false"/>
+  <arg name="orbit_speed_scale_topic" default="/swarm/orbit_speed_scale"/>
+  <arg name="orbit_speed_scale_timeout" default="0.5"/>
   <arg name="drone_id" default="0"/>
   <arg name="auto_track_on_command" default="false"/>
   <arg name="rviz" default="false"/>
@@ -172,6 +175,12 @@
     <param name="enable_control" value="$(arg enable_control)"/>
     <param name="require_start_permission"
            value="$(arg require_start_permission)"/>
+    <param name="require_orbit_speed_scale"
+           value="$(arg require_orbit_speed_scale)"/>
+    <param name="orbit_speed_scale_topic"
+           value="$(arg orbit_speed_scale_topic)"/>
+    <param name="orbit_speed_scale_timeout"
+           value="$(arg orbit_speed_scale_timeout)"/>
     <param name="auto_track_on_command" value="$(arg auto_track_on_command)"/>
     <param name="planning_frame" value="$(arg planning_frame)"/>
     <param name="mavros_frame" value="$(arg mavros_frame)"/>

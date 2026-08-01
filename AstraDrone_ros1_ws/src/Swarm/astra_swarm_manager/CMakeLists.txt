@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.0.2)
 project(astra_swarm_manager)
 
 find_package(catkin REQUIRED COMPONENTS
+  astra_custom_msgs
   astra_swarm_msgs
   geometry_msgs
   rospy
@@ -9,7 +10,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 catkin_python_setup()
-catkin_package(CATKIN_DEPENDS astra_swarm_msgs geometry_msgs rospy std_msgs)
+catkin_package(CATKIN_DEPENDS astra_custom_msgs astra_swarm_msgs geometry_msgs rospy std_msgs)
 
 catkin_install_python(PROGRAMS
   scripts/swarm_manager_node.py

@@ -14,6 +14,9 @@
   <arg name="staging_height" default="$(arg takeoff_height)"/>
   <arg name="ascent_intermediate_heights" default="[]"/>
   <arg name="entry_sector" default="7"/>
+  <arg name="entry_angle_deg"
+       default="$(eval (float(arg('entry_sector')) - 1.0) * 45.0)"/>
+  <arg name="pre_entry_radius" default="18.0"/>
   <arg name="entry_target_timeout" default="120.0"/>
   <arg name="inspection_laps" default="1"/>
   <arg name="mission_overall_timeout" default="1200.0"/>
@@ -22,6 +25,7 @@
   <arg name="low_altitude_ceiling_height" default="3.0"/>
   <arg name="coordination_enabled" default="true"/>
   <arg name="orbit_permission_enabled" default="false"/>
+  <arg name="orbit_speed_scale_enabled" default="false"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
   <arg name="low_altitude_ego_config"
@@ -88,6 +92,10 @@
       <arg name="enable_control" value="$(arg enable_control)"/>
       <arg name="require_start_permission"
            value="$(arg require_start_permission)"/>
+      <arg name="require_orbit_speed_scale"
+           value="$(arg orbit_speed_scale_enabled)"/>
+      <arg name="orbit_speed_scale_topic"
+           value="/$(arg uav_ns)/swarm/orbit_speed_scale"/>
       <arg name="drone_id" value="$(arg planner_drone_id)"/>
       <arg name="auto_track_on_command" value="false"/>
       <arg name="rviz" value="false"/>
@@ -191,11 +199,11 @@
              value="$(arg mission_minimum_height)"/>
       <rosparam param="candidate/height_offsets_m"
                 subst_value="true">$(arg candidate_height_offsets)</rosparam>
-      <!-- The worksite oak occupies the outer half of the 240 to 300 degree
-           sector.  Keep the nominal common ring, but let the task hand EGO a
-           same-sector inward endpoint when the live map blocks an outer one. -->
+      <!-- The task's YAML candidate grid is shared by the first orbit point and
+           every numbered sector: nominal radius, then outward same-sector
+           alternatives. Do not replace it with a swarm-only radial policy. -->
       <rosparam param="candidate/radius_offsets_m">
-        [0.0, -2.0, -4.0, 2.0, 4.0]
+        [0.0, 2.0, 4.0]
       </rosparam>
       <param name="mission/virtual_ceil_height"
              value="$(arg virtual_ceil_height)"/>
@@ -204,6 +212,9 @@
       <param name="low_altitude/entry_height"
              value="$(arg inspection_top_height)"/>
       <param name="entry_gate/entry_sector" value="$(arg entry_sector)"/>
+      <param name="entry_gate/angle_deg" value="$(arg entry_angle_deg)"/>
+      <param name="entry_gate/pre_entry_radius"
+             value="$(arg pre_entry_radius)"/>
       <param name="entry_gate/target_timeout"
              value="$(arg entry_target_timeout)"/>
       <param name="mission/direction" value="counter_clockwise"/>
@@ -295,6 +306,8 @@
              value="$(arg coordination_enabled)"/>
       <param name="coordination/require_orbit_permission"
              value="$(arg orbit_permission_enabled)"/>
+      <param name="coordination/require_orbit_staging_permission"
+             value="$(arg orbit_permission_enabled)"/>
       <param name="coordination/require_exit_permission"
              value="$(arg coordination_enabled)"/>
       <param name="coordination/require_landing_permission"
@@ -306,8 +319,14 @@
              value="/$(arg uav_ns)/swarm/transition_permission"/>
       <param name="coordination/entry_permission_topic"
              value="/$(arg uav_ns)/swarm/entry_permission"/>
+      <param name="coordination/entry_corridor_selection_topic"
+             value="/$(arg uav_ns)/swarm/entry_corridor_selection"/>
+      <param name="outputs/entry_corridor_candidates"
+             value="/$(arg uav_ns)/tower_mission/entry_corridor_candidates"/>
       <param name="coordination/orbit_permission_topic"
              value="/$(arg uav_ns)/swarm/orbit_permission"/>
+      <param name="coordination/orbit_staging_permission_topic"
+             value="/$(arg uav_ns)/swarm/orbit_staging_permission"/>
       <param name="coordination/exit_permission_topic"
              value="/$(arg uav_ns)/swarm/exit_permission"/>
       <param name="coordination/landing_permission_topic"

@@ -21,8 +21,12 @@
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/stage3_low_altitude.yaml"/>
   <arg name="takeoff_interval_sec" default="0.0"/>
-  <arg name="desired_phase_separation_degrees" default="120.0"/>
-  <arg name="phase_tolerance_degrees" default="15.0"/>
+  <arg name="target_phase_deg" default="67.5"/>
+  <arg name="normal_phase_min_deg" default="57.5"/>
+  <arg name="normal_phase_max_deg" default="77.5"/>
+  <arg name="warning_phase_min_deg" default="45.0"/>
+  <arg name="emergency_phase_deg" default="45.0"/>
+  <arg name="leader_wait_phase_deg" default="95.0"/>
   <arg name="entry_nominal_speed" default="0.20"/>
   <arg name="orbit_nominal_speed" default="0.14"/>
   <arg name="low_altitude_enabled" default="true"/>
@@ -32,18 +36,28 @@
        default="$(arg low_altitude_enabled)"/>
   <arg name="uav3_orbit_permission_enabled"
        default="$(arg low_altitude_enabled)"/>
+  <arg name="uav1_orbit_speed_scale_enabled"
+       default="$(arg low_altitude_enabled)"/>
+  <arg name="uav2_orbit_speed_scale_enabled"
+       default="$(arg low_altitude_enabled)"/>
+  <arg name="uav3_orbit_speed_scale_enabled"
+       default="$(arg low_altitude_enabled)"/>
   <arg name="uav1_entry_sector" default="7"/>
-  <arg name="uav2_entry_sector" default="2"/>
+  <arg name="uav2_entry_sector" default="8"/>
   <arg name="uav3_entry_sector" default="1"/>
+  <arg name="uav1_entry_angle_deg" default="292.5"/>
+  <arg name="uav2_entry_angle_deg" default="315.0"/>
+  <arg name="uav3_entry_angle_deg" default="337.5"/>
+  <arg name="pre_entry_radius" default="18.0"/>
   <arg name="entry_target_timeout" default="360.0"/>
-  <arg name="inspection_laps" default="2"/>
+  <arg name="inspection_laps" default="1"/>
   <arg name="mission_overall_timeout" default="3600.0"/>
-  <arg name="uav1_top_height" default="2.0"/>
+  <arg name="uav1_top_height" default="3.0"/>
   <arg name="uav2_top_height" default="3.0"/>
-  <arg name="uav3_top_height" default="4.0"/>
-  <arg name="uav1_takeoff_height" default="2.0"/>
+  <arg name="uav3_top_height" default="3.0"/>
+  <arg name="uav1_takeoff_height" default="3.0"/>
   <arg name="uav2_takeoff_height" default="3.0"/>
-  <arg name="uav3_takeoff_height" default="4.0"/>
+  <arg name="uav3_takeoff_height" default="3.0"/>
   <arg name="uav1_spawn_x" default="0.0"/>
   <arg name="uav2_spawn_x" default="4.0"/>
   <arg name="uav3_spawn_x" default="8.0"/>
@@ -61,7 +75,7 @@
   <arg name="mission_maximum_height" default="45.0"/>
   <arg name="uav1_mission_minimum_height" default="1.0"/>
   <arg name="uav2_mission_minimum_height" default="2.0"/>
-  <arg name="uav3_mission_minimum_height" default="3.0"/>
+  <arg name="uav3_mission_minimum_height" default="2.0"/>
   <arg name="max_vel" default="0.20"/>
   <arg name="max_acc" default="0.50"/>
   <arg name="planning_horizon" default="7.5"/>
@@ -104,6 +118,8 @@
     <arg name="uav2_coordination_enabled"
          value="$(arg uav2_coordination_enabled)"/>
     <arg name="swarm_services_enabled" value="$(arg swarm_services_enabled)"/>
+    <arg name="swarm_manager_config"
+         value="$(find astra_swarm_manager)/config/stage5_three_uav_formation.yaml"/>
     <arg name="start_sim" value="false"/>
     <arg name="gui" value="$(arg gui)"/>
     <arg name="use_sim_time" value="$(arg use_sim_time)"/>
@@ -113,6 +129,10 @@
          value="$(arg uav1_orbit_permission_enabled)"/>
     <arg name="uav2_orbit_permission_enabled"
          value="$(arg uav2_orbit_permission_enabled)"/>
+    <arg name="uav1_orbit_speed_scale_enabled"
+         value="$(arg uav1_orbit_speed_scale_enabled)"/>
+    <arg name="uav2_orbit_speed_scale_enabled"
+         value="$(arg uav2_orbit_speed_scale_enabled)"/>
     <arg name="takeoff_delay" value="$(arg takeoff_interval_sec)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
@@ -131,6 +151,9 @@
     <arg name="uav2_candidate_height_offsets" value="[0.0]"/>
     <arg name="uav1_entry_sector" value="$(arg uav1_entry_sector)"/>
     <arg name="uav2_entry_sector" value="$(arg uav2_entry_sector)"/>
+    <arg name="uav1_entry_angle_deg" value="$(arg uav1_entry_angle_deg)"/>
+    <arg name="uav2_entry_angle_deg" value="$(arg uav2_entry_angle_deg)"/>
+    <arg name="pre_entry_radius" value="$(arg pre_entry_radius)"/>
     <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
     <arg name="inspection_laps" value="$(arg inspection_laps)"/>
     <arg name="mission_overall_timeout"
@@ -165,12 +188,18 @@
     <arg name="swarm_vehicle_namespaces" value="$(arg swarm_vehicle_namespaces)"/>
     <arg name="swarm_mission_heights"
          value="[$(arg uav1_top_height), $(arg uav2_top_height), $(arg uav3_top_height)]"/>
-    <arg name="swarm_phase_degrees" value="[270.0, 45.0, 0.0]"/>
+    <arg name="swarm_phase_degrees"
+         value="[$(arg uav1_entry_angle_deg), $(arg uav2_entry_angle_deg), $(arg uav3_entry_angle_deg)]"/>
     <arg name="swarm_tower_center" value="[-10.0551, 19.7104]"/>
     <arg name="desired_phase_separation_degrees"
-         value="$(arg desired_phase_separation_degrees)"/>
-    <arg name="phase_tolerance_degrees"
-         value="$(arg phase_tolerance_degrees)"/>
+         value="$(arg target_phase_deg)"/>
+    <arg name="formation_role_order" value="[3, 2, 1]"/>
+    <arg name="target_phase_deg" value="$(arg target_phase_deg)"/>
+    <arg name="normal_phase_min_deg" value="$(arg normal_phase_min_deg)"/>
+    <arg name="normal_phase_max_deg" value="$(arg normal_phase_max_deg)"/>
+    <arg name="warning_phase_min_deg" value="$(arg warning_phase_min_deg)"/>
+    <arg name="emergency_phase_deg" value="$(arg emergency_phase_deg)"/>
+    <arg name="leader_wait_phase_deg" value="$(arg leader_wait_phase_deg)"/>
     <arg name="entry_nominal_speed" value="$(arg entry_nominal_speed)"/>
     <arg name="orbit_nominal_speed" value="$(arg orbit_nominal_speed)"/>
     <arg name="swarm_home_positions"
@@ -301,7 +330,11 @@
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
     <arg name="orbit_permission_enabled"
          value="$(arg uav3_orbit_permission_enabled)"/>
+    <arg name="orbit_speed_scale_enabled"
+         value="$(arg uav3_orbit_speed_scale_enabled)"/>
     <arg name="entry_sector" value="$(arg uav3_entry_sector)"/>
+    <arg name="entry_angle_deg" value="$(arg uav3_entry_angle_deg)"/>
+    <arg name="pre_entry_radius" value="$(arg pre_entry_radius)"/>
     <arg name="entry_target_timeout" value="$(arg entry_target_timeout)"/>
     <arg name="inspection_laps" value="$(arg inspection_laps)"/>
     <arg name="mission_overall_timeout"
@@ -347,6 +380,8 @@
         name="astra_swarm_evidence_recorder" output="screen">
     <rosparam param="uav_ids">[1, 2, 3]</rosparam>
     <rosparam param="tower_center">[-10.0551, 19.7104]</rosparam>
+    <rosparam param="formation_role_order">[3, 2, 1]</rosparam>
+    <param name="target_phase_deg" value="$(arg target_phase_deg)"/>
     <param name="csv_file" value="$(arg evidence_csv_file)"/>
     <param name="summary_file" value="$(arg evidence_summary_file)"/>
   </node>
@@ -359,8 +394,13 @@
     <param name="entry_gate_radius" value="15.0"/>
     <rosparam param="mission_heights"
               subst_value="true">[$(arg uav1_top_height), $(arg uav2_top_height), $(arg uav3_top_height)]</rosparam>
-    <rosparam param="entry_sectors"
-              subst_value="true">[$(arg uav1_entry_sector), $(arg uav2_entry_sector), $(arg uav3_entry_sector)]</rosparam>
+    <rosparam param="entry_angles_deg"
+              subst_value="true">[$(arg uav1_entry_angle_deg), $(arg uav2_entry_angle_deg), $(arg uav3_entry_angle_deg)]</rosparam>
+    <param name="pre_entry_radius" value="$(arg pre_entry_radius)"/>
+    <rosparam param="formation_role_order">[3, 2, 1]</rosparam>
+    <rosparam param="home_positions" subst_value="true">
+      [[$(arg uav1_spawn_x), $(arg spawn_y)], [$(arg uav2_spawn_x), $(arg spawn_y)], [$(arg uav3_spawn_x), $(arg spawn_y)]]
+    </rosparam>
   </node>
 
   <node if="$(arg start_rviz)" pkg="rviz" type="rviz"

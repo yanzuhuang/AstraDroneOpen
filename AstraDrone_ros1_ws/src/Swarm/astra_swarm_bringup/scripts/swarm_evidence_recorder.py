@@ -9,7 +9,7 @@ import rospy
 from astra_custom_msgs.msg import PlannerStatus
 from astra_swarm_msgs.msg import SwarmState
 from mavros_msgs.msg import State
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool, Float64, String
 from traj_utils.msg import MultiBsplines
 
 
@@ -23,6 +23,9 @@ class EvidenceRecorder:
         self.tower_center = [
             float(v) for v in rospy.get_param(
                 "~tower_center", [-10.0551, 19.7104])]
+        self.role_order = [int(v) for v in rospy.get_param(
+            "~formation_role_order", [3, 2, 1])]
+        self.target_phase = float(rospy.get_param("~target_phase_deg", 67.5))
         self.active_orbit_phases = {
             "TARGET_LOCKED", "NAVIGATING", "EVALUATING",
             "RELOCATING", "RECOVERING", "HOLDING"}
@@ -36,12 +39,25 @@ class EvidenceRecorder:
         self.last_emergency = {uid: False for uid in self.ids}
         self.safety_clear = False
         self.orbit_permission = {uid: False for uid in self.ids}
+        self.orbit_speed_scale = {uid: float("nan") for uid in self.ids}
         self.chain_ids = []
         self.chain_messages = 0
         self.full_chain_messages = 0
         self.arming_times = {}
         self.takeoff_times = {}
         self.landing_times = {}
+        self.entry_ready_times = {}
+        self.orbit_staging_ready_times = {}
+        self.orbit_release_times = {}
+        self.move_to_orbit_staging_time = None
+        self.orbit_start_time = None
+        self.entry_corridor_nominal_angles = {}
+        self.entry_corridor_selection = {}
+        self.entry_corridor_diagnostics = {}
+        self.orbit_angle = {uid: None for uid in self.ids}
+        self.orbit_accumulated = {uid: 0.0 for uid in self.ids}
+        self.orbit_reverse = {uid: 0.0 for uid in self.ids}
+        self.visited_sector_mask = {uid: 0 for uid in self.ids}
         self.holds = {uid: 0 for uid in self.ids}
         self.phase_holds = {uid: 0 for uid in self.ids}
         self.holding = {uid: False for uid in self.ids}
@@ -74,6 +90,13 @@ class EvidenceRecorder:
         self.yaw_stats = {
             uid: {"maximum": 0.0, "sum": 0.0, "count": 0}
             for uid in self.ids}
+        self.formation_phase_stats = {
+            "{}-{}".format(leader, follower): {
+                "min": float("inf"), "max": -float("inf"),
+                "sum": 0.0, "error_sum": 0.0, "maximum_error": 0.0,
+                "count": 0}
+            for leader, follower in zip(
+                self.role_order[:-1], self.role_order[1:])}
         self.file = open(self.csv_path, "w", newline="")
         fields = ["sim_time", "safety_clear", "chain_ids"]
         for uid in self.ids:
@@ -82,7 +105,9 @@ class EvidenceRecorder:
                 "u{}_z".format(uid), "u{}_phase".format(uid),
                 "u{}_flight".format(uid), "u{}_armed".format(uid),
                 "u{}_tracking_error".format(uid),
-                "u{}_trajectory_id".format(uid)]
+                "u{}_trajectory_id".format(uid),
+                "u{}_orbit_released".format(uid),
+                "u{}_orbit_speed_scale".format(uid)]
         for pair in self.pair_min:
             fields += [
                 pair + "_horizontal", pair + "_vertical",
@@ -108,12 +133,19 @@ class EvidenceRecorder:
                 "/uav{}/swarm/orbit_permission".format(uid), Bool,
                 lambda msg, u=uid: self.orbit_permission.__setitem__(
                     u, msg.data), queue_size=10)
+            rospy.Subscriber(
+                "/uav{}/swarm/orbit_speed_scale".format(uid), Float64,
+                lambda msg, u=uid: self.orbit_speed_scale.__setitem__(
+                    u, msg.data), queue_size=10)
         rospy.Subscriber(
             "/swarm/safety/clear", Bool,
             lambda msg: setattr(self, "safety_clear", msg.data), queue_size=5)
         rospy.Subscriber(
             "/swarm/trajectories", MultiBsplines,
             self.chain_cb, queue_size=20)
+        rospy.Subscriber(
+            "/swarm/formation/status", String,
+            self.formation_cb, queue_size=10)
         rospy.Timer(rospy.Duration(0.1), self.timer_cb)
         rospy.on_shutdown(self.finish)
 
@@ -145,16 +177,36 @@ class EvidenceRecorder:
         self.last_phase[uid] = msg.mission_phase
         self.last_flight[uid] = msg.flight_state
         self.states[uid] = msg
+        if msg.mission_phase == "ENTRY_READY" and uid not in self.entry_ready_times:
+            self.entry_ready_times[uid] = now
+        if (msg.mission_phase == "ORBIT_STAGING_READY"
+                and uid not in self.orbit_staging_ready_times):
+            self.orbit_staging_ready_times[uid] = now
         if (self.armed[uid] and uid not in self.takeoff_times
                 and msg.pose.position.z >= 0.30):
             self.takeoff_times[uid] = rospy.Time.now().to_sec()
-        if msg.mission_phase in self.active_orbit_phases:
+        if (uid in self.orbit_release_times
+                and msg.mission_phase in self.active_orbit_phases):
             stats = self.orbit_height[uid]
             height = msg.pose.position.z
             stats["min"] = min(stats["min"], height)
             stats["max"] = max(stats["max"], height)
             stats["sum"] += height
             stats["count"] += 1
+            angle = math.atan2(
+                msg.pose.position.y - self.tower_center[1],
+                msg.pose.position.x - self.tower_center[0])
+            previous = self.orbit_angle[uid]
+            if previous is not None:
+                delta = (angle - previous + math.pi) % (2.0 * math.pi) - math.pi
+                if delta > 0.0:
+                    self.orbit_accumulated[uid] += delta
+                elif delta < 0.0:
+                    self.orbit_reverse[uid] += abs(delta)
+            self.orbit_angle[uid] = angle
+            sector = int(math.floor(
+                ((math.degrees(angle) % 360.0) + 22.5) / 45.0)) % 8
+            self.visited_sector_mask[uid] |= 1 << sector
 
     def mavros_cb(self, uid, msg):
         if msg.armed and not self.armed[uid] and uid not in self.arming_times:
@@ -184,6 +236,36 @@ class EvidenceRecorder:
         if set(self.chain_ids) == {uid - 1 for uid in self.ids}:
             self.full_chain_messages += 1
 
+    def formation_cb(self, msg):
+        try:
+            formation = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        start = formation.get("orbit_start_time")
+        if start is not None and self.orbit_start_time is None:
+            self.orbit_start_time = float(start)
+        staging_start = formation.get("move_to_orbit_staging_time")
+        if (staging_start is not None
+                and self.move_to_orbit_staging_time is None):
+            self.move_to_orbit_staging_time = float(staging_start)
+        if formation.get("entry_corridor_nominal_angles_deg"):
+            self.entry_corridor_nominal_angles = formation[
+                "entry_corridor_nominal_angles_deg"]
+        if formation.get("entry_corridor_selection"):
+            self.entry_corridor_selection = formation[
+                "entry_corridor_selection"]
+        if formation.get("entry_corridor_diagnostics"):
+            self.entry_corridor_diagnostics = formation[
+                "entry_corridor_diagnostics"]
+        for uid, stamp in formation.get("orbit_release_times", {}).items():
+            try:
+                numeric_uid = int(uid)
+                if numeric_uid not in self.orbit_release_times:
+                    self.orbit_release_times[numeric_uid] = float(stamp)
+                    self.orbit_angle[numeric_uid] = None
+            except (TypeError, ValueError):
+                continue
+
     @staticmethod
     def pair_distances(first, second):
         dx = first.x - second.x
@@ -202,6 +284,15 @@ class EvidenceRecorder:
             second.y - self.tower_center[1],
             second.x - self.tower_center[0]))
         return abs((first_angle - second_angle + 180.0) % 360.0 - 180.0)
+
+    def directed_phase(self, follower, leader):
+        follower_angle = math.degrees(math.atan2(
+            follower.y - self.tower_center[1],
+            follower.x - self.tower_center[0]))
+        leader_angle = math.degrees(math.atan2(
+            leader.y - self.tower_center[1],
+            leader.x - self.tower_center[0]))
+        return (leader_angle - follower_angle) % 360.0
 
     def timer_cb(self, _event):
         if any(uid not in self.states for uid in self.ids):
@@ -223,8 +314,13 @@ class EvidenceRecorder:
                 "u{}_tracking_error".format(uid): self.tracking[uid],
                 "u{}_trajectory_id".format(uid):
                     self.last_traj_id.get(uid, 0),
+                "u{}_orbit_released".format(uid):
+                    int(uid in self.orbit_release_times),
+                "u{}_orbit_speed_scale".format(uid):
+                    self.orbit_speed_scale[uid],
             })
-            if state.mission_phase in self.active_orbit_phases:
+            if (uid in self.orbit_release_times
+                    and state.mission_phase in self.active_orbit_phases):
                 desired_yaw = math.atan2(
                     self.tower_center[1] - state.pose.position.y,
                     self.tower_center[0] - state.pose.position.x)
@@ -247,7 +343,8 @@ class EvidenceRecorder:
                     row[pair + "_" + key] = value
                     self.pair_min[pair][key] = min(
                         self.pair_min[pair][key], value)
-                    if (self.states[first_id].mission_phase
+                    if (self.orbit_start_time is not None
+                            and self.states[first_id].mission_phase
                             in self.active_orbit_phases
                             and self.states[second_id].mission_phase
                             in self.active_orbit_phases):
@@ -257,7 +354,8 @@ class EvidenceRecorder:
                     self.states[first_id].pose.position,
                     self.states[second_id].pose.position)
                 row[pair + "_phase_degrees"] = phase
-                if (self.states[first_id].mission_phase
+                if (self.orbit_start_time is not None
+                        and self.states[first_id].mission_phase
                         in self.active_orbit_phases
                         and self.states[second_id].mission_phase
                         in self.active_orbit_phases):
@@ -266,6 +364,24 @@ class EvidenceRecorder:
                     stats["max"] = max(stats["max"], phase)
                     stats["sum"] += phase
                     stats["count"] += 1
+        if (self.orbit_start_time is not None
+                and all(self.states[uid].mission_phase
+                        in self.active_orbit_phases
+                        for uid in self.role_order)):
+            for leader, follower in zip(
+                    self.role_order[:-1], self.role_order[1:]):
+                key = "{}-{}".format(leader, follower)
+                gap = self.directed_phase(
+                    self.states[follower].pose.position,
+                    self.states[leader].pose.position)
+                stats = self.formation_phase_stats[key]
+                error = abs(gap - self.target_phase)
+                stats["min"] = min(stats["min"], gap)
+                stats["max"] = max(stats["max"], gap)
+                stats["sum"] += gap
+                stats["error_sum"] += error
+                stats["maximum_error"] = max(stats["maximum_error"], error)
+                stats["count"] += 1
         self.writer.writerow(row)
         self.file.flush()
 
@@ -305,6 +421,25 @@ class EvidenceRecorder:
             "arming_times": self.arming_times,
             "takeoff_times": self.takeoff_times,
             "landing_times": self.landing_times,
+            "entry_ready_times": self.entry_ready_times,
+            "entry_corridor_nominal_angles_deg": (
+                self.entry_corridor_nominal_angles),
+            "entry_corridor_selection": self.entry_corridor_selection,
+            "entry_corridor_diagnostics": self.entry_corridor_diagnostics,
+            "move_to_orbit_staging_time": self.move_to_orbit_staging_time,
+            "orbit_staging_ready_times": self.orbit_staging_ready_times,
+            "orbit_release_times": self.orbit_release_times,
+            "orbit_start_time": self.orbit_start_time,
+            "formation_role_order": self.role_order,
+            "independent_orbit_accumulated_degrees": {
+                str(uid): math.degrees(value)
+                for uid, value in self.orbit_accumulated.items()},
+            "reverse_orbit_motion_degrees": {
+                str(uid): math.degrees(value)
+                for uid, value in self.orbit_reverse.items()},
+            "visited_sector_mask": {
+                str(uid): "0x{:02X}".format(value)
+                for uid, value in self.visited_sector_mask.items()},
             "orbit_height": orbit,
             "pairwise_minimum": pair_min,
             "concurrent_orbit_pairwise_minimum": orbit_pair_min,
@@ -317,6 +452,21 @@ class EvidenceRecorder:
                     "max": None if not stats["count"] else stats["max"],
                 }
                 for pair, stats in self.phase_stats.items()
+            },
+            "role_bound_phase_degrees": {
+                pair: {
+                    "samples": stats["count"],
+                    "min": None if not stats["count"] else stats["min"],
+                    "mean": None if not stats["count"]
+                    else stats["sum"] / stats["count"],
+                    "max": None if not stats["count"] else stats["max"],
+                    "mean_absolute_error": None if not stats["count"]
+                    else stats["error_sum"] / stats["count"],
+                    "maximum_absolute_error": (
+                        None if not stats["count"]
+                        else stats["maximum_error"]),
+                }
+                for pair, stats in self.formation_phase_stats.items()
             },
             "ellipsoid_required": 3.0,
             "trajectory_chain_messages": self.chain_messages,

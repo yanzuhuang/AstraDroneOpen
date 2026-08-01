@@ -1,7 +1,7 @@
 """Pure fail-closed swarm coordination geometry and arbitration."""
 
 import math
-from itertools import combinations
+from itertools import combinations, product
 
 
 def distance3(a, b):
@@ -73,6 +73,184 @@ def scheduled_takeoff_allowed(vehicle_index, elapsed, interval, healthy,
             and configuration_safe and corridor_is_clear):
         return False
     return elapsed >= max(0.0, float(interval)) * vehicle_index
+
+
+def _sample_polyline(points, sample_count=48):
+    values = [tuple(float(value) for value in point) for point in points]
+    if len(values) < 2:
+        return values
+    lengths = [distance3(values[index - 1], values[index])
+               for index in range(1, len(values))]
+    total = sum(lengths)
+    if total <= 1.0e-9:
+        return [values[0]] * (sample_count + 1)
+    sampled = []
+    for step in range(sample_count + 1):
+        target = total * float(step) / float(sample_count)
+        traversed = 0.0
+        for index, length in enumerate(lengths, start=1):
+            if target <= traversed + length or index == len(lengths):
+                ratio = (target - traversed) / max(length, 1.0e-9)
+                start, finish = values[index - 1], values[index]
+                sampled.append(tuple(
+                    start[axis] + ratio * (finish[axis] - start[axis])
+                    for axis in range(3)))
+                break
+            traversed += length
+    return sampled
+
+
+def _segments_intersect_xy(first_start, first_finish,
+                           second_start, second_finish):
+    def orientation(a, b, c):
+        return ((float(b[0]) - float(a[0]))
+                * (float(c[1]) - float(a[1]))
+                - (float(b[1]) - float(a[1]))
+                * (float(c[0]) - float(a[0])))
+
+    first_a = orientation(first_start, first_finish, second_start)
+    first_b = orientation(first_start, first_finish, second_finish)
+    second_a = orientation(second_start, second_finish, first_start)
+    second_b = orientation(second_start, second_finish, first_finish)
+    epsilon = 1.0e-9
+    def on_segment(a, b, c):
+        return (min(float(a[0]), float(b[0])) - epsilon
+                <= float(c[0]) <= max(float(a[0]), float(b[0])) + epsilon
+                and min(float(a[1]), float(b[1])) - epsilon
+                <= float(c[1]) <= max(float(a[1]), float(b[1])) + epsilon)
+
+    # Collinear/touching paths are conservatively treated as crossing only
+    # when the relevant point actually lies on the finite segment.
+    if abs(first_a) <= epsilon and on_segment(
+            first_start, first_finish, second_start):
+        return True
+    if abs(first_b) <= epsilon and on_segment(
+            first_start, first_finish, second_finish):
+        return True
+    if abs(second_a) <= epsilon and on_segment(
+            second_start, second_finish, first_start):
+        return True
+    if abs(second_b) <= epsilon and on_segment(
+            second_start, second_finish, first_finish):
+        return True
+    return ((first_a > 0.0) != (first_b > 0.0)
+            and (second_a > 0.0) != (second_b > 0.0))
+
+
+def _polylines_cross_xy(first, second):
+    return any(
+        _segments_intersect_xy(first[first_index - 1], first[first_index],
+                               second[second_index - 1],
+                               second[second_index])
+        for first_index in range(1, len(first))
+        for second_index in range(1, len(second)))
+
+
+def joint_entry_corridor_selection(
+        candidates_by_uid, ordered_uav_ids, nominal_angles, center, starts,
+        direction, minimum_gap_degrees=20.0, maximum_gap_degrees=30.0,
+        hard_clearance=0.5, minimum_3d=3.0, swarm_clearance=1.5,
+        angular_window_degrees=12.0):
+    """Select one latched full ENTRY corridor per vehicle, fail closed.
+
+    Candidate dictionaries contain ``id``, ``angle_deg``, ``pre_radius``,
+    ``entry_radius``, ``clearance`` and the three local-map points already
+    converted to the common world frame.  The local mission has proved each
+    path obstacle-clear; this joint layer proves role order, compact staging,
+    non-crossing geometry and time-aligned inter-vehicle clearance.
+    """
+    ids = [int(uid) for uid in ordered_uav_ids]
+    if (len(ids) < 2 or len(ids) != len(set(ids)) or direction not in (-1, 1)
+            or any(uid not in candidates_by_uid or not candidates_by_uid[uid]
+                   for uid in ids)
+            or any(uid not in nominal_angles or uid not in starts
+                   for uid in ids)
+            or not (0.0 < minimum_gap_degrees <= maximum_gap_degrees < 180.0)
+            or hard_clearance <= 0.0 or minimum_3d <= 0.0
+            or swarm_clearance <= 0.0):
+        return {}, "INVALID_OR_MISSING_CANDIDATES", {}
+
+    best = None
+    best_rank = None
+    diagnostics = {"evaluated": 0, "role_rejected": 0,
+                   "crossing_rejected": 0, "conflict_rejected": 0}
+    for combination in product(*(candidates_by_uid[uid] for uid in ids)):
+        diagnostics["evaluated"] += 1
+        selected = dict(zip(ids, combination))
+        if any(float(item.get("clearance", -1.0)) + 1.0e-9
+               < hard_clearance for item in combination):
+            continue
+        if any(abs((float(selected[uid]["angle_deg"])
+                    - float(nominal_angles[uid]) + 180.0) % 360.0 - 180.0)
+               > angular_window_degrees + 1.0e-9 for uid in ids):
+            diagnostics["role_rejected"] += 1
+            continue
+        gaps = []
+        role_valid = True
+        for leader, follower in zip(ids[:-1], ids[1:]):
+            gap = normalize_degrees(direction * (
+                float(selected[leader]["angle_deg"])
+                - float(selected[follower]["angle_deg"])))
+            gaps.append(gap)
+            if not (minimum_gap_degrees <= gap <= maximum_gap_degrees):
+                role_valid = False
+                break
+        if not role_valid:
+            diagnostics["role_rejected"] += 1
+            continue
+        paths = {
+            uid: ([tuple(point) for point in selected[uid].get("path", [])]
+                  or [tuple(starts[uid]), tuple(selected[uid]["pre"]),
+                      tuple(selected[uid]["entry"]),
+                      tuple(selected[uid]["staging"])])
+            for uid in ids}
+        if any(_polylines_cross_xy(paths[first], paths[second])
+               for first, second in combinations(ids, 2)):
+            diagnostics["crossing_rejected"] += 1
+            continue
+        samples = {uid: _sample_polyline(paths[uid]) for uid in ids}
+        minimum_pair_distance = float("inf")
+        conflict = False
+        for first, second in combinations(ids, 2):
+            for first_point, second_point in zip(
+                    samples[first], samples[second]):
+                separation = distance3(first_point, second_point)
+                minimum_pair_distance = min(minimum_pair_distance, separation)
+                if (separation + 1.0e-9 < minimum_3d
+                        or ellipsoid_distance(first_point, second_point)
+                        + 1.0e-9 < 2.0 * swarm_clearance):
+                    conflict = True
+                    break
+            if conflict:
+                break
+        if conflict:
+            diagnostics["conflict_rejected"] += 1
+            continue
+        minimum_clearance = min(float(item["clearance"])
+                                for item in combination)
+        angle_deviation = sum(abs((float(selected[uid]["angle_deg"])
+                                   - float(nominal_angles[uid]) + 180.0)
+                                  % 360.0 - 180.0) for uid in ids)
+        radius_deviation = sum(
+            abs(float(item["pre_radius"]) - 18.0)
+            + abs(float(item["entry_radius"]) - 15.0)
+            for item in combination)
+        # Full-path safety is a prerequisite. Ranking then follows the task's
+        # lexicographic contract: clearance, nominal angle, nominal radius.
+        rank = (-minimum_clearance, angle_deviation, radius_deviation)
+        if best_rank is None or rank < best_rank:
+            best = selected
+            best_rank = rank
+            diagnostics.update({
+                "gaps": gaps,
+                "minimum_clearance": minimum_clearance,
+                "minimum_pair_distance": minimum_pair_distance,
+                "angle_deviation": angle_deviation,
+                "radius_deviation": radius_deviation,
+            })
+    if best is None:
+        return {}, "NO_JOINT_SAFE_COMBINATION", diagnostics
+    return best, "OK", diagnostics
 
 
 def task_start_barrier_ready(uav_ids, states, health, globally_clear):
@@ -161,6 +339,294 @@ def angular_separation_degrees(first, second, center):
         float(second[1]) - float(center[1]),
         float(second[0]) - float(center[0])))
     return abs((first_angle - second_angle + 180.0) % 360.0 - 180.0)
+
+
+def normalize_degrees(angle):
+    """Normalize an angle to the common [0, 360) contract."""
+    value = float(angle) % 360.0
+    return 0.0 if abs(value - 360.0) <= 1.0e-9 else value
+
+
+def directed_phase_gap_degrees(follower, leader, center, direction):
+    """Return the forward orbit angle from follower to leader.
+
+    ``direction`` is +1 for counter-clockwise and -1 for clockwise.  The
+    result is always in [0, 360), so wraparound never changes formation role.
+    """
+    if direction not in (-1, 1):
+        return float("nan")
+    follower_angle = math.degrees(math.atan2(
+        float(follower[1]) - float(center[1]),
+        float(follower[0]) - float(center[0])))
+    leader_angle = math.degrees(math.atan2(
+        float(leader[1]) - float(center[1]),
+        float(leader[0]) - float(center[0])))
+    return normalize_degrees(direction * (leader_angle - follower_angle))
+
+
+def formation_phase_decision(positions, center, ordered_uav_ids, direction,
+                             normal_min_degrees, normal_max_degrees,
+                             warning_min_degrees, emergency_degrees,
+                             leader_wait_degrees, previously_held=None):
+    """Evaluate role-bound phase gaps without permitting overtaking.
+
+    The input order is leader, middle, trailing.  A following UAV is held at
+    the emergency boundary.  A predecessor is also held when its follower has
+    fallen beyond ``leader_wait_degrees``; this lets the formation close by
+    forward motion only and never commands a leader to fly backwards.
+    """
+    ids = [int(uid) for uid in ordered_uav_ids]
+    held_before = set(int(uid) for uid in (previously_held or set()))
+    if (len(ids) < 2 or len(ids) != len(set(ids)) or direction not in (-1, 1)):
+        return set(), {}, {}, "INVALID_ROLE_ORDER"
+    thresholds = [normal_min_degrees, normal_max_degrees,
+                  warning_min_degrees, emergency_degrees,
+                  leader_wait_degrees]
+    if (not all(math.isfinite(float(value)) for value in thresholds)
+            or not (0.0 < emergency_degrees <= warning_min_degrees
+                    <= normal_min_degrees < normal_max_degrees
+                    < leader_wait_degrees < 180.0)):
+        return set(), {}, {}, "INVALID_PHASE_THRESHOLDS"
+    if any(uid not in positions for uid in ids):
+        return set(), {}, {}, "MISSING_ROLE_POSITION"
+
+    holds = set()
+    gaps = {}
+    bands = {}
+    for leader_id, follower_id in zip(ids[:-1], ids[1:]):
+        gap = directed_phase_gap_degrees(
+            positions[follower_id], positions[leader_id], center, direction)
+        if not math.isfinite(gap):
+            return set(), {}, {}, "INVALID_ROLE_POSITION"
+        key = "{}-{}".format(leader_id, follower_id)
+        gaps[key] = gap
+        # A gap over 180 degrees means the named follower has crossed the
+        # leader in the configured direction.  Holding both adjacent vehicles
+        # is the only role-preserving fail-closed action.
+        if gap > 180.0:
+            holds.update((leader_id, follower_id))
+            bands[key] = "OVERTAKE_OR_REVERSE"
+        elif gap < emergency_degrees:
+            holds.add(follower_id)
+            bands[key] = "EMERGENCY"
+        elif gap < warning_min_degrees:
+            bands[key] = "WARNING_SLOW"
+        elif gap < normal_min_degrees:
+            bands[key] = "RECOVERY"
+        elif gap <= normal_max_degrees:
+            bands[key] = "NORMAL"
+        elif gap < leader_wait_degrees:
+            bands[key] = "FOLLOWER_BEHIND"
+        else:
+            holds.add(leader_id)
+            bands[key] = "LEADER_WAIT"
+
+    # Release hysteresis: an emergency follower remains held until it is back
+    # inside the normal lower bound.  A waiting predecessor remains held until
+    # its gap is no larger than the configured normal maximum.
+    for leader_id, follower_id in zip(ids[:-1], ids[1:]):
+        key = "{}-{}".format(leader_id, follower_id)
+        gap = gaps[key]
+        if follower_id in held_before and gap < normal_min_degrees:
+            holds.add(follower_id)
+        if leader_id in held_before and gap > normal_max_degrees:
+            holds.add(leader_id)
+
+    # HOLD propagation follows the physical chain.  If a predecessor is held,
+    # every vehicle behind it must also wait; a trailing fault never commands a
+    # predecessor to reverse.
+    for index, uid in enumerate(ids[:-1]):
+        if uid in holds:
+            holds.update(ids[index + 1:])
+    return holds, gaps, bands, "OK"
+
+
+def formation_speed_scale_targets(ordered_uav_ids, gaps, held_uav_ids,
+                                  emergency_degrees, normal_min_degrees,
+                                  minimum_warning_scale):
+    """Compute forward-only role-bound speed scales for the orbit adapter."""
+    ids = [int(uid) for uid in ordered_uav_ids]
+    held = set(int(uid) for uid in held_uav_ids)
+    emergency = float(emergency_degrees)
+    normal_min = float(normal_min_degrees)
+    minimum_scale = float(minimum_warning_scale)
+    if (len(ids) < 2 or len(ids) != len(set(ids))
+            or not all(math.isfinite(value) for value in (
+                emergency, normal_min, minimum_scale))
+            or not (0.0 < emergency < normal_min < 180.0)
+            or not (0.0 < minimum_scale <= 1.0)):
+        return {}, "INVALID_SPEED_SCALE_CONFIG"
+
+    scales = {uid: 1.0 for uid in ids}
+    for leader_id, follower_id in zip(ids[:-1], ids[1:]):
+        key = "{}-{}".format(leader_id, follower_id)
+        if key not in gaps or not math.isfinite(float(gaps[key])):
+            return {}, "MISSING_PHASE_GAP"
+        gap = float(gaps[key])
+        if gap < emergency:
+            scales[follower_id] = 0.0
+        elif gap < normal_min:
+            fraction = (gap - emergency) / (normal_min - emergency)
+            warning_scale = minimum_scale + fraction * (1.0 - minimum_scale)
+            scales[follower_id] = min(scales[follower_id], warning_scale)
+
+    for uid in held:
+        if uid in scales:
+            scales[uid] = 0.0
+    return scales, "OK"
+
+
+def slew_speed_scale(current, target, dt_seconds, rise_rate, fall_rate):
+    """Limit recovery acceleration while allowing faster safety slowdown."""
+    values = [current, target, dt_seconds, rise_rate, fall_rate]
+    if (not all(math.isfinite(float(value)) for value in values)
+            or dt_seconds < 0.0 or rise_rate <= 0.0 or fall_rate <= 0.0):
+        return 0.0
+    current = min(1.0, max(0.0, float(current)))
+    target = min(1.0, max(0.0, float(target)))
+    limit = (rise_rate if target > current else fall_rate) * dt_seconds
+    if target > current:
+        return min(target, current + limit)
+    return max(target, current - limit)
+
+
+def role_chain_hold_ids(ordered_uav_ids, source_uav_id):
+    """Return only the vehicles physically behind a held formation role."""
+    ids = [int(uid) for uid in ordered_uav_ids]
+    source = int(source_uav_id)
+    if (not ids or len(ids) != len(set(ids)) or source not in ids):
+        return set()
+    return set(ids[ids.index(source) + 1:])
+
+
+def entry_ready_barrier(uav_ids, states, health, mission_height,
+                        height_tolerance, maximum_speed, globally_clear):
+    """Require every independent gate hover before synchronized staging."""
+    if not globally_clear or not uav_ids:
+        return False, {}
+    reasons = {}
+    for uid in uav_ids:
+        if uid not in states:
+            reasons[uid] = "STATE_MISSING"
+            continue
+        state = states[uid]
+        speed = math.sqrt(
+            float(state.velocity.x) ** 2 + float(state.velocity.y) ** 2
+            + float(state.velocity.z) ** 2)
+        if not bool(health.get(uid, False)):
+            reasons[uid] = "HEALTH_OR_TRAJECTORY_INVALID"
+        elif state.mission_phase not in {
+                "ENTRY_READY", "WAIT_ORBIT_PERMISSION"}:
+            reasons[uid] = "NOT_AT_ENTRY_GATE:{}".format(state.mission_phase)
+        elif abs(float(state.current_height) - float(mission_height)) > float(
+                height_tolerance):
+            reasons[uid] = "HEIGHT_NOT_READY"
+        elif not math.isfinite(speed) or speed > float(maximum_speed):
+            reasons[uid] = "SPEED_NOT_SETTLED"
+        # A mission-supervised position latch is represented by bridge HOLD.
+        # ENTRY_READY makes that latch unambiguous; HOLD_SAFE and all fault
+        # states remain fail-closed.
+        elif state.flight_state in {"HOLD_SAFE", "ERROR", "FAILSAFE",
+                                   "SAFETY_INHIBIT"}:
+            reasons[uid] = "FLIGHT_STATE_{}".format(state.flight_state)
+        else:
+            reasons[uid] = "READY"
+    return all(reasons.get(uid) == "READY" for uid in uav_ids), reasons
+
+
+def orbit_staging_ready_barrier(uav_ids, states, health, mission_heights,
+                                height_tolerance, maximum_speed,
+                                globally_clear):
+    """Require every UAV to be latched at its own first orbit point."""
+    if not globally_clear or not uav_ids:
+        return False, {}
+    heights = [float(value) for value in mission_heights]
+    if len(heights) != len(uav_ids):
+        return False, {uid: "HEIGHT_CONFIG_MISMATCH" for uid in uav_ids}
+    reasons = {}
+    for index, uid in enumerate(uav_ids):
+        state = states.get(uid)
+        if state is None:
+            reasons[uid] = "STATE_MISSING"
+            continue
+        speed = math.sqrt(
+            float(state.velocity.x) ** 2 + float(state.velocity.y) ** 2
+            + float(state.velocity.z) ** 2)
+        if not bool(health.get(uid, False)):
+            reasons[uid] = "HEALTH_OR_TRAJECTORY_INVALID"
+        elif state.mission_phase != "ORBIT_STAGING_READY":
+            reasons[uid] = "NOT_AT_ORBIT_STAGING:{}".format(
+                state.mission_phase)
+        elif abs(float(state.current_height) - heights[index]) > float(
+                height_tolerance):
+            reasons[uid] = "HEIGHT_NOT_READY"
+        elif not math.isfinite(speed) or speed > float(maximum_speed):
+            reasons[uid] = "SPEED_NOT_SETTLED"
+        elif state.flight_state in {"HOLD_SAFE", "ERROR", "FAILSAFE",
+                                   "SAFETY_INHIBIT"}:
+            reasons[uid] = "FLIGHT_STATE_{}".format(state.flight_state)
+        else:
+            reasons[uid] = "READY"
+    return all(reasons.get(uid) == "READY" for uid in uav_ids), reasons
+
+
+def directed_tangential_speed(position, velocity, center, direction):
+    """Return signed speed along the configured tower orbit direction."""
+    if direction not in (-1, 1):
+        return float("nan")
+    dx = float(position[0]) - float(center[0])
+    dy = float(position[1]) - float(center[1])
+    radius = math.hypot(dx, dy)
+    if (not math.isfinite(radius) or radius <= 1.0e-9
+            or not all(math.isfinite(float(v)) for v in velocity[:2])):
+        return float("nan")
+    tangent_x = direction * (-dy / radius)
+    tangent_y = direction * (dx / radius)
+    return float(velocity[0]) * tangent_x + float(velocity[1]) * tangent_y
+
+
+def predicted_pair_clear(first_position, second_position,
+                         first_prediction, second_prediction,
+                         minimum_3d, swarm_clearance):
+    """Apply the same 3-D and EGO ellipsoid limits to a release pair."""
+    if (not first_prediction or not second_prediction
+            or minimum_3d <= 0.0 or swarm_clearance <= 0.0):
+        return False
+    count = min(len(first_prediction), len(second_prediction))
+    ellipsoid_limit = 2.0 * float(swarm_clearance)
+    pairs = [(first_position, second_position)] + [
+        (first_prediction[index], second_prediction[index])
+        for index in range(count)]
+    return all(
+        distance3(first, second) >= float(minimum_3d)
+        and ellipsoid_distance(first, second) >= ellipsoid_limit
+        for first, second in pairs)
+
+
+def sequential_orbit_release_allowed(follower_position, leader_position,
+                                     leader_velocity, center, direction,
+                                     phase_min_degrees, phase_max_degrees,
+                                     minimum_forward_speed,
+                                     leader_trajectory_fresh,
+                                     follower_ready, predicted_clear,
+                                     globally_clear):
+    """Evaluate one UAV3->UAV2 or UAV2->UAV1 release gate."""
+    phase = directed_phase_gap_degrees(
+        follower_position, leader_position, center, direction)
+    speed = directed_tangential_speed(
+        leader_position, leader_velocity, center, direction)
+    conditions = {
+        "phase_in_window": bool(
+            math.isfinite(phase)
+            and float(phase_min_degrees) <= phase <= float(phase_max_degrees)),
+        "leader_forward_stable": bool(
+            math.isfinite(speed) and speed >= float(minimum_forward_speed)),
+        "leader_trajectory_fresh": bool(leader_trajectory_fresh),
+        "follower_ready": bool(follower_ready),
+        "predicted_clear": bool(predicted_clear),
+        "globally_clear": bool(globally_clear),
+    }
+    return all(conditions.values()), phase, speed, conditions
 
 
 def orbit_release_allowed(waiting_position, orbiting_positions, center,

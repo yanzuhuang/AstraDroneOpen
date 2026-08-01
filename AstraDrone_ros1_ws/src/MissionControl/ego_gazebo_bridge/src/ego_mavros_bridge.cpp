@@ -151,6 +151,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("require_start_permission",
                              config_.require_start_permission,
                              config_.require_start_permission);
+  private_node_handle_.param("require_orbit_speed_scale",
+                             config_.require_orbit_speed_scale,
+                             config_.require_orbit_speed_scale);
   private_node_handle_.param("tower_yaw_override_enabled",
                              config_.tower_yaw_override_enabled,
                              config_.tower_yaw_override_enabled);
@@ -242,6 +245,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("forward_yaw_min_speed",
                              config_.forward_yaw_min_speed,
                              config_.forward_yaw_min_speed);
+  private_node_handle_.param("orbit_speed_scale_timeout",
+                             config_.orbit_speed_scale_timeout,
+                             config_.orbit_speed_scale_timeout);
   private_node_handle_.param("min_relative_height",
                              config_.bounds.min_relative_height,
                              config_.bounds.min_relative_height);
@@ -295,6 +301,9 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("start_permission_topic",
                              config_.start_permission_topic,
                              config_.start_permission_topic);
+  private_node_handle_.param("orbit_speed_scale_topic",
+                             config_.orbit_speed_scale_topic,
+                             config_.orbit_speed_scale_topic);
   private_node_handle_.getParam("control_topics/position",
                                 config_.position_control_topics);
   private_node_handle_.getParam("control_topics/raw_local",
@@ -336,6 +345,7 @@ bool EgoMavrosBridge::validateConfig() const {
       std::isfinite(config_.tower_camera_yaw_offset) &&
       std::isfinite(config_.forward_yaw_min_speed) &&
       config_.forward_yaw_min_speed > 0.0 &&
+      config_.orbit_speed_scale_timeout > 0.0 &&
       config_.bounds.min_relative_height >= 0.0 &&
       config_.bounds.max_relative_height >
           config_.bounds.min_relative_height &&
@@ -357,7 +367,9 @@ bool EgoMavrosBridge::validateConfig() const {
       config_.input_goal_topic != config_.planner_goal_topic &&
       (!config_.tower_yaw_override_enabled ||
        (!config_.tower_center_topic.empty() &&
-        !config_.tower_yaw_mode_topic.empty()));
+        !config_.tower_yaw_mode_topic.empty())) &&
+      (!config_.require_orbit_speed_scale ||
+       !config_.orbit_speed_scale_topic.empty());
   const auto valid_topic_group = [](const std::vector<std::string>& topics) {
     return !topics.empty() &&
            std::all_of(topics.begin(), topics.end(),
@@ -421,6 +433,11 @@ void EgoMavrosBridge::setupRosInterfaces() {
         config_.start_permission_topic, 5,
         &EgoMavrosBridge::startPermissionCallback, this);
   }
+  if (config_.require_orbit_speed_scale) {
+    orbit_speed_scale_subscriber_ = node_handle_.subscribe<std_msgs::Float64>(
+        config_.orbit_speed_scale_topic, 5,
+        &EgoMavrosBridge::orbitSpeedScaleCallback, this);
+  }
 
   debug_setpoint_publisher_ =
       private_node_handle_.advertise<geometry_msgs::PoseStamped>(
@@ -473,6 +490,22 @@ void EgoMavrosBridge::extendedStateCallback(
 void EgoMavrosBridge::startPermissionCallback(
     const std_msgs::Bool::ConstPtr& message) {
   start_permission_ = message->data;
+}
+
+void EgoMavrosBridge::orbitSpeedScaleCallback(
+    const std_msgs::Float64::ConstPtr& message) {
+  if (!std::isfinite(message->data) || message->data < 0.0 ||
+      message->data > 1.0) {
+    have_orbit_speed_scale_ = false;
+    orbit_speed_scale_ = 0.0;
+    ROS_ERROR_THROTTLE(
+        1.0, "[BRIDGE] Invalid orbit speed scale rejected: %.6f",
+        message->data);
+    return;
+  }
+  orbit_speed_scale_ = message->data;
+  have_orbit_speed_scale_ = true;
+  last_orbit_speed_scale_time_ = ros::Time::now();
 }
 
 void EgoMavrosBridge::mavrosPoseCallback(
@@ -655,6 +688,15 @@ void EgoMavrosBridge::commandCallback(
   }
 
   quadrotor_msgs::PositionCommand effective_command = *message;
+  if (config_.require_orbit_speed_scale) {
+    effective_command.velocity.x *= orbit_speed_scale_;
+    effective_command.velocity.y *= orbit_speed_scale_;
+    effective_command.velocity.z *= orbit_speed_scale_;
+    effective_command.acceleration.x *= orbit_speed_scale_;
+    effective_command.acceleration.y *= orbit_speed_scale_;
+    effective_command.acceleration.z *= orbit_speed_scale_;
+    effective_command.yaw_dot *= orbit_speed_scale_;
+  }
   const bool yaw_history_fresh =
       have_effective_yaw_ && !last_effective_yaw_time_.isZero() &&
       now > last_effective_yaw_time_ &&
@@ -1498,6 +1540,17 @@ void EgoMavrosBridge::publishTrajectorySetpoint(const ros::Time& now) {
       !have_planner_target_) {
     return;
   }
+  if (config_.require_orbit_speed_scale && orbit_speed_scale_ <= 1.0e-3) {
+    if (!orbit_speed_scale_hold_active_) {
+      latchHoldAtCurrentPose();
+      orbit_speed_scale_hold_active_ = true;
+      ROS_WARN("[BRIDGE] Orbit speed scale reached zero; current pose "
+               "latched until the coordinator permits forward recovery.");
+    }
+    publishHold(now);
+    return;
+  }
+  orbit_speed_scale_hold_active_ = false;
   mavros_msgs::PositionTarget target = planner_raw_target_;
   target.header.stamp = now;
   target.header.frame_id = config_.mavros_frame;
@@ -1562,6 +1615,13 @@ bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
                       config_.cloud_timeout)) {
     *reason =
         "obstacle point cloud is unavailable, stale or has an unusable timestamp";
+    return false;
+  }
+  if (config_.require_orbit_speed_scale &&
+      (!have_orbit_speed_scale_ ||
+       !isFresh(now, last_orbit_speed_scale_time_,
+                config_.orbit_speed_scale_timeout))) {
+    *reason = "orbit speed scale is unavailable, invalid or stale";
     return false;
   }
   reason->clear();

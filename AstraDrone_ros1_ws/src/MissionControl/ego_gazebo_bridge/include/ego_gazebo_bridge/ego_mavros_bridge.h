@@ -53,6 +53,7 @@ struct BridgeConfig {
   bool require_sim_time{true};
   bool auto_track_on_command{false};
   bool require_start_permission{false};
+  bool require_orbit_speed_scale{false};
   bool tower_yaw_override_enabled{false};
   double publish_rate{50.0};
   double prestream_duration{2.0};
@@ -89,6 +90,7 @@ struct BridgeConfig {
   double return_hold_duration{1.0};
   double tower_camera_yaw_offset{0.0};
   double forward_yaw_min_speed{0.05};
+  double orbit_speed_scale_timeout{0.5};
   CommandBounds bounds;
 
   std::string planning_frame{"camera_init"};
@@ -108,6 +110,7 @@ struct BridgeConfig {
   std::string tower_center_topic{"/tower_mission/selected_tower_center"};
   std::string tower_yaw_mode_topic{"/tower_mission/face_tower"};
   std::string start_permission_topic{"/swarm/takeoff_permission"};
+  std::string orbit_speed_scale_topic{"/swarm/orbit_speed_scale"};
   std::vector<std::string> position_control_topics{
       "/mavros/setpoint_position/local",
       "/mavros/setpoint_position/global",
@@ -149,6 +152,7 @@ class EgoMavrosBridge {
       const geometry_msgs::PointStamped::ConstPtr& message);
   void towerYawModeCallback(const std_msgs::Bool::ConstPtr& message);
   void startPermissionCallback(const std_msgs::Bool::ConstPtr& message);
+  void orbitSpeedScaleCallback(const std_msgs::Float64::ConstPtr& message);
 
   bool trackingService(std_srvs::SetBool::Request& request,
                        std_srvs::SetBool::Response& response);
@@ -213,6 +217,7 @@ class EgoMavrosBridge {
   ros::Subscriber tower_center_subscriber_;
   ros::Subscriber tower_yaw_mode_subscriber_;
   ros::Subscriber start_permission_subscriber_;
+  ros::Subscriber orbit_speed_scale_subscriber_;
   ros::Publisher setpoint_publisher_;
   ros::Publisher debug_setpoint_publisher_;
   ros::Publisher state_publisher_;
@@ -262,6 +267,8 @@ class EgoMavrosBridge {
   bool have_effective_yaw_{false};
   bool supervised_hold_{false};
   bool start_permission_{false};
+  bool have_orbit_speed_scale_{false};
+  bool orbit_speed_scale_hold_active_{false};
   TrajectoryGate trajectory_gate_;
 
   ros::Time last_fcu_state_time_;
@@ -283,8 +290,10 @@ class EgoMavrosBridge {
   ros::Time tracking_error_since_;
   ros::Time alignment_yaw_error_since_;
   ros::Time last_effective_yaw_time_;
+  ros::Time last_orbit_speed_scale_time_;
   double maximum_tracking_error_{0.0};
   double effective_yaw_{0.0};
+  double orbit_speed_scale_{0.0};
   bool cached_control_conflict_{false};
   std::string cached_control_conflict_detail_;
   std::string hold_reason_;

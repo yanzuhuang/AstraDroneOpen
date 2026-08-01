@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """Fail-closed temporal/spatial coordinator for the tower swarm."""
 
+import json
 import math
 
 import rospy
 from astra_swarm_manager.policy import (
-    advance_entry_owner,
     corridor_clear,
-    eligible_entry_ids,
-    entry_owner_orbit_established,
+    directed_phase_gap_degrees,
+    entry_ready_barrier,
+    formation_phase_decision,
+    formation_speed_scale_targets,
+    joint_entry_corridor_selection,
     mission_geometry_clear,
-    orbit_phase_hold_ids,
-    orbit_release_allowed,
-    rotate_xy_about_center,
+    orbit_staging_ready_barrier,
+    predicted_pair_clear,
+    role_chain_hold_ids,
     scheduled_takeoff_allowed,
+    sequential_orbit_release_allowed,
     serialized_permissions,
+    slew_speed_scale,
     task_start_barrier_ready,
 )
 from astra_swarm_msgs.msg import (
@@ -22,19 +27,14 @@ from astra_swarm_msgs.msg import (
     PredictedTrajectory,
     SwarmState,
 )
-from std_msgs.msg import Bool
+from astra_custom_msgs.msg import InspectionCandidateArray
+from std_msgs.msg import Bool, Float64, String
 
 
 ACTIVE_ORBIT_PHASES = {
     "TARGET_LOCKED", "NAVIGATING", "EVALUATING", "RELOCATING", "RECOVERING",
     "HOLDING"
 }
-# Keep the exclusive ENTRY owner while it is hovering at the gate.  Releasing
-# ownership in WAIT_ORBIT_PERMISSION creates a one-timer-cycle window where
-# orbit_released is still empty, so the next vehicle can bypass projected
-# phase admission and then wait at its gate for most of a lap.  Ownership is
-# released only after the first fresh orbit goal has made the vehicle active.
-ENTRY_ESTABLISHED_PHASES = ACTIVE_ORBIT_PHASES
 RETURN_PHASES = {
     "WAIT_EXIT_PERMISSION", "GO_TO_EXIT_GATE", "NORMAL_RETURN",
     "RETURN_EGRESS", "RETURN_HOME", "FAILURE_LANDING", "DONE", "ERROR"
@@ -53,28 +53,67 @@ class SwarmManager:
             "~trajectory_timeout", self.timeout))
         self.minimum_3d = float(rospy.get_param(
             "~minimum_3d_separation", 3.0))
+        # ENTRY candidates publish distance to EGO's already-inflated map.
+        # This is the task-side additional margin, not the raw-cloud minimum.
+        self.map_additional_clearance = float(rospy.get_param(
+            "~map_additional_clearance", 0.5))
         self.clearance = float(rospy.get_param(
             "~optimizer_swarm_clearance", 1.5))
         self.heights = [float(v) for v in rospy.get_param(
-            "~mission_heights", [2.0, 3.0, 4.0])]
+            "~mission_heights", [3.0, 3.0, 3.0])]
         self.phases = [float(v) for v in rospy.get_param(
-            "~phase_degrees", [270.0, 45.0, 135.0])]
+            "~phase_degrees", [292.5, 315.0, 337.5])]
         self.orbit_radius = float(rospy.get_param("~orbit_radius", 12.5))
         self.tower_center = [
             float(v) for v in rospy.get_param(
                 "~tower_center", [-10.0551, 19.7104])]
         self.desired_phase = float(rospy.get_param(
-            "~desired_phase_separation_degrees", 120.0))
-        self.phase_tolerance = float(rospy.get_param(
-            "~phase_tolerance_degrees", 15.0))
+            "~target_phase_deg", 67.5))
+        self.normal_phase_min = float(rospy.get_param(
+            "~normal_phase_min_deg", 57.5))
+        self.normal_phase_max = float(rospy.get_param(
+            "~normal_phase_max_deg", 77.5))
+        self.warning_phase_min = float(rospy.get_param(
+            "~warning_phase_min_deg", 45.0))
+        self.emergency_phase = float(rospy.get_param(
+            "~emergency_phase_deg", 45.0))
+        self.leader_wait_phase = float(rospy.get_param(
+            "~leader_wait_phase_deg", 95.0))
+        self.direction = int(rospy.get_param("~orbit_direction", 1))
+        default_role_order = list(reversed(self.uav_ids))
+        self.role_order = [int(uid) for uid in rospy.get_param(
+            "~formation_role_order", default_role_order)]
+        self.leader_uav_id = self.role_order[0]
+        self.middle_uav_id = (
+            self.role_order[1] if len(self.role_order) > 2
+            else self.role_order[0])
+        self.trailing_uav_id = self.role_order[-1]
+        self.entry_height_tolerance = float(rospy.get_param(
+            "~entry_height_tolerance", 0.35))
+        self.entry_maximum_speed = float(rospy.get_param(
+            "~entry_maximum_speed", 0.20))
+        self.entry_ready_timeout = float(rospy.get_param(
+            "~entry_ready_timeout", 360.0))
         self.entry_gate_radius = float(rospy.get_param(
             "~entry_gate_radius", 15.0))
         self.entry_nominal_speed = float(rospy.get_param(
             "~entry_nominal_speed", 0.20))
         self.orbit_nominal_speed = float(rospy.get_param(
             "~orbit_nominal_speed", 0.14))
+        self.minimum_warning_speed_scale = float(rospy.get_param(
+            "~minimum_warning_speed_scale", 0.35))
+        self.speed_scale_rise_rate = float(rospy.get_param(
+            "~speed_scale_rise_rate", 0.15))
+        self.speed_scale_fall_rate = float(rospy.get_param(
+            "~speed_scale_fall_rate", 1.5))
         self.entry_settle_time = float(rospy.get_param(
             "~entry_settle_time", 0.0))
+        self.release_phase_min = float(rospy.get_param(
+            "~release_phase_min_deg", 65.0))
+        self.release_phase_max = float(rospy.get_param(
+            "~release_phase_max_deg", 70.0))
+        self.release_minimum_forward_speed = float(rospy.get_param(
+            "~release_minimum_forward_speed", 0.03))
         self.homes = rospy.get_param(
             "~home_positions", [[0.0, 0.0, 0.0],
                                 [4.0, 0.0, 0.0],
@@ -89,21 +128,43 @@ class SwarmManager:
         if not all(math.isfinite(v) for v in (
                 [self.interval, self.timeout, self.trajectory_timeout,
                  self.minimum_3d, self.clearance, self.orbit_radius,
-                 self.desired_phase, self.phase_tolerance,
+                 self.desired_phase, self.normal_phase_min,
+                 self.normal_phase_max, self.warning_phase_min,
+                 self.emergency_phase, self.leader_wait_phase,
+                 self.entry_height_tolerance, self.entry_maximum_speed,
+                 self.entry_ready_timeout,
                  self.entry_gate_radius, self.entry_nominal_speed,
-                 self.orbit_nominal_speed, self.entry_settle_time]
+                 self.orbit_nominal_speed, self.entry_settle_time,
+                 self.release_phase_min, self.release_phase_max,
+                 self.release_minimum_forward_speed,
+                 self.minimum_warning_speed_scale,
+                 self.speed_scale_rise_rate, self.speed_scale_fall_rate]
                 + self.heights + self.phases + self.takeoff_heights)):
             raise rospy.ROSException("coordination parameters must be finite")
         if (len(self.tower_center) != 2
                 or not all(math.isfinite(v) for v in self.tower_center)
-                or self.desired_phase <= 0.0
-                or self.desired_phase >= 180.0
-                or self.phase_tolerance < 0.0
+                or set(self.role_order) != set(self.uav_ids)
+                or self.direction not in (-1, 1)
+                or not (0.0 < self.emergency_phase
+                        <= self.warning_phase_min
+                        <= self.normal_phase_min < self.desired_phase
+                        < self.normal_phase_max < self.leader_wait_phase
+                        < 180.0)
+                or self.entry_height_tolerance <= 0.0
+                or self.entry_maximum_speed <= 0.0
+                or self.entry_ready_timeout <= 0.0
                 or self.entry_gate_radius <= 0.0
                 or self.entry_nominal_speed <= 0.0
                 or self.orbit_nominal_speed <= 0.0
+                or not (0.0 < self.minimum_warning_speed_scale <= 1.0)
+                or self.speed_scale_rise_rate <= 0.0
+                or self.speed_scale_fall_rate <= 0.0
                 or self.entry_settle_time < 0.0):
             raise rospy.ROSException("invalid orbit phase coordination")
+        if (not (0.0 < self.release_phase_min < self.desired_phase
+                 < self.release_phase_max < self.normal_phase_max)
+                or self.release_minimum_forward_speed <= 0.0):
+            raise rospy.ROSException("invalid sequential release gate")
         self.geometry_safe = mission_geometry_clear(
             self.heights, self.phases, self.orbit_radius,
             self.minimum_3d, self.clearance)
@@ -115,11 +176,37 @@ class SwarmManager:
         self.safety_received = None
         self.px4_ready = False
         self.schedule_started = None
-        self.entry_owner = 0
-        self.exit_owner = 0
+        self.entry_owner = 0  # compatibility diagnostic; independent gates use 0
+        self.exit_owner = 0   # compatibility diagnostic; independent exits use 0
+        self.landing_owner = 0
         self.orbit_released = set()
+        self.orbit_release_times = {}
+        self.orbit_staging_started = False
+        self.orbit_staging_start_time = None
+        self.orbit_staging_ready_reasons = {
+            uid: "WAITING_FOR_FIRST_ORBIT_POINT" for uid in self.uav_ids}
+        self.formation_orbit_active = False
+        self.release_diagnostics = {}
         self.phase_held = set()
+        self.phase_gaps = {}
+        self.phase_bands = {}
+        self.speed_scales = {uid: 1.0 for uid in self.uav_ids}
+        self.speed_scale_targets = {uid: 1.0 for uid in self.uav_ids}
+        self.last_speed_scale_update = rospy.Time.now()
         self.task_started = False
+        self.entry_corridor_messages = {}
+        self.entry_corridor_received = {}
+        self.entry_corridor_selection = {}
+        self.entry_corridor_generation_key = None
+        self.entry_corridor_selection_reason = "WAITING_FOR_CANDIDATES"
+        self.entry_corridor_diagnostics = {}
+        # Compatibility summary: true only when all three individual releases
+        # have occurred.  Per-UAV release times are authoritative.
+        self.orbit_started = False
+        self.orbit_start_time = None
+        self.entry_ready_started = None
+        self.entry_ready_reasons = {
+            uid: "WAITING_FOR_GATE" for uid in self.uav_ids}
         self.last_permissions = {}
         self.last_coordinator_state = ""
         self.last_coordinator_reason = ""
@@ -133,6 +220,11 @@ class SwarmManager:
                 "/uav{}/swarm/predicted_trajectory".format(uid),
                 PredictedTrajectory,
                 lambda msg, u=uid: self.prediction_cb(u, msg), queue_size=5)
+            rospy.Subscriber(
+                "/uav{}/tower_mission/entry_corridor_candidates".format(uid),
+                InspectionCandidateArray,
+                lambda msg, u=uid: self.entry_corridor_cb(u, msg),
+                queue_size=1)
         rospy.Subscriber("/swarm/safety/clear", Bool,
                          self.safety_cb, queue_size=5)
         rospy.Subscriber(
@@ -140,7 +232,8 @@ class SwarmManager:
             lambda msg: setattr(self, "px4_ready", msg.data), queue_size=1)
         self.pubs = {}
         for category in (
-                "takeoff", "task_start", "entry", "orbit", "exit",
+                "takeoff", "task_start", "entry", "orbit_staging",
+                "orbit", "exit",
                 "transition", "landing"):
             self.pubs[category] = {
                 uid: rospy.Publisher(
@@ -150,6 +243,18 @@ class SwarmManager:
         self.status_pub = rospy.Publisher(
             "/swarm/coordinator/status", CoordinationStatus,
             queue_size=1, latch=True)
+        self.formation_status_pub = rospy.Publisher(
+            "/swarm/formation/status", String, queue_size=1, latch=True)
+        self.speed_scale_pubs = {
+            uid: rospy.Publisher(
+                "/uav{}/swarm/orbit_speed_scale".format(uid), Float64,
+                queue_size=1, latch=True)
+            for uid in self.uav_ids}
+        self.entry_corridor_selection_pubs = {
+            uid: rospy.Publisher(
+                "/uav{}/swarm/entry_corridor_selection".format(uid), String,
+                queue_size=1, latch=True)
+            for uid in self.uav_ids}
         rospy.Timer(rospy.Duration(0.1), self.timer_cb)
 
     def state_cb(self, uid, msg):
@@ -159,6 +264,10 @@ class SwarmManager:
     def prediction_cb(self, uid, msg):
         self.predictions[uid] = msg
         self.prediction_received[uid] = rospy.Time.now()
+
+    def entry_corridor_cb(self, uid, msg):
+        self.entry_corridor_messages[uid] = msg
+        self.entry_corridor_received[uid] = rospy.Time.now()
 
     def safety_cb(self, msg):
         self.safety_clear = msg.data
@@ -196,41 +305,192 @@ class SwarmManager:
                 return False
         return True
 
-    def projected_entry_phase_clear(self, uid, now):
-        """Predict the measured phase when this UAV reaches its ENTRY gate."""
-        prior_ids = [
-            peer for peer in self.uav_ids
-            if peer in self.orbit_released and peer != uid]
-        if not prior_ids:
-            return True
-        if not all(
-                self.healthy(peer, now)
-                and self.states[peer].mission_phase in ACTIVE_ORBIT_PHASES
-                for peer in prior_ids):
+    def pair_prediction_clear(self, first_uid, second_uid):
+        first_state = self.states.get(first_uid)
+        second_state = self.states.get(second_uid)
+        first_prediction = self.predictions.get(first_uid)
+        second_prediction = self.predictions.get(second_uid)
+        if (first_state is None or second_state is None
+                or first_prediction is None or second_prediction is None):
             return False
-        index = self.uav_ids.index(uid)
-        angle = math.radians(self.phases[index])
-        gate = (
-            self.tower_center[0] + self.entry_gate_radius * math.cos(angle),
-            self.tower_center[1] + self.entry_gate_radius * math.sin(angle))
-        current = self.states[uid].pose.position
-        eta = (
-            math.hypot(current.x - gate[0], current.y - gate[1])
-            / self.entry_nominal_speed + self.entry_settle_time)
-        angular_advance = (
-            self.orbit_nominal_speed / self.orbit_radius * eta)
-        projected = []
-        for peer in prior_ids:
-            position = self.states[peer].pose.position
-            point = rotate_xy_about_center(
-                (position.x, position.y), self.tower_center,
-                angular_advance, self.orbit_radius)
-            if point is None:
-                return False
-            projected.append(point)
-        return orbit_release_allowed(
-            gate, projected, self.tower_center,
-            self.desired_phase, self.phase_tolerance)
+        first_position = (
+            first_state.pose.position.x, first_state.pose.position.y,
+            first_state.pose.position.z)
+        second_position = (
+            second_state.pose.position.x, second_state.pose.position.y,
+            second_state.pose.position.z)
+        first_points = [(p.x, p.y, p.z) for p in first_prediction.points]
+        second_points = [(p.x, p.y, p.z) for p in second_prediction.points]
+        return predicted_pair_clear(
+            first_position, second_position, first_points, second_points,
+            self.minimum_3d, self.clearance)
+
+    def evaluate_sequential_release(self, leader_uid, follower_uid, now,
+                                    globally_clear):
+        leader = self.states.get(leader_uid)
+        follower = self.states.get(follower_uid)
+        if leader is None or follower is None:
+            return False, float("nan"), float("nan"), {
+                "states_received": False}
+        follower_ready = (
+            self.healthy(follower_uid, now)
+            and follower.mission_phase == "ORBIT_STAGING_READY"
+            and follower.flight_state not in {
+                "HOLD_SAFE", "ERROR", "FAILSAFE", "SAFETY_INHIBIT"})
+        leader_prediction_fresh = self.healthy(leader_uid, now)
+        leader_position = (
+            leader.pose.position.x, leader.pose.position.y)
+        follower_position = (
+            follower.pose.position.x, follower.pose.position.y)
+        leader_velocity = (leader.velocity.x, leader.velocity.y)
+        return sequential_orbit_release_allowed(
+            follower_position, leader_position, leader_velocity,
+            self.tower_center, self.direction,
+            self.release_phase_min, self.release_phase_max,
+            self.release_minimum_forward_speed,
+            leader_prediction_fresh, follower_ready,
+            self.pair_prediction_clear(leader_uid, follower_uid),
+            globally_clear)
+
+    def release_orbit(self, uid, now, reason):
+        if uid in self.orbit_released:
+            return
+        self.orbit_released.add(uid)
+        self.orbit_release_times[uid] = now
+        rospy.logwarn(
+            "[SWARM_COORD] ORBIT_RELEASE_UAV%d published time=%.3f "
+            "roles=%s reason=%s",
+            uid, now.to_sec(), self.role_order, reason)
+
+    def entry_corridor_candidates(self, uid):
+        message = self.entry_corridor_messages.get(uid)
+        if message is None:
+            return []
+        home = self.homes[self.uav_ids.index(uid)]
+        grouped = {}
+        for item in message.candidates:
+            if not item.accepted or "/" not in item.candidate_id:
+                continue
+            corridor_id, kind = item.candidate_id.rsplit("/", 1)
+            if (kind not in {"PRE_ENTRY", "ENTRY_GATE", "ORBIT_STAGING"}
+                    and not kind.startswith("PATH_")):
+                continue
+            point = (
+                float(item.target.x) + float(home[0]),
+                float(item.target.y) + float(home[1]),
+                float(item.target.z) + float(home[2]))
+            values = grouped.setdefault(corridor_id, {})
+            if kind.startswith("PATH_"):
+                try:
+                    values.setdefault("PATH", {})[int(kind[5:])] = point
+                except ValueError:
+                    continue
+            else:
+                values[kind] = point
+            grouped[corridor_id]["clearance"] = min(
+                float(item.clearance),
+                grouped[corridor_id].get("clearance", float("inf")))
+        candidates = []
+        for corridor_id, values in grouped.items():
+            if not all(key in values for key in (
+                    "PRE_ENTRY", "ENTRY_GATE", "ORBIT_STAGING")):
+                continue
+            staging = values["ORBIT_STAGING"]
+            pre = values["PRE_ENTRY"]
+            entry = values["ENTRY_GATE"]
+            angle = math.degrees(math.atan2(
+                staging[1] - self.tower_center[1],
+                staging[0] - self.tower_center[0])) % 360.0
+            candidates.append({
+                "id": corridor_id,
+                "angle_deg": angle,
+                "pre_radius": math.hypot(
+                    pre[0] - self.tower_center[0],
+                    pre[1] - self.tower_center[1]),
+                "entry_radius": math.hypot(
+                    entry[0] - self.tower_center[0],
+                    entry[1] - self.tower_center[1]),
+                "clearance": values["clearance"],
+                "pre": pre,
+                "entry": entry,
+                "staging": staging,
+                "path": [point for _, point in sorted(
+                    values.get("PATH", {}).items())],
+            })
+        return candidates
+
+    def update_entry_corridor_selection(self, now, globally_clear):
+        fresh = all(
+            uid in self.entry_corridor_messages
+            and uid in self.entry_corridor_received
+            and (now - self.entry_corridor_received[uid]).to_sec()
+            <= self.timeout
+            and bool(self.entry_corridor_messages[uid].candidates)
+            for uid in self.uav_ids)
+        if not (globally_clear and self.task_started):
+            if not self.entry_corridor_selection:
+                self.entry_corridor_selection_reason = (
+                    "WAITING_FOR_FRESH_CANDIDATES")
+            return False
+        generation_key = (
+            tuple((uid, int(self.entry_corridor_messages[uid].current_sector))
+                  for uid in self.uav_ids)
+            if all(uid in self.entry_corridor_messages for uid in self.uav_ids)
+            else None)
+        if (self.entry_corridor_selection
+                and (not fresh
+                     or generation_key == self.entry_corridor_generation_key)):
+            return True
+        if not fresh:
+            self.entry_corridor_selection_reason = (
+                "WAITING_FOR_FRESH_CANDIDATES")
+            return False
+        if generation_key != self.entry_corridor_generation_key:
+            self.entry_corridor_selection = {}
+            for publisher in self.entry_corridor_selection_pubs.values():
+                publisher.publish(String(data=""))
+        candidates = {
+            uid: self.entry_corridor_candidates(uid) for uid in self.uav_ids}
+        nominal_angles = dict(zip(self.uav_ids, self.phases))
+        starts = {
+            uid: (self.states[uid].pose.position.x,
+                  self.states[uid].pose.position.y,
+                  self.states[uid].pose.position.z)
+            for uid in self.uav_ids}
+        selected, reason, diagnostics = joint_entry_corridor_selection(
+            candidates, self.role_order, nominal_angles, self.tower_center,
+            starts, self.direction, 20.0, 30.0,
+            self.map_additional_clearance,
+            self.minimum_3d, self.clearance)
+        self.entry_corridor_generation_key = generation_key
+        self.entry_corridor_selection_reason = reason
+        self.entry_corridor_diagnostics = diagnostics
+        if not selected:
+            rospy.logerr_throttle(
+                2.0,
+                "[SWARM_ENTRY] no joint safe corridor generations=%s "
+                "candidate_counts=%s reason=%s diagnostics=%s",
+                generation_key,
+                {uid: len(values) for uid, values in candidates.items()},
+                reason, diagnostics)
+            return False
+        self.entry_corridor_selection = selected
+        for uid, candidate in selected.items():
+            self.entry_corridor_selection_pubs[uid].publish(
+                String(data=candidate["id"]))
+        rospy.logwarn(
+            "[SWARM_ENTRY] joint corridors latched generations=%s "
+            "selection=%s diagnostics=%s",
+            generation_key,
+            {uid: {"id": value["id"],
+                   "angle_deg": value["angle_deg"],
+                   "pre_radius": value["pre_radius"],
+                   "entry_radius": value["entry_radius"],
+                   "clearance": value["clearance"],
+                   "pre": value["pre"], "entry": value["entry"],
+                   "staging": value["staging"]}
+             for uid, value in selected.items()}, diagnostics)
+        return True
 
     def timer_cb(self, _event):
         now = rospy.Time.now()
@@ -265,84 +525,117 @@ class SwarmManager:
                 "barrier released uavs=%s takeoff_interval=%.3f",
                 self.uav_ids, self.interval)
 
-        # ENTRY is exclusive until the owner has established its configured
-        # orbit phase.  Loss of owner health keeps ownership latched and stops
-        # all new entrants.
-        if self.entry_owner:
-            owner_uid = self.entry_owner
-            owner_healthy = self.healthy(owner_uid, now)
-            owner_phase = (
-                self.states[owner_uid].mission_phase
-                if owner_healthy else "")
-            # HOLDING is shared by pre-entry map/goal failures and by the
-            # coordinator's dynamic orbit pause.  It establishes an orbit
-            # only for a vehicle that was already released while genuinely
-            # active; otherwise a failed ENTRY candidate could be mistaken
-            # for a third orbit participant and release the corridor.
-            owner_orbit_established = entry_owner_orbit_established(
-                owner_phase, owner_uid in self.orbit_released,
-                ENTRY_ESTABLISHED_PHASES)
-            if owner_orbit_established:
-                self.orbit_released.add(owner_uid)
-            # A failed ingress may retrace the same corridor.  Transfer sticky
-            # ownership to serialized return/landing instead of deadlocking
-            # ENTRY or admitting a second vehicle into that corridor.
-            self.entry_owner, self.exit_owner = advance_entry_owner(
-                self.entry_owner, self.exit_owner, owner_healthy,
-                owner_orbit_established,
-                owner_phase in RETURN_PHASES)
-        entry_waiting = eligible_entry_ids(
-            self.uav_ids, self.states,
-            {uid: self.healthy(uid, now) for uid in self.uav_ids})
-        next_entry = min(entry_waiting) if entry_waiting else 0
-        # ENTRY admission is a separate corridor lease from orbit release, but
-        # it must also prove the future phase at the gate.  A slow ingress
-        # vehicle can otherwise arrive after the leader has rotated onto the
-        # same XY gate; vertical 2/3/4 m spacing is not a substitute for this
-        # predicted geometric check.
-        phase_ready = bool(
-            next_entry and self.projected_entry_phase_clear(next_entry, now))
-        if (globally_clear and not self.exit_owner
-                and (self.entry_owner or phase_ready)):
-            entry_grants, self.entry_owner = serialized_permissions(
-                entry_waiting, self.entry_owner)
-        else:
-            entry_grants = {}
+        # Each mission first proves bounded live-map corridors.  The manager
+        # jointly selects all three and only then releases the common ENTRY
+        # barrier. A generation change invalidates the old selection before
+        # any vehicle enters the corridor.
+        entry_corridors_ready = self.update_entry_corridor_selection(
+            now, globally_clear)
+        entry_grants = {
+            uid: bool(globally_clear and self.task_started
+                      and entry_corridors_ready)
+            for uid in self.uav_ids}
 
-        # A vehicle hovers at its own ENTRY_GATE until its XY angle is about
-        # 120 degrees from every already released vehicle.  This converts the
-        # nominal gate phases into a measured, time-domain orbit phase and
-        # prevents a late ingress vehicle from catching the preceding one.
-        orbit_waiting = [
-            uid for uid in self.uav_ids
-            if self.healthy(uid, now)
-            and self.states[uid].mission_phase == "WAIT_ORBIT_PERMISSION"]
-        for uid in orbit_waiting:
-            if uid in self.orbit_released:
-                continue
-            prior_ids = [
-                peer for peer in self.uav_ids
-                if peer in self.orbit_released and peer != uid]
-            if (not all(
-                    self.healthy(peer, now)
-                    and self.states[peer].mission_phase in ACTIVE_ORBIT_PHASES
-                    for peer in prior_ids)):
-                continue
-            waiting = self.states[uid].pose.position
-            orbiting = [
-                (self.states[peer].pose.position.x,
-                 self.states[peer].pose.position.y)
-                for peer in prior_ids]
-            if orbit_release_allowed(
-                    (waiting.x, waiting.y), orbiting, self.tower_center,
-                    self.desired_phase, self.phase_tolerance):
-                self.orbit_released.add(uid)
+        entry_ready, self.entry_ready_reasons = entry_ready_barrier(
+            self.uav_ids, self.states, health, self.heights[0],
+            self.entry_height_tolerance, self.entry_maximum_speed,
+            globally_clear)
+        any_entry_ready = any(
+            reason == "READY"
+            for reason in self.entry_ready_reasons.values())
+        if any_entry_ready and self.entry_ready_started is None:
+            self.entry_ready_started = now
+        if not self.orbit_staging_started and entry_ready:
+            self.orbit_staging_started = True
+            self.orbit_staging_start_time = now
+            rospy.logwarn(
+                "[SWARM_COORD] all UAVs ENTRY_READY; "
+                "MOVE_TO_ORBIT_STAGING published once time=%.3f "
+                "entry_ready=%s compact_angles=%s direction=%+d",
+                now.to_sec(), self.entry_ready_reasons, self.phases,
+                self.direction)
+        entry_ready_timed_out = bool(
+            not self.orbit_staging_started
+            and self.entry_ready_started is not None
+            and now - self.entry_ready_started >=
+            rospy.Duration(self.entry_ready_timeout))
 
-        # Entry release establishes the requested phase once.  Real EGO
-        # detours can subsequently slow one vehicle, so continuously pause
-        # only the CCW trailing vehicle when its forward phase gap reaches the
-        # lower edge of the configured band.  The mission cancels that
-        # vehicle's current B-spline and resumes with a fresh goal generation.
+        orbit_staging_ready, self.orbit_staging_ready_reasons = (
+            orbit_staging_ready_barrier(
+                self.uav_ids, self.states, health, self.heights,
+                self.entry_height_tolerance, self.entry_maximum_speed,
+                globally_clear))
+        if (orbit_staging_ready
+                and self.leader_uav_id not in self.orbit_released):
+            self.release_orbit(
+                self.leader_uav_id, now,
+                "all UAVs ORBIT_STAGING_READY; leader released first")
+
+        # UAV3 leads UAV2 to the 65-70 degree release window.  UAV2 then
+        # leads UAV1 through the same independently evaluated gate.  A waiting
+        # UAV remains latched at its first orbit point until its own release.
+        release_pairs = list(zip(self.role_order[:-1], self.role_order[1:]))
+        for leader_uid, follower_uid in release_pairs:
+            if (leader_uid not in self.orbit_released
+                    or follower_uid in self.orbit_released):
+                continue
+            allowed, phase, forward_speed, conditions = (
+                self.evaluate_sequential_release(
+                    leader_uid, follower_uid, now, globally_clear))
+            key = "{}-{}".format(leader_uid, follower_uid)
+            self.release_diagnostics[key] = {
+                "phase_deg": phase,
+                "leader_forward_speed": forward_speed,
+                "conditions": conditions,
+            }
+            if allowed:
+                rospy.logwarn(
+                    "[SWARM_COORD] UAV%d-UAV%d phase reached release "
+                    "window phase=%.3fdeg speed=%.3fm/s "
+                    "trajectory_fresh=%s predicted_conflict=%s",
+                    leader_uid, follower_uid, phase, forward_speed,
+                    conditions.get("leader_trajectory_fresh", False),
+                    not conditions.get("predicted_clear", False))
+                self.release_orbit(
+                    follower_uid, now,
+                    "phase {:.3f}deg in [{:.1f},{:.1f}]".format(
+                        phase, self.release_phase_min,
+                        self.release_phase_max))
+            else:
+                rospy.logwarn_throttle(
+                    1.0,
+                    "[SWARM_COORD] ORBIT_RELEASE_UAV%d inhibited "
+                    "leader=UAV%d phase=%.3fdeg speed=%.3fm/s "
+                    "trajectory_fresh=%s predicted_conflict=%s "
+                    "follower_ready=%s globally_clear=%s failed=%s",
+                    follower_uid, leader_uid, phase, forward_speed,
+                    conditions.get("leader_trajectory_fresh", False),
+                    not conditions.get("predicted_clear", False),
+                    conditions.get("follower_ready", False),
+                    conditions.get("globally_clear", False),
+                    sorted(name for name, value in conditions.items()
+                           if not value))
+            # UAV1 must never be considered until UAV2 has actually been
+            # released, even if both phase windows happen to be true in one
+            # timer cycle.
+            if follower_uid not in self.orbit_released:
+                break
+
+        if (not self.orbit_started
+                and set(self.orbit_released) == set(self.uav_ids)):
+            self.orbit_started = True
+            self.formation_orbit_active = True
+            self.orbit_start_time = now
+            rospy.logwarn(
+                "[SWARM_COORD] FORMATION_ORBIT_ACTIVE established "
+                "release_times=%s target=%.1fdeg-%.1fdeg",
+                {uid: stamp.to_sec()
+                 for uid, stamp in self.orbit_release_times.items()},
+                self.desired_phase, self.desired_phase)
+
+        # Role-bound phase control never derives the leader from angular sort:
+        # UAV3 remains leader across the 0/360 wrap, UAV2 follows UAV3 and UAV1
+        # follows UAV2.  Safety HOLD propagation follows the same chain.
         active_orbit_positions = {
             uid: (
                 self.states[uid].pose.position.x,
@@ -352,24 +645,98 @@ class SwarmManager:
             and self.healthy(uid, now)
             and self.states[uid].mission_phase in ACTIVE_ORBIT_PHASES
         }
-        self.phase_held = orbit_phase_hold_ids(
-            active_orbit_positions, self.tower_center,
-            self.desired_phase, self.phase_tolerance, self.phase_held)
+        active_role_order = [
+            uid for uid in self.role_order if uid in active_orbit_positions]
+        if len(active_role_order) >= 2:
+            (self.phase_held, self.phase_gaps, self.phase_bands,
+             phase_decision_reason) = formation_phase_decision(
+                active_orbit_positions, self.tower_center, active_role_order,
+                self.direction, self.normal_phase_min,
+                self.normal_phase_max, self.warning_phase_min,
+                self.emergency_phase, self.leader_wait_phase,
+                self.phase_held)
+            if phase_decision_reason != "OK":
+                self.phase_held = set(self.uav_ids)
+        elif len(active_role_order) == 1:
+            # Once a predecessor has completed and left the ring, the next
+            # role becomes leader for the remaining formation.  A final lone
+            # UAV completes its own lap without tracking an exited vehicle.
+            self.phase_held = set()
+            self.phase_gaps = {}
+            self.phase_bands = {"remaining": "INDEPENDENT_ORBIT"}
+        else:
+            self.phase_held = set()
+            self.phase_gaps = {}
+            self.phase_bands = {}
+        for index, uid in enumerate(self.role_order):
+            state = self.states.get(uid)
+            if (state is None or uid not in self.orbit_released
+                    or state.mission_phase not in ACTIVE_ORBIT_PHASES):
+                continue
+            direct_hold = (
+                state.flight_state in {"HOLD", "HOLD_SAFE"}
+                or state.mission_phase in {"HOLDING", "ERROR",
+                                           "SAFETY_INHIBIT"})
+            if direct_hold:
+                # The source keeps permission to execute its supervised resume;
+                # only vehicles behind it are inhibited.  This avoids a
+                # self-latching coordinator HOLD while preserving no-overtake.
+                affected = sorted(role_chain_hold_ids(
+                    self.role_order, uid), key=self.role_order.index)
+                self.phase_held.update(affected)
+                self.phase_bands["role_hold_uav{}".format(uid)] = (
+                    "PROPAGATE_TO_{}".format(affected))
 
-        # EXIT owner remains sticky through return and landing.  A stale owner
-        # is never replaced because its possible occupancy is unknown.
-        if self.exit_owner and self.healthy(self.exit_owner, now):
-            if self.states[self.exit_owner].mission_phase == "DONE":
-                self.exit_owner = 0
+        # Soft phase correction is forward-only.  A follower inside the
+        # warning band receives a reduced EGO feed-forward scale; hard holds
+        # still use the existing orbit permission interlock.  Recovery is
+        # intentionally much slower than deceleration, so no vehicle suddenly
+        # accelerates to catch up.
+        scale_targets = {uid: 1.0 for uid in self.uav_ids}
+        if self.phase_gaps:
+            active_scales, scale_reason = formation_speed_scale_targets(
+                active_role_order, self.phase_gaps, self.phase_held,
+                self.emergency_phase, self.normal_phase_min,
+                self.minimum_warning_speed_scale)
+            if scale_reason != "OK":
+                scale_targets = {uid: 0.0 for uid in self.uav_ids}
+                self.phase_bands["speed_scale"] = scale_reason
+            else:
+                scale_targets.update(active_scales)
+        for uid in self.phase_held:
+            scale_targets[uid] = 0.0
+        if not globally_clear:
+            scale_targets = {uid: 0.0 for uid in self.uav_ids}
+        dt = max(0.0, (now - self.last_speed_scale_update).to_sec())
+        self.last_speed_scale_update = now
+        self.speed_scale_targets = scale_targets
+        for uid in self.uav_ids:
+            self.speed_scales[uid] = slew_speed_scale(
+                self.speed_scales[uid], scale_targets[uid], dt,
+                self.speed_scale_rise_rate, self.speed_scale_fall_rate)
+            self.speed_scale_pubs[uid].publish(
+                Float64(data=self.speed_scales[uid]))
+
+        # Each completed vehicle owns a distinct EXIT gate.  Current/future
+        # trajectory conflict checks remain global, so all clear exits may be
+        # released together.  Landing stays serialized around the nearby home
+        # pads and is deliberately separate from EXIT ownership.
         exit_waiting = [
             uid for uid in self.uav_ids
             if self.healthy(uid, now)
             and self.states[uid].mission_phase == "WAIT_EXIT_PERMISSION"]
-        if globally_clear and not self.entry_owner:
-            exit_grants, self.exit_owner = serialized_permissions(
-                exit_waiting, self.exit_owner)
-        else:
-            exit_grants = {}
+        exit_grants = {
+            uid: bool(globally_clear and uid in exit_waiting)
+            for uid in self.uav_ids}
+        if self.landing_owner and self.healthy(self.landing_owner, now):
+            if self.states[self.landing_owner].mission_phase == "DONE":
+                self.landing_owner = 0
+        landing_waiting = [
+            uid for uid in self.uav_ids
+            if self.healthy(uid, now)
+            and self.states[uid].flight_state == "HOME_HOVER"]
+        landing_grants, self.landing_owner = serialized_permissions(
+            landing_waiting, self.landing_owner)
 
         permissions = {
             "takeoff": takeoff,
@@ -377,7 +744,10 @@ class SwarmManager:
                 uid: bool(globally_clear and self.task_started)
                 for uid in self.uav_ids},
             "entry": {
-                uid: bool(globally_clear and uid == self.entry_owner)
+                uid: bool(entry_grants.get(uid, False))
+                for uid in self.uav_ids},
+            "orbit_staging": {
+                uid: bool(globally_clear and self.orbit_staging_started)
                 for uid in self.uav_ids},
             "orbit": {
                 uid: bool(
@@ -385,13 +755,12 @@ class SwarmManager:
                     and uid not in self.phase_held)
                 for uid in self.uav_ids},
             "exit": {
-                uid: bool(globally_clear and uid == self.exit_owner)
+                uid: bool(exit_grants.get(uid, False))
                 for uid in self.uav_ids},
             "transition": {uid: globally_clear for uid in self.uav_ids},
             "landing": {
                 uid: bool(
-                    globally_clear and uid == self.exit_owner
-                    and self.states[uid].flight_state == "HOME_HOVER")
+                    globally_clear and landing_grants.get(uid, False))
                 for uid in self.uav_ids},
         }
         for category, publishers in self.pubs.items():
@@ -404,13 +773,17 @@ class SwarmManager:
                     state = self.states.get(uid)
                     rospy.logwarn(
                         "[SWARM_COORD] uav=%d permission=%s value=%s "
-                        "mission_state=%s flight_state=%s entry_owner=%d "
-                        "exit_owner=%d phase_held=%s action=%s",
+                        "role=%s mission_state=%s flight_state=%s "
+                        "landing_owner=%d phase_held=%s gaps=%s bands=%s "
+                        "action=%s",
                         uid, category, current,
+                        ({self.leader_uav_id: "LEADER",
+                          self.middle_uav_id: "MIDDLE",
+                          self.trailing_uav_id: "TRAILING"}.get(uid, "UNKNOWN")),
                         getattr(state, "mission_phase", "MISSING"),
                         getattr(state, "flight_state", "MISSING"),
-                        self.entry_owner, self.exit_owner,
-                        sorted(self.phase_held),
+                        self.landing_owner, sorted(self.phase_held),
+                        self.phase_gaps, self.phase_bands,
                         "RELEASE" if current else "FAIL_CLOSED_HOLD")
                 self.last_permissions[key] = current
 
@@ -432,31 +805,57 @@ class SwarmManager:
             status.coordinator_state = "SAFETY_INHIBIT"
             status.reason = (
                 "heartbeat/localization/trajectory/PX4/safety gate not clear")
-        elif self.exit_owner:
+        elif self.task_started and not self.entry_corridor_selection:
+            status.coordinator_state = "ENTRY_CORRIDOR_SELECTION"
+            status.reason = "{} diagnostics={}".format(
+                self.entry_corridor_selection_reason,
+                self.entry_corridor_diagnostics)
+        elif entry_ready_timed_out:
+            status.coordinator_state = "ENTRY_READY_TIMEOUT"
+            status.reason = "entry barrier timed out: {}".format(
+                self.entry_ready_reasons)
+        elif self.landing_owner:
             status.coordinator_state = "RETURN_COORDINATION"
-            status.reason = "exclusive EXIT/return/landing owner={}".format(
-                self.exit_owner)
-        elif self.entry_owner:
-            status.coordinator_state = "ENTRY_COORDINATION"
-            status.reason = "exclusive ENTRY owner={}".format(self.entry_owner)
+            status.reason = "independent EXIT; landing owner={}".format(
+                self.landing_owner)
         elif self.phase_held:
             status.coordinator_state = "PHASE_COORDINATION"
             status.reason = (
-                "dynamic phase hold trailing UAV(s)={}; "
-                "fresh-goal resume uses {:.1f}/{:.1f} deg hysteresis"
-                .format(
-                    sorted(self.phase_held),
-                    self.desired_phase - self.phase_tolerance,
-                    self.desired_phase - 0.5 * self.phase_tolerance))
-        elif orbit_waiting or (entry_waiting and not phase_ready):
-            status.coordinator_state = "PHASE_COORDINATION"
+                "role-bound hold UAV(s)={} gaps={} bands={}"
+                .format(sorted(self.phase_held), self.phase_gaps,
+                        self.phase_bands))
+        elif not self.orbit_staging_started and any_entry_ready:
+            status.coordinator_state = "ENTRY_READY"
             status.reason = (
-                "waiting for measured {:.1f}+/-{:.1f} deg orbit phase"
-                .format(self.desired_phase, self.phase_tolerance))
+                "waiting for all independent gates: {}"
+                .format(self.entry_ready_reasons))
+        elif (self.orbit_staging_started
+              and set(self.orbit_released) != set(self.uav_ids)):
+            if not orbit_staging_ready:
+                status.coordinator_state = "ORBIT_STAGING_READY"
+                status.reason = (
+                    "MOVE_TO_ORBIT_STAGING latched; waiting for all first "
+                    "points: {}".format(self.orbit_staging_ready_reasons))
+            else:
+                status.coordinator_state = "SEQUENTIAL_ORBIT_RELEASE"
+                status.reason = (
+                    "released={} pending={} diagnostics={}".format(
+                        sorted(self.orbit_released),
+                        [uid for uid in self.role_order
+                         if uid not in self.orbit_released],
+                        self.release_diagnostics))
         elif all(self.states[uid].mission_phase == "DONE"
                  for uid in self.uav_ids):
             status.coordinator_state = "MISSION_COMPLETE"
             status.reason = "all missions complete"
+        elif self.orbit_started:
+            status.coordinator_state = "FORMATION_ORBIT_ACTIVE"
+            status.reason = (
+                "individual releases latched roles=UAV{}->UAV{}->UAV{} "
+                "gaps={} "
+                "bands={}".format(
+                    self.leader_uav_id, self.middle_uav_id,
+                    self.trailing_uav_id, self.phase_gaps, self.phase_bands))
         else:
             status.coordinator_state = "ORBIT_COORDINATION"
             status.reason = "phase-separated mission geometry is clear"
@@ -465,11 +864,11 @@ class SwarmManager:
             duration = max(0.0, (now - self.condition_started).to_sec())
             rospy.logwarn(
                 "[SWARM_COORD] state=%s previous=%s duration=%.3fs "
-                "reason=%s entry_owner=%d exit_owner=%d phase_held=%s "
+                "reason=%s landing_owner=%d phase_held=%s "
                 "task_barrier=%s action=%s",
                 status.coordinator_state,
                 self.last_coordinator_state or "INIT", duration,
-                status.reason, self.entry_owner, self.exit_owner,
+                status.reason, self.landing_owner,
                 sorted(self.phase_held), self.task_started,
                 "INHIBIT_NEW_PERMISSIONS"
                 if status.coordinator_state == "SAFETY_INHIBIT"
@@ -478,6 +877,47 @@ class SwarmManager:
             self.last_coordinator_reason = status.reason
             self.condition_started = now
         self.status_pub.publish(status)
+        formation = {
+            "roles": {"leader_uav_id": self.leader_uav_id,
+                      "middle_uav_id": self.middle_uav_id,
+                      "trailing_uav_id": self.trailing_uav_id},
+            "entry_ready": self.entry_ready_reasons,
+            "entry_corridor_nominal_angles_deg": dict(zip(
+                self.uav_ids, self.phases)),
+            "entry_corridor_selection": self.entry_corridor_selection,
+            "entry_corridor_selection_reason": (
+                self.entry_corridor_selection_reason),
+            "entry_corridor_diagnostics": self.entry_corridor_diagnostics,
+            "move_to_orbit_staging": self.orbit_staging_started,
+            "move_to_orbit_staging_time": (
+                None if self.orbit_staging_start_time is None
+                else self.orbit_staging_start_time.to_sec()),
+            "orbit_staging_ready": self.orbit_staging_ready_reasons,
+            "orbit_released": {
+                str(uid): uid in self.orbit_released
+                for uid in self.uav_ids},
+            "orbit_release_times": {
+                str(uid): stamp.to_sec()
+                for uid, stamp in self.orbit_release_times.items()},
+            "formation_orbit_active": self.formation_orbit_active,
+            "formation_orbit_active_time": (
+                None if self.orbit_start_time is None
+                else self.orbit_start_time.to_sec()),
+            # Compatibility keys retained for existing evidence readers.
+            "orbit_start": self.orbit_started,
+            "orbit_start_time": (
+                None if self.orbit_start_time is None
+                else self.orbit_start_time.to_sec()),
+            "release_diagnostics": self.release_diagnostics,
+            "phase_gaps_deg": self.phase_gaps,
+            "phase_bands": self.phase_bands,
+            "phase_held_uavs": sorted(self.phase_held),
+            "speed_scales": self.speed_scales,
+            "speed_scale_targets": self.speed_scale_targets,
+            "landing_owner": self.landing_owner,
+        }
+        self.formation_status_pub.publish(String(
+            data=json.dumps(formation, sort_keys=True)))
 
 
 if __name__ == "__main__":

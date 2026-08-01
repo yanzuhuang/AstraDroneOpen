@@ -74,17 +74,22 @@ low_altitude:
 
 entry_gate:
   # Existing map convention: 1=+X, 2=NE, 3=+Y, 4=NW, 5=-X, 6=SW,
-  # 7=-Y, 8=SE. Keep the gate on the unchanged 15 m safety radius.
+  # 7=-Y, 8=SE. Stage 5 jointly selects a latched safe point within each
+  # vehicle's nominal sector; these bounds are hard and are not fallbacks to a
+  # different sector.
   entry_sector: 8
   preferred_radius: 15.0
   minimum_radius: 15.0
-  maximum_radius: 15.0
-  angular_sample_step_deg: 7.5
-  radial_sample_step: 1.0
+  maximum_radius: 16.0
+  angular_search_half_width_deg: 7.5
+  angular_sample_step_deg: 2.5
+  radial_sample_step: 0.25
+  pre_entry_maximum_radius: 19.5
+  pre_entry_radial_sample_step: 0.25
   maximum_horizontal_distance: 60.0
-  # Keep the existing 1.0 m task endpoint criterion. The low-altitude EGO map
-  # independently uses a 0.4 m hard vehicle envelope; the validated
-  # high-altitude candidate clearance remains unchanged in stage3_ego.yaml.
+  # 1.0 m applies to raw/uninflated cloud and coarse geometry. The subscribed
+  # EGO map is already inflated, so task-side map checks use the separate
+  # 0.5 m margin below.
   minimum_clearance: 1.0
   cloud_inflation: 0.4
   # The subscribed map is already EGO-inflated. Use only the same 0.5 m
@@ -136,12 +141,9 @@ coverage:
   sensor_max_elevation_deg: 52.2
 
 candidate:
-  # Reuse the validated high-altitude/swarm same-sector selection rule. The
-  # nominal point is preferred while it is clear; an occupied/unreachable
-  # endpoint may move only inside the configured angular/radial sector.
-  # Height remains fixed at the active layer and no path-intermediate goals
-  # are generated.
-  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -15.0, 15.0, -20.0, 20.0]
+  # The same candidate grid is used for the first orbit point and every
+  # numbered sector. Low-altitude height remains fixed at the active layer.
+  angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0]
   radius_offsets_m: [0.0, 2.0, 4.0]
   height_offsets_m: [0.0]
   minimum_clearance: 1.0
@@ -157,7 +159,9 @@ candidate:
   score_distance_weight: 0.1
   score_continuity_weight: 0.2
   known_obstacle_is_hard_constraint: true
-  known_obstacle_corridor_is_hard_constraint: true
+  # A blocked straight chord is a scoring risk; EGO/task corridor planning
+  # owns the local detour. Endpoint keep-out remains hard.
+  known_obstacle_corridor_is_hard_constraint: false
   unknown_is_hard_constraint: false
 
 recovery:

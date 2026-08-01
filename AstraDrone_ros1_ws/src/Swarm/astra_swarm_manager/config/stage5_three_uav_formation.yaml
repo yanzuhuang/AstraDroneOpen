@@ -1,0 +1,28 @@
+# Stage 5 equal-height role-bound tower formation policy.
+formation_role_order: [3, 2, 1]
+orbit_direction: 1
+mission_heights: [3.0, 3.0, 3.0]
+takeoff_heights: [3.0, 3.0, 3.0]
+phase_degrees: [292.5, 315.0, 337.5]
+orbit_radius: 12.5
+entry_gate_radius: 15.0
+target_phase_deg: 67.5
+normal_phase_min_deg: 57.5
+normal_phase_max_deg: 77.5
+warning_phase_min_deg: 45.0
+emergency_phase_deg: 45.0
+leader_wait_phase_deg: 95.0
+minimum_warning_speed_scale: 0.35
+speed_scale_rise_rate: 0.15
+speed_scale_fall_rate: 1.5
+entry_height_tolerance: 0.35
+entry_maximum_speed: 0.20
+entry_ready_timeout: 360.0
+entry_nominal_speed: 0.20
+orbit_nominal_speed: 0.14
+release_phase_min_deg: 65.0
+release_phase_max_deg: 70.0
+release_minimum_forward_speed: 0.03
+minimum_3d_separation: 3.0
+map_additional_clearance: 0.5
+optimizer_swarm_clearance: 1.5

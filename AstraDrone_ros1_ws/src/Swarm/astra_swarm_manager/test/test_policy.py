@@ -6,17 +6,28 @@ from astra_swarm_manager.policy import (
     advance_entry_owner,
     angular_separation_degrees,
     corridor_clear,
+    directed_phase_gap_degrees,
+    entry_ready_barrier,
     eligible_entry_ids,
     entry_candidate_allowed,
     entry_owner_orbit_established,
     fixed_layers_clear,
+    formation_phase_decision,
+    formation_speed_scale_targets,
+    joint_entry_corridor_selection,
     landing_permissions,
     mission_geometry_clear,
+    normalize_degrees,
+    orbit_staging_ready_barrier,
     orbit_phase_hold_ids,
     orbit_release_allowed,
+    predicted_pair_clear,
+    role_chain_hold_ids,
     rotate_xy_about_center,
     scheduled_takeoff_allowed,
+    sequential_orbit_release_allowed,
     serialized_landing_permissions,
+    slew_speed_scale,
     task_start_barrier_ready,
     transition_permissions,
     uav2_takeoff_allowed,
@@ -45,6 +56,226 @@ class PolicyTest(unittest.TestCase):
             waiting, [(-10.0, 5.0)], center, 120.0, 15.0))
         self.assertTrue(orbit_release_allowed(
             waiting, [], center, 120.0, 15.0))
+
+    def test_stage5_gate_angles_and_equal_height_geometry(self):
+        self.assertEqual(normalize_degrees(315.0 + 22.5), 337.5)
+        self.assertEqual(normalize_degrees(315.0 - 22.5), 292.5)
+        self.assertTrue(mission_geometry_clear(
+            [3.0, 3.0, 3.0], [292.5, 315.0, 337.5],
+            12.5, 3.0, 1.5))
+
+    def test_joint_entry_corridor_selects_ordered_max_clearance_set(self):
+        center = (-10.0551, 19.7104)
+
+        def candidate(uid, angle, clearance, suffix):
+            def radial(radius):
+                radians = math.radians(angle)
+                return (center[0] + radius * math.cos(radians),
+                        center[1] + radius * math.sin(radians), 3.0)
+            return {
+                "id": "U{}_{}".format(uid, suffix),
+                "angle_deg": angle,
+                "pre_radius": 18.0,
+                "entry_radius": 15.0,
+                "clearance": clearance,
+                "pre": radial(18.0),
+                "entry": radial(15.0),
+                "staging": radial(12.5),
+            }
+
+        candidates = {
+            3: [candidate(3, 337.5, 1.21, "nominal"),
+                candidate(3, 340.0, 1.30, "shift")],
+            2: [candidate(2, 315.0, 1.22, "nominal"),
+                candidate(2, 317.5, 1.30, "shift")],
+            1: [candidate(1, 292.5, 1.23, "nominal"),
+                candidate(1, 295.0, 1.30, "shift")],
+        }
+        selected, reason, diagnostics = joint_entry_corridor_selection(
+            candidates, [3, 2, 1], {1: 292.5, 2: 315.0, 3: 337.5},
+            center, {1: (0.0, 0.0, 3.0), 2: (4.0, 0.0, 3.0),
+                     3: (8.0, 0.0, 3.0)},
+            1, 20.0, 30.0, 1.0, 3.0, 1.5)
+        self.assertEqual(reason, "OK")
+        self.assertEqual(
+            [selected[uid]["id"] for uid in (3, 2, 1)],
+            ["U3_shift", "U2_shift", "U1_shift"])
+        self.assertAlmostEqual(diagnostics["minimum_clearance"], 1.30)
+        self.assertEqual(diagnostics["gaps"], [22.5, 22.5])
+
+    def test_joint_entry_corridor_rejects_broken_role_order(self):
+        center = (0.0, 0.0)
+        candidates = {}
+        for uid, angle in ((3, 337.5), (2, 305.0), (1, 292.5)):
+            radial = lambda radius, a=angle: (
+                radius * math.cos(math.radians(a)),
+                radius * math.sin(math.radians(a)), 3.0)
+            candidates[uid] = [{
+                "id": str(uid), "angle_deg": angle,
+                "pre_radius": 18.0, "entry_radius": 15.0,
+                "clearance": 1.3, "pre": radial(18.0),
+                "entry": radial(15.0), "staging": radial(12.5)}]
+        selected, reason, diagnostics = joint_entry_corridor_selection(
+            candidates, [3, 2, 1], {1: 292.5, 2: 315.0, 3: 337.5},
+            center, {1: (-20.0, -20.0, 3.0),
+                     2: (0.0, -20.0, 3.0),
+                     3: (20.0, -20.0, 3.0)}, 1)
+        self.assertEqual(selected, {})
+        self.assertEqual(reason, "NO_JOINT_SAFE_COMBINATION")
+        self.assertGreater(diagnostics["role_rejected"], 0)
+
+    def test_inflated_map_margin_accepts_sub_one_metre_raw_distance(self):
+        center = (-10.0551, 19.7104)
+
+        def candidate(uid, angle):
+            def radial(radius):
+                radians = math.radians(angle)
+                return (center[0] + radius * math.cos(radians),
+                        center[1] + radius * math.sin(radians), 3.0)
+            return {
+                "id": "U{}_0.945260".format(uid),
+                "angle_deg": angle,
+                "pre_radius": 18.0,
+                "entry_radius": 15.0,
+                "clearance": 0.945260,
+                "pre": radial(18.0),
+                "entry": radial(15.0),
+                "staging": radial(12.5),
+            }
+
+        candidates = {
+            3: [candidate(3, 337.5)],
+            2: [candidate(2, 315.0)],
+            1: [candidate(1, 292.5)],
+        }
+        selected, reason, _ = joint_entry_corridor_selection(
+            candidates, [3, 2, 1], {1: 292.5, 2: 315.0, 3: 337.5},
+            center, {1: (0.0, 0.0, 3.0), 2: (4.0, 0.0, 3.0),
+                     3: (8.0, 0.0, 3.0)}, 1)
+        self.assertEqual(reason, "OK")
+        self.assertEqual(set(selected), {1, 2, 3})
+
+    def test_orbit_staging_barrier_accepts_supervised_position_latch(self):
+        def state(uid):
+            return SimpleNamespace(
+                mission_phase="ORBIT_STAGING_READY", current_height=3.0,
+                flight_state="HOLD",
+                velocity=SimpleNamespace(x=0.02 * uid, y=0.0, z=0.0))
+        states = {uid: state(uid) for uid in (1, 2, 3)}
+        ready, reasons = orbit_staging_ready_barrier(
+            [1, 2, 3], states, {1: True, 2: True, 3: True},
+            [3.0, 3.0, 3.0], 0.35, 0.2, True)
+        self.assertTrue(ready)
+        self.assertEqual(reasons, {1: "READY", 2: "READY", 3: "READY"})
+
+    def test_sequential_release_requires_phase_forward_motion_and_clearance(self):
+        center = (0.0, 0.0)
+        follower = self.point(337.5, center=center)
+        leader = self.point(45.0, center=center)
+        angle = math.radians(45.0)
+        leader_velocity = (-0.10 * math.sin(angle),
+                           0.10 * math.cos(angle))
+        prediction1 = [(leader[0], leader[1], 3.0)] * 4
+        prediction2 = [(follower[0], follower[1], 3.0)] * 4
+        clear = predicted_pair_clear(
+            (leader[0], leader[1], 3.0),
+            (follower[0], follower[1], 3.0),
+            prediction1, prediction2, 3.0, 1.5)
+        allowed, phase, speed, conditions = sequential_orbit_release_allowed(
+            follower, leader, leader_velocity, center, 1,
+            65.0, 70.0, 0.03, True, True, clear, True)
+        self.assertTrue(allowed)
+        self.assertAlmostEqual(phase, 67.5)
+        self.assertAlmostEqual(speed, 0.10)
+        self.assertTrue(all(conditions.values()))
+
+        allowed, _, speed, conditions = sequential_orbit_release_allowed(
+            follower, leader, (-leader_velocity[0], -leader_velocity[1]),
+            center, 1, 65.0, 70.0, 0.03, True, True, clear, True)
+        self.assertFalse(allowed)
+        self.assertLess(speed, 0.0)
+        self.assertFalse(conditions["leader_forward_stable"])
+
+    def test_role_bound_phase_never_infers_uav1_as_leader(self):
+        positions = {
+            3: self.point(22.5),
+            2: self.point(315.0),
+            1: self.point(247.5),
+        }
+        holds, gaps, bands, reason = formation_phase_decision(
+            positions, (-10.0, 20.0), [3, 2, 1], 1,
+            57.5, 77.5, 45.0, 45.0, 95.0)
+        self.assertEqual(reason, "OK")
+        self.assertEqual(holds, set())
+        self.assertAlmostEqual(gaps["3-2"], 67.5)
+        self.assertAlmostEqual(gaps["2-1"], 67.5)
+        self.assertEqual(bands, {"3-2": "NORMAL", "2-1": "NORMAL"})
+        self.assertAlmostEqual(directed_phase_gap_degrees(
+            positions[2], positions[3], (-10.0, 20.0), 1), 67.5)
+
+    def test_warning_phase_generates_smooth_follower_scale(self):
+        scales, reason = formation_speed_scale_targets(
+            [3, 2, 1], {"3-2": 50.0, "2-1": 67.5}, set(),
+            45.0, 57.5, 0.35)
+        self.assertEqual(reason, "OK")
+        self.assertAlmostEqual(scales[3], 1.0)
+        self.assertGreater(scales[2], 0.35)
+        self.assertLess(scales[2], 1.0)
+        self.assertAlmostEqual(scales[1], 1.0)
+
+    def test_phase_hold_overrides_speed_scale(self):
+        scales, reason = formation_speed_scale_targets(
+            [3, 2, 1], {"3-2": 67.5, "2-1": 67.5}, {2, 1},
+            45.0, 57.5, 0.35)
+        self.assertEqual(reason, "OK")
+        self.assertEqual(scales, {3: 1.0, 2: 0.0, 1: 0.0})
+
+    def test_speed_scale_recovery_is_rate_limited(self):
+        self.assertAlmostEqual(
+            slew_speed_scale(0.35, 1.0, 0.1, 0.2, 1.5), 0.37)
+        self.assertAlmostEqual(
+            slew_speed_scale(1.0, 0.0, 0.1, 0.2, 1.5), 0.85)
+
+    def test_role_bound_emergency_hold_propagates_backward(self):
+        positions = {
+            3: self.point(20.0),
+            2: self.point(340.0),  # only 40 deg behind UAV3
+            1: self.point(270.0),
+        }
+        holds, gaps, bands, reason = formation_phase_decision(
+            positions, (-10.0, 20.0), [3, 2, 1], 1,
+            57.5, 77.5, 45.0, 45.0, 95.0)
+        self.assertEqual(reason, "OK")
+        self.assertAlmostEqual(gaps["3-2"], 40.0)
+        self.assertEqual(bands["3-2"], "EMERGENCY")
+        self.assertEqual(holds, {2, 1})
+
+    def test_direct_hold_propagates_only_downstream_by_fixed_role(self):
+        self.assertEqual(role_chain_hold_ids([3, 2, 1], 3), {2, 1})
+        self.assertEqual(role_chain_hold_ids([3, 2, 1], 2), {1})
+        self.assertEqual(role_chain_hold_ids([3, 2, 1], 1), set())
+        self.assertEqual(role_chain_hold_ids([3, 2, 1], 99), set())
+
+    def test_entry_ready_barrier_reports_late_vehicle(self):
+        def state(phase, height=3.0, speed=0.0):
+            return SimpleNamespace(
+                mission_phase=phase, current_height=height,
+                flight_state="HOVER_READY",
+                velocity=SimpleNamespace(x=speed, y=0.0, z=0.0))
+        states = {1: state("ENTRY_READY"), 2: state("ENTRY_READY"),
+                  3: state("ENTRY_GATE_TRANSIT")}
+        ready, reasons = entry_ready_barrier(
+            [1, 2, 3], states, {1: True, 2: True, 3: True},
+            3.0, 0.35, 0.2, True)
+        self.assertFalse(ready)
+        self.assertEqual(reasons[1], "READY")
+        self.assertEqual(reasons[3],
+                         "NOT_AT_ENTRY_GATE:ENTRY_GATE_TRANSIT")
+        states[3] = state("ENTRY_READY")
+        ready, reasons = entry_ready_barrier(
+            [1, 2, 3], states, {1: True, 2: True, 3: True},
+            3.0, 0.35, 0.2, True)
+        self.assertTrue(ready)
 
     def test_projects_peer_angle_for_entry_eta(self):
         projected = rotate_xy_about_center(

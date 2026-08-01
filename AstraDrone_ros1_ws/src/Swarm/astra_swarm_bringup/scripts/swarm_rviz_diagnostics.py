@@ -2,6 +2,7 @@
 """Three-UAV RViz paths, mission annotations, and topic diagnostics."""
 
 import copy
+import json
 import math
 
 import rospy
@@ -29,14 +30,22 @@ class SwarmRvizDiagnostics:
         self.radius = float(rospy.get_param("~orbit_radius", 12.5))
         self.entry_radius = float(rospy.get_param("~entry_gate_radius", 15.0))
         self.heights = [float(value) for value in rospy.get_param(
-            "~mission_heights", [2.0, 3.0, 4.0])]
-        self.entry_sectors = [int(value) for value in rospy.get_param(
-            "~entry_sectors", [7, 2, 1])]
+            "~mission_heights", [3.0, 3.0, 3.0])]
+        self.entry_angles = [float(value) for value in rospy.get_param(
+            "~entry_angles_deg", [292.5, 315.0, 337.5])]
+        self.pre_entry_radius = float(rospy.get_param(
+            "~pre_entry_radius", 18.0))
+        self.homes = rospy.get_param(
+            "~home_positions", [[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]])
+        self.role_order = [int(value) for value in rospy.get_param(
+            "~formation_role_order", [3, 2, 1])]
         self.maximum_path_points = int(rospy.get_param(
             "~maximum_path_points", 12000))
         if not (len(self.uav_ids) == len(self.heights) ==
-                len(self.entry_sectors)):
+                len(self.entry_angles) == len(self.homes)):
             raise rospy.ROSException("RViz per-UAV arrays mismatch")
+        if set(self.role_order) != set(self.uav_ids):
+            raise rospy.ROSException("RViz formation roles mismatch")
 
         self.paths = {uid: Path() for uid in self.uav_ids}
         self.states = {}
@@ -47,6 +56,11 @@ class SwarmRvizDiagnostics:
         self.last_safety = "CLEAR_NOT_CONFIRMED"
         self.coordinator = "INIT"
         self.coordinator_reason = "waiting for coordinator"
+        self.formation = {}
+        self.orbit_angles = {uid: None for uid in self.uav_ids}
+        self.accumulated = {uid: 0.0 for uid in self.uav_ids}
+        self.sector_masks = {uid: 0 for uid in self.uav_ids}
+        self.orbit_released = {uid: False for uid in self.uav_ids}
         self.path_pubs = {}
 
         for uid in self.uav_ids:
@@ -78,6 +92,9 @@ class SwarmRvizDiagnostics:
         rospy.Subscriber(
             "/swarm/coordinator/status", CoordinationStatus,
             self.coordinator_cb, queue_size=5)
+        rospy.Subscriber(
+            "/swarm/formation/status", String,
+            self.formation_cb, queue_size=5)
         self.static_pub = rospy.Publisher(
             "/swarm/rviz/mission_markers", MarkerArray,
             queue_size=1, latch=True)
@@ -116,6 +133,24 @@ class SwarmRvizDiagnostics:
 
     def state_cb(self, uid, msg):
         self.states[uid] = msg
+        if not self.orbit_released[uid]:
+            return
+        if msg.mission_phase not in {
+                "TARGET_LOCKED", "NAVIGATING", "EVALUATING", "RELOCATING",
+                "RECOVERING", "HOLDING"}:
+            return
+        angle = math.atan2(
+            msg.pose.position.y - self.tower[1],
+            msg.pose.position.x - self.tower[0])
+        previous = self.orbit_angles[uid]
+        if previous is not None:
+            delta = (angle - previous + math.pi) % (2.0 * math.pi) - math.pi
+            if delta > 0.0:
+                self.accumulated[uid] += delta
+        self.orbit_angles[uid] = angle
+        degrees = math.degrees(angle) % 360.0
+        sector = int(math.floor((degrees + 22.5) / 45.0)) % 8
+        self.sector_masks[uid] |= 1 << sector
 
     def mission_cb(self, uid, msg):
         self.mission_states[uid] = msg.data
@@ -136,6 +171,16 @@ class SwarmRvizDiagnostics:
     def coordinator_cb(self, msg):
         self.coordinator = msg.coordinator_state
         self.coordinator_reason = msg.reason
+
+    def formation_cb(self, msg):
+        try:
+            self.formation = json.loads(msg.data)
+            released = self.formation.get("orbit_released", {})
+            for uid in self.uav_ids:
+                self.orbit_released[uid] = bool(
+                    released.get(str(uid), released.get(uid, False)))
+        except (TypeError, ValueError):
+            self.formation = {"decode_error": msg.data}
 
     @staticmethod
     def color(marker, uid, alpha=1.0):
@@ -199,10 +244,18 @@ class SwarmRvizDiagnostics:
             markers.markers.append(label)
 
         for index, uid in enumerate(self.uav_ids):
-            angle = math.radians((self.entry_sectors[index] - 1) * 45.0)
+            angle = math.radians(self.entry_angles[index] % 360.0)
+            first = Point()
+            first.x = self.tower[0] + self.radius * math.cos(angle)
+            first.y = self.tower[1] + self.radius * math.sin(angle)
+            first.z = self.heights[index]
+            pre_entry = Point()
+            pre_entry.x = self.tower[0] + self.pre_entry_radius * math.cos(angle)
+            pre_entry.y = self.tower[1] + self.pre_entry_radius * math.sin(angle)
+            pre_entry.z = self.heights[index]
             gate = Marker()
             gate.header = ring.header
-            gate.ns = "entry_exit_gates"
+            gate.ns = "entry_gates"
             gate.id = uid
             gate.type = Marker.CUBE
             gate.action = Marker.ADD
@@ -215,6 +268,53 @@ class SwarmRvizDiagnostics:
             gate.scale.x = gate.scale.y = gate.scale.z = 0.45
             self.color(gate, uid)
             markers.markers.append(gate)
+            exit_gate = copy.deepcopy(gate)
+            exit_gate.ns = "exit_gates"
+            exit_gate.id = uid
+            exit_gate.type = Marker.CYLINDER
+            exit_gate.pose.position.z -= 0.45
+            exit_gate.scale.x = exit_gate.scale.y = 0.60
+            exit_gate.scale.z = 0.16
+            self.color(exit_gate, uid, 0.75)
+            markers.markers.append(exit_gate)
+            pre = Marker()
+            pre.header = ring.header
+            pre.ns = "pre_entry_gates"
+            pre.id = uid
+            pre.type = Marker.SPHERE
+            pre.action = Marker.ADD
+            pre.pose.position = pre_entry
+            pre.pose.orientation.w = 1.0
+            pre.scale.x = pre.scale.y = pre.scale.z = 0.35
+            self.color(pre, uid, 0.8)
+            markers.markers.append(pre)
+            first_marker = Marker()
+            first_marker.header = ring.header
+            first_marker.ns = "first_orbit_targets"
+            first_marker.id = uid
+            first_marker.type = Marker.SPHERE
+            first_marker.action = Marker.ADD
+            first_marker.pose.position = first
+            first_marker.pose.orientation.w = 1.0
+            first_marker.scale.x = first_marker.scale.y = first_marker.scale.z = 0.38
+            self.color(first_marker, uid)
+            markers.markers.append(first_marker)
+            corridor = Marker()
+            corridor.header = ring.header
+            corridor.ns = "pre_entry_corridors"
+            corridor.id = uid
+            corridor.type = Marker.LINE_STRIP
+            corridor.action = Marker.ADD
+            corridor.pose.orientation.w = 1.0
+            corridor.scale.x = 0.08
+            self.color(corridor, uid, 0.75)
+            home = Point()
+            home.x = float(self.homes[index][0])
+            home.y = float(self.homes[index][1])
+            home.z = self.heights[index]
+            corridor.points = [home, pre_entry, copy.deepcopy(gate.pose.position),
+                               first]
+            markers.markers.append(corridor)
             label = Marker()
             label.header = ring.header
             label.ns = "entry_exit_gate_labels"
@@ -225,7 +325,11 @@ class SwarmRvizDiagnostics:
             label.pose.position.z += 0.65
             label.scale.z = 0.45
             self.color(label, uid)
-            label.text = "UAV{} ENTRY_GATE / EXIT_GATE".format(uid)
+            role = ("LEADER" if uid == self.role_order[0] else
+                    "TRAILING" if uid == self.role_order[-1] else "MIDDLE")
+            label.text = (
+                "UAV{} {} PRE/ENTRY/FIRST/EXIT {:.1f}deg"
+                .format(uid, role, self.entry_angles[index] % 360.0))
             markers.markers.append(label)
         self.static_pub.publish(markers)
 
@@ -255,10 +359,18 @@ class SwarmRvizDiagnostics:
                     planner.planner_state,
                     planner.consecutive_plan_failures,
                     planner.failure_reason or "NONE")
+            role = ("LEADER" if uid == self.role_order[0] else
+                    "TRAILING" if uid == self.role_order[-1] else "MIDDLE")
             marker.text = (
-                "UAV{} task={} sector={} bridge={}\n"
-                "safety={} planner={}").format(
-                    uid, self.mission_states[uid], self.sectors[uid],
+                "UAV{} {} task={} sector={} mask=0x{:02X}\n"
+                "released={} orbit={:.1f}deg speed_scale={} "
+                "bridge={} safety={} planner={}").format(
+                    uid, role, self.mission_states[uid], self.sectors[uid],
+                    self.sector_masks[uid],
+                    self.orbit_released[uid],
+                    math.degrees(self.accumulated[uid]),
+                    self.formation.get("speed_scales", {}).get(str(uid),
+                                                               "pending"),
                     self.bridge_states[uid], self.last_safety, planner_text)
             markers.markers.append(marker)
         coordinator = Marker()
@@ -275,8 +387,9 @@ class SwarmRvizDiagnostics:
         coordinator.scale.z = 0.55
         coordinator.color.r = coordinator.color.g = coordinator.color.b = 1.0
         coordinator.color.a = 1.0
-        coordinator.text = "{}\n{}".format(
-            self.coordinator, self.coordinator_reason)
+        coordinator.text = "UAV3 -> UAV2 -> UAV1\n{}\n{}\n{}".format(
+            self.coordinator, self.coordinator_reason,
+            json.dumps(self.formation, sort_keys=True))
         markers.markers.append(coordinator)
         self.status_pub.publish(markers)
 
