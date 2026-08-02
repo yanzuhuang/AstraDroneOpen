@@ -200,6 +200,7 @@ class SwarmManager:
         self.entry_corridor_generation_key = None
         self.entry_corridor_selection_reason = "WAITING_FOR_CANDIDATES"
         self.entry_corridor_diagnostics = {}
+        self.entry_corridor_audit = {}
         # Compatibility summary: true only when all three individual releases
         # have occurred.  Per-UAV release times are authoritative.
         self.orbit_started = False
@@ -255,6 +256,9 @@ class SwarmManager:
                 "/uav{}/swarm/entry_corridor_selection".format(uid), String,
                 queue_size=1, latch=True)
             for uid in self.uav_ids}
+        self.entry_corridor_audit_pub = rospy.Publisher(
+            "/swarm/entry_corridor_audit", String,
+            queue_size=1, latch=True)
         rospy.Timer(rospy.Duration(0.1), self.timer_cb)
 
     def state_cb(self, uid, msg):
@@ -387,9 +391,21 @@ class SwarmManager:
                     continue
             else:
                 values[kind] = point
-            grouped[corridor_id]["clearance"] = min(
-                float(item.clearance),
-                grouped[corridor_id].get("clearance", float("inf")))
+            if kind == "ORBIT_STAGING":
+                values["endpoint_clearance"] = float(item.clearance)
+                values["endpoint_valid"] = bool(item.accepted)
+                ego_marker = "EGO_STATUS="
+                if ego_marker in item.rejection_reason:
+                    values["ego_status"] = item.rejection_reason.split(
+                        ego_marker, 1)[1].split(";", 1)[0]
+                else:
+                    values["ego_status"] = "NOT_PRECHECKED"
+            else:
+                values["path_clearance"] = min(
+                    float(item.clearance),
+                    values.get("path_clearance", float("inf")))
+                values["path_valid"] = (
+                    values.get("path_valid", True) and bool(item.accepted))
         candidates = []
         for corridor_id, values in grouped.items():
             if not all(key in values for key in (
@@ -398,9 +414,25 @@ class SwarmManager:
             staging = values["ORBIT_STAGING"]
             pre = values["PRE_ENTRY"]
             entry = values["ENTRY_GATE"]
+            path = [point for _, point in sorted(
+                values.get("PATH", {}).items())]
+            if not path:
+                path = [
+                    (self.states[uid].pose.position.x,
+                     self.states[uid].pose.position.y,
+                     self.states[uid].pose.position.z),
+                    pre, entry, staging]
             angle = math.degrees(math.atan2(
                 staging[1] - self.tower_center[1],
                 staging[0] - self.tower_center[0])) % 360.0
+            staging_radius = math.hypot(
+                staging[0] - self.tower_center[0],
+                staging[1] - self.tower_center[1])
+            radius_tier = int(round((staging_radius - self.orbit_radius) / 2.0))
+            ingress_length = sum(
+                math.sqrt(sum((path[index][axis] - path[index - 1][axis]) ** 2
+                              for axis in range(3)))
+                for index in range(1, len(path)))
             candidates.append({
                 "id": corridor_id,
                 "angle_deg": angle,
@@ -410,12 +442,21 @@ class SwarmManager:
                 "entry_radius": math.hypot(
                     entry[0] - self.tower_center[0],
                     entry[1] - self.tower_center[1]),
-                "clearance": values["clearance"],
+                "orbit_staging_radius": staging_radius,
+                "radius_tier": radius_tier,
+                "endpoint_clearance": values.get(
+                    "endpoint_clearance", float("nan")),
+                "endpoint_valid": values.get("endpoint_valid", False),
+                "path_valid": values.get("path_valid", False),
+                "ego_status": values.get("ego_status", "NOT_PRECHECKED"),
+                "ego_candidate_valid": values.get("ego_status")
+                != "PLANNER_UNREACHABLE",
+                "clearance": values.get("path_clearance", -1.0),
                 "pre": pre,
                 "entry": entry,
                 "staging": staging,
-                "path": [point for _, point in sorted(
-                    values.get("PATH", {}).items())],
+                "path": path,
+                "ingress_length": ingress_length,
             })
         return candidates
 
@@ -461,10 +502,42 @@ class SwarmManager:
             candidates, self.role_order, nominal_angles, self.tower_center,
             starts, self.direction, 20.0, 30.0,
             self.map_additional_clearance,
-            self.minimum_3d, self.clearance)
+            self.minimum_3d, self.clearance,
+            nominal_orbit_radius=self.orbit_radius)
         self.entry_corridor_generation_key = generation_key
         self.entry_corridor_selection_reason = reason
-        self.entry_corridor_diagnostics = diagnostics
+        candidate_outcomes = diagnostics.get("candidate_outcomes", {})
+        self.entry_corridor_diagnostics = {
+            key: value for key, value in diagnostics.items()
+            if key != "candidate_outcomes"}
+        self.entry_corridor_audit = {
+            "stamp": now.to_sec(),
+            "generations": generation_key,
+            "reason": reason,
+            "selected_tier": diagnostics.get("selected_tier"),
+            "tier_contract": diagnostics.get("tier_contract", {}),
+            "tiers": diagnostics.get("tiers", {}),
+            "selected_rank": diagnostics.get("selected_rank"),
+            "candidate_outcomes": candidate_outcomes,
+        }
+        self.entry_corridor_audit_pub.publish(String(
+            data=json.dumps(self.entry_corridor_audit, sort_keys=True)))
+        for tier, tier_result in sorted(
+                diagnostics.get("tiers", {}).items(), key=lambda item: int(item[0])):
+            rospy.logwarn(
+                "[SWARM_ENTRY_TIER] tier=%s result=%s candidates=%s "
+                "evaluated=%d valid=%d local=%d role=%d crossing=%d "
+                "predicted=%d%s",
+                tier, tier_result.get("result", "UNKNOWN"),
+                tier_result.get("candidate_counts", {}),
+                tier_result.get("evaluated", 0),
+                tier_result.get("valid_combinations", 0),
+                tier_result.get("local_hard_rejected", 0),
+                tier_result.get("role_rejected", 0),
+                tier_result.get("crossing_rejected", 0),
+                tier_result.get("conflict_rejected", 0),
+                "; entering next tier" if tier_result.get("result")
+                != "SELECTED" else "; tier selected after full exhaustion")
         if not selected:
             rospy.logerr_throttle(
                 2.0,
@@ -472,7 +545,7 @@ class SwarmManager:
                 "candidate_counts=%s reason=%s diagnostics=%s",
                 generation_key,
                 {uid: len(values) for uid, values in candidates.items()},
-                reason, diagnostics)
+                reason, self.entry_corridor_diagnostics)
             return False
         self.entry_corridor_selection = selected
         for uid, candidate in selected.items():
@@ -486,10 +559,12 @@ class SwarmManager:
                    "angle_deg": value["angle_deg"],
                    "pre_radius": value["pre_radius"],
                    "entry_radius": value["entry_radius"],
+                   "orbit_staging_radius": value["orbit_staging_radius"],
+                   "radius_tier": value["radius_tier"],
                    "clearance": value["clearance"],
                    "pre": value["pre"], "entry": value["entry"],
                    "staging": value["staging"]}
-             for uid, value in selected.items()}, diagnostics)
+             for uid, value in selected.items()}, self.entry_corridor_diagnostics)
         return True
 
     def timer_cb(self, _event):

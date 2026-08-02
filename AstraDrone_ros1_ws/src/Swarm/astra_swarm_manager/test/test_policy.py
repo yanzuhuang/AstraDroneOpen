@@ -64,7 +64,7 @@ class PolicyTest(unittest.TestCase):
             [3.0, 3.0, 3.0], [292.5, 315.0, 337.5],
             12.5, 3.0, 1.5))
 
-    def test_joint_entry_corridor_selects_ordered_max_clearance_set(self):
+    def test_joint_entry_corridor_tier0_beats_clearer_angle_adjustment(self):
         center = (-10.0551, 19.7104)
 
         def candidate(uid, angle, clearance, suffix):
@@ -96,12 +96,109 @@ class PolicyTest(unittest.TestCase):
             center, {1: (0.0, 0.0, 3.0), 2: (4.0, 0.0, 3.0),
                      3: (8.0, 0.0, 3.0)},
             1, 20.0, 30.0, 1.0, 3.0, 1.5)
-        self.assertEqual(reason, "OK")
+        self.assertEqual(reason, "OK_TIER_0")
         self.assertEqual(
             [selected[uid]["id"] for uid in (3, 2, 1)],
-            ["U3_shift", "U2_shift", "U1_shift"])
-        self.assertAlmostEqual(diagnostics["minimum_clearance"], 1.30)
+            ["U3_nominal", "U2_nominal", "U1_nominal"])
+        self.assertAlmostEqual(diagnostics["minimum_clearance"], 1.21)
         self.assertEqual(diagnostics["gaps"], [22.5, 22.5])
+        self.assertEqual(diagnostics["selected_tier"], 0)
+        self.assertEqual(
+            diagnostics["candidate_outcomes"]["3"]["U3_shift"]
+            ["final_rejection_reason"],
+            "LOWER_TIER_SUCCEEDED_BEFORE_CANDIDATE_ELIGIBLE")
+
+    def test_joint_entry_corridor_exhausts_adjusted_12_5_before_14_5(self):
+        center = (-10.0551, 19.7104)
+
+        def candidate(uid, angle, radius, clearance, suffix,
+                      endpoint_valid=True):
+            def radial(value):
+                radians = math.radians(angle)
+                return (center[0] + value * math.cos(radians),
+                        center[1] + value * math.sin(radians), 3.0)
+            return {
+                "id": "U{}_{}".format(uid, suffix),
+                "angle_deg": angle,
+                "pre_radius": 18.0,
+                "entry_radius": 15.0,
+                "orbit_staging_radius": radius,
+                "endpoint_clearance": clearance,
+                "endpoint_valid": endpoint_valid,
+                "path_valid": True,
+                "ego_candidate_valid": True,
+                "clearance": clearance,
+                "pre": radial(18.0),
+                "entry": radial(15.0),
+                "staging": radial(radius),
+            }
+
+        candidates = {
+            3: [candidate(3, 337.5, 12.5, 1.0, "nominal"),
+                candidate(3, 349.5, 12.5, 0.8, "adjusted"),
+                candidate(3, 337.5, 14.5, 5.0, "outer")],
+            2: [candidate(2, 315.0, 12.5, 1.0, "nominal"),
+                candidate(2, 327.0, 12.5, 0.8, "adjusted"),
+                candidate(2, 315.0, 14.5, 5.0, "outer")],
+            1: [candidate(1, 292.5, 12.5, 0.1, "nominal",
+                          endpoint_valid=False),
+                candidate(1, 304.5, 12.5, 0.8, "adjusted"),
+                candidate(1, 292.5, 14.5, 5.0, "outer")],
+        }
+        selected, reason, diagnostics = joint_entry_corridor_selection(
+            candidates, [3, 2, 1], {1: 292.5, 2: 315.0, 3: 337.5},
+            center, {1: (0.0, 0.0, 3.0), 2: (4.0, 0.0, 3.0),
+                     3: (8.0, 0.0, 3.0)}, 1)
+        self.assertEqual(reason, "OK_TIER_1")
+        self.assertEqual(diagnostics["selected_tier"], 1)
+        self.assertEqual(
+            [selected[uid]["id"] for uid in (3, 2, 1)],
+            ["U3_adjusted", "U2_adjusted", "U1_adjusted"])
+        self.assertEqual(diagnostics["tiers"]["0"]["result"],
+                         "NO_JOINT_SAFE_COMBINATION")
+        self.assertEqual(diagnostics["tiers"]["1"]["result"], "SELECTED")
+
+    def test_joint_entry_corridor_tier2_precedes_clearer_tier3(self):
+        center = (0.0, 0.0)
+
+        def candidate(uid, angle, radius, clearance, suffix):
+            radians = math.radians(angle)
+            radial = lambda value: (
+                value * math.cos(radians), value * math.sin(radians), 3.0)
+            return {
+                "id": "U{}_{}".format(uid, suffix),
+                "angle_deg": angle,
+                "pre_radius": 18.0,
+                "entry_radius": 15.0,
+                "orbit_staging_radius": radius,
+                "endpoint_valid": True,
+                "path_valid": True,
+                "ego_candidate_valid": True,
+                "clearance": clearance,
+                "pre": radial(18.0), "entry": radial(15.0),
+                "staging": radial(radius),
+            }
+
+        candidates = {}
+        for uid, angle in ((3, 337.5), (2, 315.0), (1, 292.5)):
+            candidates[uid] = [
+                candidate(uid, angle, 12.5, 0.1, "inner"),
+                candidate(uid, angle, 14.5, 0.8, "middle"),
+                candidate(uid, angle, 16.5, 9.0, "outer")]
+        selected, reason, diagnostics = joint_entry_corridor_selection(
+            candidates, [3, 2, 1], {1: 292.5, 2: 315.0, 3: 337.5},
+            center, {
+                uid: (20.0 * math.cos(math.radians(angle)),
+                      20.0 * math.sin(math.radians(angle)), 3.0)
+                for uid, angle in ((3, 337.5), (2, 315.0), (1, 292.5))},
+            1)
+        self.assertEqual(reason, "OK_TIER_2")
+        self.assertEqual(diagnostics["selected_tier"], 2)
+        self.assertEqual(
+            [selected[uid]["id"] for uid in (3, 2, 1)],
+            ["U3_middle", "U2_middle", "U1_middle"])
+        self.assertNotIn("radius_deviation", diagnostics)
+        self.assertIn("ingress_length", diagnostics["selected_rank"])
 
     def test_joint_entry_corridor_rejects_broken_role_order(self):
         center = (0.0, 0.0)
@@ -121,8 +218,8 @@ class PolicyTest(unittest.TestCase):
                      2: (0.0, -20.0, 3.0),
                      3: (20.0, -20.0, 3.0)}, 1)
         self.assertEqual(selected, {})
-        self.assertEqual(reason, "NO_JOINT_SAFE_COMBINATION")
-        self.assertGreater(diagnostics["role_rejected"], 0)
+        self.assertEqual(reason, "NO_JOINT_SAFE_COMBINATION_ALL_TIERS")
+        self.assertGreater(diagnostics["tiers"]["1"]["role_rejected"], 0)
 
     def test_inflated_map_margin_accepts_sub_one_metre_raw_distance(self):
         center = (-10.0551, 19.7104)
@@ -152,7 +249,7 @@ class PolicyTest(unittest.TestCase):
             candidates, [3, 2, 1], {1: 292.5, 2: 315.0, 3: 337.5},
             center, {1: (0.0, 0.0, 3.0), 2: (4.0, 0.0, 3.0),
                      3: (8.0, 0.0, 3.0)}, 1)
-        self.assertEqual(reason, "OK")
+        self.assertEqual(reason, "OK_TIER_0")
         self.assertEqual(set(selected), {1, 2, 3})
 
     def test_orbit_staging_barrier_accepts_supervised_position_latch(self):

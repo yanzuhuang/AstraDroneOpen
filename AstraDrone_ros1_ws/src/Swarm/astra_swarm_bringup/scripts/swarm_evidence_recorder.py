@@ -65,6 +65,7 @@ class EvidenceRecorder:
         self.entry_corridor_nominal_angles = {}
         self.entry_corridor_selection = {}
         self.entry_corridor_diagnostics = {}
+        self.entry_corridor_audit = {}
         self.phase_first_times = {uid: {} for uid in self.ids}
         self.candidate_rejection_observations = {
             uid: {} for uid in self.ids}
@@ -190,7 +191,13 @@ class EvidenceRecorder:
             rospy.Subscriber(
                 "/uav{}/tower_mission/candidate_targets".format(uid),
                 InspectionCandidateArray,
-                lambda msg, u=uid: self.candidate_cb(u, msg), queue_size=20)
+                lambda msg, u=uid: self.candidate_cb(
+                    u, msg, "candidate_targets"), queue_size=20)
+            rospy.Subscriber(
+                "/uav{}/tower_mission/entry_corridor_candidates".format(uid),
+                InspectionCandidateArray,
+                lambda msg, u=uid: self.candidate_cb(
+                    u, msg, "entry_corridor_candidates"), queue_size=20)
             rospy.Subscriber(
                 "/uav{}/swarm/orbit_permission".format(uid), Bool,
                 lambda msg, u=uid: self.orbit_permission.__setitem__(
@@ -208,6 +215,9 @@ class EvidenceRecorder:
         rospy.Subscriber(
             "/swarm/formation/status", String,
             self.formation_cb, queue_size=10)
+        rospy.Subscriber(
+            "/swarm/entry_corridor_audit", String,
+            self.entry_corridor_audit_cb, queue_size=5)
         rospy.Timer(rospy.Duration(0.1), self.timer_cb)
         rospy.on_shutdown(self.finish)
 
@@ -223,8 +233,18 @@ class EvidenceRecorder:
     def extended_cb(self, uid, msg):
         self.extended_landed[uid] = int(msg.landed_state)
 
-    def candidate_cb(self, uid, msg):
+    def write_candidate_record(self, record):
+        with self.candidate_file_lock:
+            if self.candidate_file.closed:
+                return False
+            self.candidate_file.write(
+                json.dumps(record, sort_keys=True) + "\n")
+            self.candidate_file.flush()
+        return True
+
+    def candidate_cb(self, uid, msg, source="candidate_targets"):
         record = {
+            "record_type": source,
             "receive_sim_time": rospy.Time.now().to_sec(),
             "header_stamp": msg.header.stamp.to_sec(),
             "frame_id": msg.header.frame_id,
@@ -247,18 +267,26 @@ class EvidenceRecorder:
         # rospy may dispatch a final queued candidate callback concurrently
         # with the shutdown hook.  Serialize the write and close so a normal
         # SIGINT cannot turn complete evidence into a spurious traceback.
-        with self.candidate_file_lock:
-            if self.candidate_file.closed:
-                return
-            self.candidate_file.write(
-                json.dumps(record, sort_keys=True) + "\n")
-            self.candidate_file.flush()
+        if not self.write_candidate_record(record):
+            return
         counts = self.candidate_rejection_observations[uid]
         for item in msg.candidates:
             if item.accepted:
                 continue
             reason = item.rejection_reason or "UNSPECIFIED"
             counts[reason] = counts.get(reason, 0) + 1
+
+    def entry_corridor_audit_cb(self, msg):
+        try:
+            audit = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        self.entry_corridor_audit = audit
+        self.write_candidate_record({
+            "record_type": "joint_entry_corridor_audit",
+            "receive_sim_time": rospy.Time.now().to_sec(),
+            "audit": audit,
+        })
 
     def state_cb(self, uid, msg):
         previous_phase = self.last_phase.get(uid)
@@ -569,6 +597,7 @@ class EvidenceRecorder:
                 self.entry_corridor_nominal_angles),
             "entry_corridor_selection": self.entry_corridor_selection,
             "entry_corridor_diagnostics": self.entry_corridor_diagnostics,
+            "entry_corridor_audit": self.entry_corridor_audit,
             "mission_phase_first_times": self.phase_first_times,
             "candidate_rejection_observations": (
                 self.candidate_rejection_observations),

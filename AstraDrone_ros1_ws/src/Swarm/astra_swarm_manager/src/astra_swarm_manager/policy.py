@@ -146,18 +146,43 @@ def _polylines_cross_xy(first, second):
         for second_index in range(1, len(second)))
 
 
+def _polyline_length(points):
+    return sum(distance3(points[index - 1], points[index])
+               for index in range(1, len(points)))
+
+
+def _entry_candidate_minimum_tier(item, nominal_angle, center, nominal_radius,
+                                  radius_step, epsilon=1.0e-6):
+    """Return the first hard fallback tier in which a candidate may compete."""
+    radius = float(item.get(
+        "orbit_staging_radius",
+        math.hypot(float(item["staging"][0]) - float(center[0]),
+                   float(item["staging"][1]) - float(center[1]))))
+    radius_tier = int(round((radius - nominal_radius) / radius_step))
+    expected_radius = nominal_radius + radius_step * radius_tier
+    if (radius_tier not in (0, 1, 2) or abs(radius - expected_radius) > 1.0e-3):
+        return None, radius_tier, radius
+    angle_deviation = abs((float(item["angle_deg"])
+                           - float(nominal_angle) + 180.0) % 360.0 - 180.0)
+    if radius_tier == 0:
+        return (0 if angle_deviation <= epsilon else 1), radius_tier, radius
+    return radius_tier + 1, radius_tier, radius
+
+
 def joint_entry_corridor_selection(
         candidates_by_uid, ordered_uav_ids, nominal_angles, center, starts,
         direction, minimum_gap_degrees=20.0, maximum_gap_degrees=30.0,
         hard_clearance=0.5, minimum_3d=3.0, swarm_clearance=1.5,
-        angular_window_degrees=12.0):
+        angular_window_degrees=12.0, nominal_orbit_radius=12.5,
+        orbit_radius_step=2.0):
     """Select one latched full ENTRY corridor per vehicle, fail closed.
 
-    Candidate dictionaries contain ``id``, ``angle_deg``, ``pre_radius``,
-    ``entry_radius``, ``clearance`` and the three local-map points already
-    converted to the common world frame.  The local mission has proved each
-    path obstacle-clear; this joint layer proves role order, compact staging,
-    non-crossing geometry and time-aligned inter-vehicle clearance.
+    The selector exhausts one hard fallback tier before considering the next:
+    nominal 12.5 m, adjusted-angle 12.5 m, up to 14.5 m, then up to 16.5 m.
+    Candidate dictionaries contain the endpoint/path/EGO-local verdicts and
+    their common-world full paths.  This joint layer preserves those checks and
+    additionally proves role order, non-crossing geometry and time-aligned
+    inter-vehicle clearance.
     """
     ids = [int(uid) for uid in ordered_uav_ids]
     if (len(ids) < 2 or len(ids) != len(set(ids)) or direction not in (-1, 1)
@@ -167,90 +192,272 @@ def joint_entry_corridor_selection(
                    for uid in ids)
             or not (0.0 < minimum_gap_degrees <= maximum_gap_degrees < 180.0)
             or hard_clearance <= 0.0 or minimum_3d <= 0.0
-            or swarm_clearance <= 0.0):
+            or swarm_clearance <= 0.0 or nominal_orbit_radius <= 0.0
+            or orbit_radius_step <= 0.0):
         return {}, "INVALID_OR_MISSING_CANDIDATES", {}
 
+    prepared = {uid: [] for uid in ids}
+    candidate_outcomes = {str(uid): {} for uid in ids}
+    for uid in ids:
+        for item in candidates_by_uid[uid]:
+            minimum_tier, radius_tier, staging_radius = (
+                _entry_candidate_minimum_tier(
+                    item, nominal_angles[uid], center, nominal_orbit_radius,
+                    orbit_radius_step))
+            candidate = dict(item)
+            candidate["minimum_joint_tier"] = minimum_tier
+            candidate["radius_tier"] = radius_tier
+            candidate["orbit_staging_radius"] = staging_radius
+            prepared[uid].append(candidate)
+            candidate_outcomes[str(uid)][candidate["id"]] = {
+                "minimum_joint_tier": minimum_tier,
+                "radius_tier": radius_tier,
+                "orbit_staging_radius": staging_radius,
+                "angle_deg": float(candidate["angle_deg"]),
+                "endpoint_clearance": float(candidate.get(
+                    "endpoint_clearance", candidate.get("clearance", -1.0))),
+                "path_clearance": float(candidate.get("clearance", -1.0)),
+                "endpoint_valid": bool(candidate.get("endpoint_valid", True)),
+                "path_valid": bool(candidate.get("path_valid", True)),
+                "ego_status": candidate.get("ego_status", "NOT_PRECHECKED"),
+                "evaluated_combinations": 0,
+                "local_hard_rejected": 0,
+                "role_rejected": 0,
+                "crossing_rejected": 0,
+                "predicted_distance_rejected": 0,
+                "minimum_predicted_distance": None,
+                "valid_combinations": 0,
+                "best_valid_rank": None,
+                "selected": False,
+                "final_rejection_reason": "NOT_EVALUATED",
+            }
+
+    diagnostics = {
+        "tier_contract": {
+            "0": "ALL_NOMINAL_12_5",
+            "1": "ALL_12_5_WITH_SECTOR_ANGLE_ADJUSTMENT",
+            "2": "ALLOW_UP_TO_14_5",
+            "3": "ALLOW_UP_TO_16_5",
+        },
+        "tiers": {},
+        "candidate_outcomes": candidate_outcomes,
+    }
     best = None
     best_rank = None
-    diagnostics = {"evaluated": 0, "role_rejected": 0,
-                   "crossing_rejected": 0, "conflict_rejected": 0}
-    for combination in product(*(candidates_by_uid[uid] for uid in ids)):
-        diagnostics["evaluated"] += 1
-        selected = dict(zip(ids, combination))
-        if any(float(item.get("clearance", -1.0)) + 1.0e-9
-               < hard_clearance for item in combination):
-            continue
-        if any(abs((float(selected[uid]["angle_deg"])
-                    - float(nominal_angles[uid]) + 180.0) % 360.0 - 180.0)
-               > angular_window_degrees + 1.0e-9 for uid in ids):
-            diagnostics["role_rejected"] += 1
-            continue
-        gaps = []
-        role_valid = True
-        for leader, follower in zip(ids[:-1], ids[1:]):
-            gap = normalize_degrees(direction * (
-                float(selected[leader]["angle_deg"])
-                - float(selected[follower]["angle_deg"])))
-            gaps.append(gap)
-            if not (minimum_gap_degrees <= gap <= maximum_gap_degrees):
-                role_valid = False
-                break
-        if not role_valid:
-            diagnostics["role_rejected"] += 1
-            continue
-        paths = {
-            uid: ([tuple(point) for point in selected[uid].get("path", [])]
-                  or [tuple(starts[uid]), tuple(selected[uid]["pre"]),
-                      tuple(selected[uid]["entry"]),
-                      tuple(selected[uid]["staging"])])
+    selected_tier = None
+    selected_metrics = None
+    for tier in range(4):
+        tier_candidates = {
+            uid: [item for item in prepared[uid]
+                  if item["minimum_joint_tier"] is not None
+                  and item["minimum_joint_tier"] <= tier]
             for uid in ids}
-        if any(_polylines_cross_xy(paths[first], paths[second])
-               for first, second in combinations(ids, 2)):
-            diagnostics["crossing_rejected"] += 1
+        tier_diagnostics = {
+            "candidate_counts": {
+                str(uid): len(tier_candidates[uid]) for uid in ids},
+            "evaluated": 0,
+            "local_hard_rejected": 0,
+            "role_rejected": 0,
+            "crossing_rejected": 0,
+            "conflict_rejected": 0,
+            "valid_combinations": 0,
+            "result": "NO_CANDIDATES_FOR_TIER",
+        }
+        diagnostics["tiers"][str(tier)] = tier_diagnostics
+        if any(not tier_candidates[uid] for uid in ids):
             continue
-        samples = {uid: _sample_polyline(paths[uid]) for uid in ids}
-        minimum_pair_distance = float("inf")
-        conflict = False
-        for first, second in combinations(ids, 2):
-            for first_point, second_point in zip(
-                    samples[first], samples[second]):
-                separation = distance3(first_point, second_point)
-                minimum_pair_distance = min(minimum_pair_distance, separation)
-                if (separation + 1.0e-9 < minimum_3d
-                        or ellipsoid_distance(first_point, second_point)
-                        + 1.0e-9 < 2.0 * swarm_clearance):
-                    conflict = True
+
+        tier_best = None
+        tier_best_rank = None
+        tier_best_metrics = None
+        for combination in product(*(tier_candidates[uid] for uid in ids)):
+            tier_diagnostics["evaluated"] += 1
+            selected = dict(zip(ids, combination))
+            outcomes = [candidate_outcomes[str(uid)][selected[uid]["id"]]
+                        for uid in ids]
+            for outcome in outcomes:
+                outcome["evaluated_combinations"] += 1
+
+            local_hard_invalid = any(
+                not bool(item.get("endpoint_valid", True))
+                or not bool(item.get("path_valid", True))
+                or not bool(item.get("ego_candidate_valid", True))
+                or float(item.get("clearance", -1.0)) + 1.0e-9
+                < hard_clearance for item in combination)
+            if local_hard_invalid:
+                tier_diagnostics["local_hard_rejected"] += 1
+                for outcome in outcomes:
+                    outcome["local_hard_rejected"] += 1
+                continue
+            if any(abs((float(selected[uid]["angle_deg"])
+                        - float(nominal_angles[uid]) + 180.0)
+                       % 360.0 - 180.0)
+                   > angular_window_degrees + 1.0e-9 for uid in ids):
+                tier_diagnostics["role_rejected"] += 1
+                for outcome in outcomes:
+                    outcome["role_rejected"] += 1
+                continue
+            gaps = []
+            role_valid = True
+            for leader, follower in zip(ids[:-1], ids[1:]):
+                gap = normalize_degrees(direction * (
+                    float(selected[leader]["angle_deg"])
+                    - float(selected[follower]["angle_deg"])))
+                gaps.append(gap)
+                if not (minimum_gap_degrees <= gap <= maximum_gap_degrees):
+                    role_valid = False
                     break
+            if not role_valid:
+                tier_diagnostics["role_rejected"] += 1
+                for outcome in outcomes:
+                    outcome["role_rejected"] += 1
+                continue
+            paths = {
+                uid: ([tuple(point) for point in selected[uid].get("path", [])]
+                      or [tuple(starts[uid]), tuple(selected[uid]["pre"]),
+                          tuple(selected[uid]["entry"]),
+                          tuple(selected[uid]["staging"])])
+                for uid in ids}
+            if any(_polylines_cross_xy(paths[first], paths[second])
+                   for first, second in combinations(ids, 2)):
+                tier_diagnostics["crossing_rejected"] += 1
+                for outcome in outcomes:
+                    outcome["crossing_rejected"] += 1
+                continue
+            samples = {uid: _sample_polyline(paths[uid]) for uid in ids}
+            minimum_pair_distance = float("inf")
+            conflict = False
+            for first, second in combinations(ids, 2):
+                for first_point, second_point in zip(
+                        samples[first], samples[second]):
+                    separation = distance3(first_point, second_point)
+                    minimum_pair_distance = min(
+                        minimum_pair_distance, separation)
+                    if (separation + 1.0e-9 < minimum_3d
+                            or ellipsoid_distance(first_point, second_point)
+                            + 1.0e-9 < 2.0 * swarm_clearance):
+                        conflict = True
+            for outcome in outcomes:
+                previous_minimum = outcome["minimum_predicted_distance"]
+                if (previous_minimum is None
+                        or minimum_pair_distance < previous_minimum):
+                    outcome["minimum_predicted_distance"] = (
+                        minimum_pair_distance)
             if conflict:
-                break
-        if conflict:
-            diagnostics["conflict_rejected"] += 1
-            continue
-        minimum_clearance = min(float(item["clearance"])
-                                for item in combination)
-        angle_deviation = sum(abs((float(selected[uid]["angle_deg"])
-                                   - float(nominal_angles[uid]) + 180.0)
-                                  % 360.0 - 180.0) for uid in ids)
-        radius_deviation = sum(
-            abs(float(item["pre_radius"]) - 18.0)
-            + abs(float(item["entry_radius"]) - 15.0)
-            for item in combination)
-        # Full-path safety is a prerequisite. Ranking then follows the task's
-        # lexicographic contract: clearance, nominal angle, nominal radius.
-        rank = (-minimum_clearance, angle_deviation, radius_deviation)
-        if best_rank is None or rank < best_rank:
-            best = selected
-            best_rank = rank
-            diagnostics.update({
-                "gaps": gaps,
+                tier_diagnostics["conflict_rejected"] += 1
+                for outcome in outcomes:
+                    outcome["predicted_distance_rejected"] += 1
+                continue
+
+            minimum_clearance = min(float(item["clearance"])
+                                    for item in combination)
+            angle_deviation = sum(abs((float(selected[uid]["angle_deg"])
+                                       - float(nominal_angles[uid]) + 180.0)
+                                      % 360.0 - 180.0) for uid in ids)
+            ingress_length = sum(float(item.get(
+                "ingress_length", _polyline_length(paths[uid])))
+                for uid, item in zip(ids, combination))
+            identifiers = tuple(selected[uid]["id"] for uid in ids)
+            rank = (-minimum_clearance, angle_deviation, ingress_length,
+                    identifiers)
+            rank_values = {
                 "minimum_clearance": minimum_clearance,
-                "minimum_pair_distance": minimum_pair_distance,
                 "angle_deviation": angle_deviation,
-                "radius_deviation": radius_deviation,
-            })
+                "ingress_length": ingress_length,
+                "candidate_ids": list(identifiers),
+                "gaps": gaps,
+                "minimum_pair_distance": minimum_pair_distance,
+            }
+            tier_diagnostics["valid_combinations"] += 1
+            for outcome in outcomes:
+                outcome["valid_combinations"] += 1
+                current = outcome["best_valid_rank"]
+                if (current is None
+                        or (-rank_values["minimum_clearance"],
+                            rank_values["angle_deviation"],
+                            rank_values["ingress_length"],
+                            tuple(rank_values["candidate_ids"]))
+                        < (-current["minimum_clearance"],
+                           current["angle_deviation"],
+                           current["ingress_length"],
+                           tuple(current["candidate_ids"]))):
+                    outcome["best_valid_rank"] = rank_values
+            if tier_best_rank is None or rank < tier_best_rank:
+                tier_best = selected
+                tier_best_rank = rank
+                tier_best_metrics = {
+                    "gaps": gaps,
+                    "minimum_clearance": minimum_clearance,
+                    "minimum_pair_distance": minimum_pair_distance,
+                    "angle_deviation": angle_deviation,
+                    "ingress_length": ingress_length,
+                    "rank": rank_values,
+                }
+
+        if tier_best is None:
+            tier_diagnostics["result"] = "NO_JOINT_SAFE_COMBINATION"
+            continue
+        tier_diagnostics["result"] = "SELECTED"
+        tier_diagnostics["selected_rank"] = tier_best_metrics["rank"]
+        best = tier_best
+        best_rank = tier_best_rank
+        selected_metrics = tier_best_metrics
+        selected_tier = tier
+        break
+
     if best is None:
-        return {}, "NO_JOINT_SAFE_COMBINATION", diagnostics
-    return best, "OK", diagnostics
+        for outcomes in candidate_outcomes.values():
+            for outcome in outcomes.values():
+                outcome["final_rejection_reason"] = (
+                    "UNSUPPORTED_RADIUS_TIER"
+                    if outcome["minimum_joint_tier"] is None
+                    else "NO_HARD_CONSTRAINT_VALID_COMBINATION")
+        diagnostics["selected_tier"] = None
+        diagnostics["result"] = "NO_JOINT_SAFE_COMBINATION_ALL_TIERS"
+        return {}, "NO_JOINT_SAFE_COMBINATION_ALL_TIERS", diagnostics
+
+    selected_ids = {uid: best[uid]["id"] for uid in ids}
+    for uid in ids:
+        for candidate_id, outcome in candidate_outcomes[str(uid)].items():
+            if candidate_id == selected_ids[uid]:
+                outcome["selected"] = True
+                outcome["final_rejection_reason"] = "SELECTED"
+            elif (outcome["minimum_joint_tier"] is None
+                  or outcome["minimum_joint_tier"] > selected_tier):
+                outcome["final_rejection_reason"] = (
+                    "LOWER_TIER_SUCCEEDED_BEFORE_CANDIDATE_ELIGIBLE")
+            elif outcome["valid_combinations"] > 0:
+                outcome["final_rejection_reason"] = "VALID_BUT_RANKED_LOWER"
+            else:
+                evaluated = outcome["evaluated_combinations"]
+                local = outcome["local_hard_rejected"]
+                role = outcome["role_rejected"]
+                crossing = outcome["crossing_rejected"]
+                predicted = outcome["predicted_distance_rejected"]
+                if not outcome["endpoint_valid"]:
+                    rejection = "ENDPOINT_INVALID"
+                elif not outcome["path_valid"]:
+                    rejection = "PATH_INVALID"
+                elif outcome["ego_status"] == "PLANNER_UNREACHABLE":
+                    rejection = "EGO_PLANNER_UNREACHABLE"
+                elif evaluated > 0 and local == evaluated:
+                    rejection = "LOCAL_CLEARANCE_OR_EGO_REJECTED"
+                elif evaluated > 0 and local + role == evaluated:
+                    rejection = "ROLE_ORDER_OR_SPACING_REJECTED"
+                elif (evaluated > 0
+                      and local + role + crossing == evaluated):
+                    rejection = "PATH_CROSSING_REJECTED"
+                elif (evaluated > 0
+                      and local + role + crossing + predicted == evaluated):
+                    rejection = "PREDICTED_DISTANCE_REJECTED"
+                else:
+                    rejection = "NO_VALID_COMBINATION_MULTIPLE_REASONS"
+                outcome["final_rejection_reason"] = rejection
+    diagnostics.update(selected_metrics)
+    diagnostics["selected_tier"] = selected_tier
+    diagnostics["selected_rank"] = selected_metrics["rank"]
+    diagnostics["result"] = "OK_TIER_{}".format(selected_tier)
+    return best, diagnostics["result"], diagnostics
 
 
 def task_start_barrier_ready(uav_ids, states, health, globally_clear):

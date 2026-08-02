@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -213,6 +214,12 @@ class Stage3EgoMissionNode {
     double angle_deg{0.0};
     double pre_radius{0.0};
     double entry_radius{0.0};
+    double orbit_staging_angle_deg{0.0};
+    double orbit_staging_radius{0.0};
+    double endpoint_clearance{0.0};
+    double ingress_length{0.0};
+    int radius_tier{-1};
+    int minimum_joint_tier{-1};
     double minimum_clearance{0.0};
     double score{-1.0e9};
   };
@@ -1784,8 +1791,22 @@ class Stage3EgoMissionNode {
       item.target.z = point.z;
       item.yaw = static_cast<float>(point.yaw);
       item.accepted = true;
-      item.rejection_reason = "SAFE_FULL_CORRIDOR_PENDING_JOINT_SELECTION";
-      item.clearance = static_cast<float>(corridor.minimum_clearance);
+      std::ostringstream evidence;
+      evidence << "LOCAL_ACCEPTED_PENDING_JOINT"
+               << ";RADIUS_TIER=" << corridor.radius_tier
+               << ";MINIMUM_JOINT_TIER=" << corridor.minimum_joint_tier
+               << ";ORBIT_STAGING_RADIUS=" << std::fixed
+               << std::setprecision(3) << corridor.orbit_staging_radius
+               << ";ENDPOINT_VALID=true"
+               << ";PATH_VALID=true"
+               << ";EGO_STATUS=NOT_PRECHECKED_NO_PRIOR_FAILURE"
+               << ";ENDPOINT_CLEARANCE=" << corridor.endpoint_clearance
+               << ";PATH_CLEARANCE=" << corridor.minimum_clearance
+               << ";INGRESS_LENGTH=" << corridor.ingress_length;
+      item.rejection_reason = evidence.str();
+      item.clearance = static_cast<float>(
+          suffix == "ORBIT_STAGING" ? corridor.endpoint_clearance
+                                    : corridor.minimum_clearance);
       item.score = static_cast<float>(corridor.score);
       item.unknown_ratio = 0.0F;
       message.candidates.push_back(item);
@@ -1890,6 +1911,25 @@ class Stage3EgoMissionNode {
             candidate.angle_deg = angle_deg;
             candidate.pre_radius = pre_radius;
             candidate.entry_radius = entry_radius;
+            const double staging_angle = std::atan2(
+                orbit_base.y - route_.center_y,
+                orbit_base.x - route_.center_x);
+            candidate.orbit_staging_angle_deg =
+                positiveAngleDegrees(staging_angle);
+            candidate.orbit_staging_radius = std::hypot(
+                orbit_base.x - route_.center_x,
+                orbit_base.y - route_.center_y);
+            const double staging_radius_offset =
+                candidate.orbit_staging_radius - route_.radius;
+            candidate.radius_tier = static_cast<int>(std::lround(
+                staging_radius_offset / 2.0));
+            const double staging_angle_deviation = std::abs(normalizeAngle(
+                staging_angle - entry_nominal_angle_deg_ * kPi / 180.0));
+            candidate.minimum_joint_tier =
+                candidate.radius_tier == 0
+                    ? (staging_angle_deviation <= 1.0e-6 ? 0 : 1)
+                    : candidate.radius_tier + 1;
+            candidate.endpoint_clearance = orbit_base.clearance;
             const auto make_radial = [&](const std::string& name,
                                          double radius) {
               CandidatePoint point;
@@ -1924,9 +1964,6 @@ class Stage3EgoMissionNode {
               ++rejected["FULL_PATH_MAP_CLEARANCE"];
               continue;
             }
-            const double staging_angle = std::atan2(
-                orbit_base.y - route_.center_y,
-                orbit_base.x - route_.center_x);
             const double angle_deviation = std::abs(normalizeAngle(
                 staging_angle - entry_nominal_angle_deg_ * kPi / 180.0));
             const double radius_deviation = std::abs(
@@ -1936,6 +1973,17 @@ class Stage3EgoMissionNode {
                 std::abs(angle_step) * entry_gate_config_.angular_sample_step_deg +
                 (pre_radius - pre_entry_radius_) +
                 (entry_radius - entry_gate_config_.minimum_radius);
+            candidate.ingress_length = 0.0;
+            for (std::size_t path_index = 1U;
+                 path_index < candidate.planned_path.size(); ++path_index) {
+              const auto& from = candidate.planned_path[path_index - 1U];
+              const auto& to = candidate.planned_path[path_index];
+              const double dx = to.x - from.x;
+              const double dy = to.y - from.y;
+              const double dz = to.z - from.z;
+              candidate.ingress_length +=
+                  std::sqrt(dx * dx + dy * dy + dz * dz);
+            }
             // Hard checks have already passed.  The score follows the common
             // sector priorities: clearance first, then nominal angle/radius,
             // shorter ingress and continuity-friendly ordinary candidate cost.
@@ -1957,22 +2005,22 @@ class Stage3EgoMissionNode {
                   return left.minimum_clearance > right.minimum_clearance;
                 }
                 const double left_angle = std::abs(normalizeAngle(
-                    left.angle_deg * kPi / 180.0 -
+                    left.orbit_staging_angle_deg * kPi / 180.0 -
                     entry_nominal_angle_deg_ * kPi / 180.0));
                 const double right_angle = std::abs(normalizeAngle(
-                    right.angle_deg * kPi / 180.0 -
+                    right.orbit_staging_angle_deg * kPi / 180.0 -
                     entry_nominal_angle_deg_ * kPi / 180.0));
                 if (std::abs(left_angle - right_angle) > 1.0e-9) {
                   return left_angle < right_angle;
                 }
-                return (left.pre_radius - pre_entry_radius_) +
-                           (left.entry_radius -
-                            entry_gate_config_.minimum_radius) <
-                       (right.pre_radius - pre_entry_radius_) +
-                           (right.entry_radius -
-                            entry_gate_config_.minimum_radius);
+                if (std::abs(left.ingress_length - right.ingress_length) >
+                    1.0e-9) {
+                  return left.ingress_length < right.ingress_length;
+                }
+                return left.id < right.id;
               });
-    std::unordered_map<int, int> retained_per_angle;
+    std::unordered_map<std::string, int> retained_per_angle_and_radius_tier;
+    std::unordered_map<int, int> published_per_radius_tier;
     for (const auto& candidate : safe) {
       const double staging_angle = std::atan2(
           candidate.orbit_staging.y - route_.center_y,
@@ -1981,9 +2029,12 @@ class Stage3EgoMissionNode {
           normalizeAngle(staging_angle -
                          entry_nominal_angle_deg_ * kPi / 180.0) *
           180.0 / kPi / entry_gate_config_.angular_sample_step_deg));
-      if (retained_per_angle[angle_key] >= 3) continue;
+      const std::string retention_key = std::to_string(angle_key) + ":" +
+                                        std::to_string(candidate.radius_tier);
+      if (retained_per_angle_and_radius_tier[retention_key] >= 3) continue;
       entry_corridor_candidates_.push_back(candidate);
-      ++retained_per_angle[angle_key];
+      ++retained_per_angle_and_radius_tier[retention_key];
+      ++published_per_radius_tier[candidate.radius_tier];
     }
     publishEntryCorridorCandidates(now);
     std::ostringstream rejected_summary;
@@ -1995,10 +2046,12 @@ class Stage3EgoMissionNode {
     }
     ROS_WARN(
         "[STAGE5_ENTRY] UAV%d generation=%u searched=%zu safe=%zu "
-        "published=%zu nominal_angle=%.1fdeg map_clearance=%.2f "
-        "rejected=%s",
+        "published=%zu published_radius_tiers={0:%d,1:%d,2:%d} "
+        "nominal_angle=%.1fdeg map_clearance=%.2f rejected=%s",
         uav_id_, entry_corridor_generation_, searched, safe.size(),
-        entry_corridor_candidates_.size(), entry_nominal_angle_deg_,
+        entry_corridor_candidates_.size(), published_per_radius_tier[0],
+        published_per_radius_tier[1], published_per_radius_tier[2],
+        entry_nominal_angle_deg_,
         map_clearance, rejected_summary.str().c_str());
     return !entry_corridor_candidates_.empty();
   }

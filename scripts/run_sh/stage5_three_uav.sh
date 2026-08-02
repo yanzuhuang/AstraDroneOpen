@@ -128,7 +128,7 @@ done
 topics=(/clock /rosout /diagnostics /gazebo/model_states
   /swarm/state /swarm/safety/clear
   /swarm/safety/event /swarm/coordinator/status /swarm/formation/status
-  /swarm/trajectories)
+  /swarm/entry_corridor_audit /swarm/trajectories)
 for uid in 1 2 3; do
   prefix="/uav${uid}"
   topics+=(
@@ -146,6 +146,7 @@ for uid in 1 2 3; do
     "$prefix/swarm/takeoff_permission"
     "$prefix/swarm/orbit_permission"
     "$prefix/swarm/orbit_speed_scale"
+    "$prefix/swarm/entry_corridor_selection"
     "$prefix/ego_mavros_bridge/state"
     "$prefix/ego_mavros_bridge/input_health"
     "$prefix/ego_mavros_bridge/tracking_error"
@@ -158,6 +159,7 @@ for uid in 1 2 3; do
     "$prefix/tower_mission/current_target"
     "$prefix/tower_mission/current_sector"
     "$prefix/tower_mission/candidate_targets"
+    "$prefix/tower_mission/entry_corridor_candidates"
     "$prefix/tower_mission/progress"
   )
 done
