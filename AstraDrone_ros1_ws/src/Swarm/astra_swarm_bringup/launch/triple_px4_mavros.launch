@@ -28,7 +28,7 @@
        versions and distinct SITL IDs/UDP ports.  No external PX4 tree is
        edited by this launch. -->
   <group if="$(arg uav1_enabled)" ns="uav1">
-    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+    <include file="$(find astra_swarm_bringup)/launch/single_vehicle_spawn_verified.launch">
       <arg name="ID" value="0"/>
       <arg name="vehicle" value="iris_mid360_0"/>
       <arg name="x" value="$(arg uav1_spawn_x)"/><arg name="y" value="$(arg spawn_y)"/><arg name="z" value="0.06"/>
@@ -36,7 +36,11 @@
       <arg name="mavlink_tcp_port" value="4560"/>
       <arg name="gst_udp_port" value="5600"/><arg name="video_uri" value="5600"/>
       <arg name="mavlink_cam_udp_port" value="14530"/>
-      <arg name="interactive" value="false"/>
+      <!-- This locked PX4 launch maps interactive=true to the -d daemon
+           argument.  Keep the SITL shell disabled: three interactive pxh
+           loops otherwise flood roslaunch output and consume scheduler time. -->
+      <arg name="interactive" value="true"/>
+      <arg name="robot_namespace" value="/uav1"/>
     </include>
     <param name="sdf_iris_mid360_00"
            command="$(find xacro)/xacro $(arg sensor_model)
@@ -58,7 +62,7 @@
   </group>
 
   <group if="$(arg uav2_enabled)" ns="uav2">
-    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+    <include file="$(find astra_swarm_bringup)/launch/single_vehicle_spawn_verified.launch">
       <arg name="ID" value="1"/>
       <arg name="vehicle" value="iris_mid360_1"/>
       <arg name="x" value="$(arg uav2_spawn_x)"/><arg name="y" value="$(arg spawn_y)"/><arg name="z" value="0.06"/>
@@ -66,7 +70,8 @@
       <arg name="mavlink_tcp_port" value="4561"/>
       <arg name="gst_udp_port" value="5601"/><arg name="video_uri" value="5601"/>
       <arg name="mavlink_cam_udp_port" value="14531"/>
-      <arg name="interactive" value="false"/>
+      <arg name="interactive" value="true"/>
+      <arg name="robot_namespace" value="/uav2"/>
     </include>
     <param name="sdf_iris_mid360_11"
            command="$(find xacro)/xacro $(arg sensor_model)
@@ -86,7 +91,7 @@
   </group>
 
   <group if="$(arg uav3_enabled)" ns="uav3">
-    <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+    <include file="$(find astra_swarm_bringup)/launch/single_vehicle_spawn_verified.launch">
       <arg name="ID" value="2"/>
       <arg name="vehicle" value="iris_mid360_2"/>
       <arg name="x" value="$(arg uav3_spawn_x)"/><arg name="y" value="$(arg spawn_y)"/><arg name="z" value="0.06"/>
@@ -94,7 +99,8 @@
       <arg name="mavlink_tcp_port" value="4562"/>
       <arg name="gst_udp_port" value="5602"/><arg name="video_uri" value="5602"/>
       <arg name="mavlink_cam_udp_port" value="14532"/>
-      <arg name="interactive" value="false"/>
+      <arg name="interactive" value="true"/>
+      <arg name="robot_namespace" value="/uav3"/>
     </include>
     <param name="sdf_iris_mid360_22"
            command="$(find xacro)/xacro $(arg sensor_model)

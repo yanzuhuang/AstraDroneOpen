@@ -92,6 +92,7 @@ add_executable(stage3_ego_mission_node src/stage3_ego_mission_node.cpp)
 target_link_libraries(stage3_ego_mission_node
   stage3_planner
   tower_route
+  ego_task_utils
   ${catkin_LIBRARIES}
 )
 add_dependencies(stage3_ego_mission_node ${catkin_EXPORTED_TARGETS})

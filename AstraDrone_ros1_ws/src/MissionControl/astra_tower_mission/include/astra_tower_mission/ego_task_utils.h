@@ -44,6 +44,9 @@ double selectArrivalTolerance(bool tower_scenario, std::size_t goal_index,
                               double nominal_tolerance,
                               double transit_transition_tolerance);
 
+std::size_t nextSafeReturnGoalIndex(
+    const std::vector<bool>& endpoint_safety, std::size_t failed_index);
+
 }  // namespace astra_tower_mission
 
 #endif  // ASTRA_TOWER_MISSION_EGO_TASK_UTILS_H_

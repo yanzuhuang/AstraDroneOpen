@@ -207,8 +207,13 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       std::atan2(candidate->y - sector.center_y, candidate->x - sector.center_x));
   const double angle_delta = normalizeAngle(candidate_angle -
                                              sector.nominal_angle_rad);
-  if (candidate_radius < sector.min_radius || candidate_radius > sector.max_radius ||
-      std::abs(angle_delta) >
+  // Candidate coordinates are generated with sin/cos and then converted back
+  // with hypot/atan2.  Keep the configured boundary inclusive despite the
+  // resulting sub-nanometre round-off (notably the 16.5 m outer candidate).
+  constexpr double kBoundaryEpsilon = 1.0e-6;
+  if (candidate_radius < sector.min_radius - kBoundaryEpsilon ||
+      candidate_radius > sector.max_radius + kBoundaryEpsilon ||
+      std::abs(angle_delta) > kBoundaryEpsilon +
           std::max(std::abs(normalizeAngle(sector.max_angle_rad -
                                            sector.nominal_angle_rad)),
                    std::abs(normalizeAngle(sector.min_angle_rad -
@@ -216,8 +221,11 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
     return reject("SECTOR_BOUNDARY");
   }
   for (const auto& obstacle : obstacles) {
-    const double clearance = obstacleClearance(target, obstacle,
-                                               config.cloud_inflation);
+    // StaticObstacle already describes the audited physical/coarse envelope.
+    // Apply minimum_clearance exactly once.  cloud_inflation belongs to raw
+    // point representations and must not silently turn a configured 1.0 m
+    // coarse-geometry clearance into 1.4 m.
+    const double clearance = obstacleClearance(target, obstacle, 0.0);
     if (config.known_obstacle_is_hard_constraint) {
       candidate->clearance = std::min(candidate->clearance, clearance);
     }
@@ -248,7 +256,7 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
   static const std::vector<StaticObstacle> no_static_obstacles;
   const bool static_corridor_safe = lineCorridorSafe(
       current_position, target, no_map_points, obstacles,
-      config.minimum_clearance + config.cloud_inflation,
+      config.minimum_clearance,
       config.corridor_sample_step);
   const bool map_corridor_safe = lineCorridorSafe(
       current_position, target, cloud_points, no_static_obstacles,
@@ -351,18 +359,34 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
 }
 
 int chooseBestCandidate(const Sector& sector, const CandidatePoint* locked,
-                        double replacement_margin) {
+                        double replacement_margin,
+                        bool prefer_clear_straight_corridor) {
+  const bool have_clear_straight_corridor =
+      prefer_clear_straight_corridor &&
+      std::any_of(sector.candidates.begin(), sector.candidates.end(),
+                  [](const CandidatePoint& candidate) {
+                    return candidate.accepted &&
+                           !candidate.straight_corridor_blocked;
+                  });
+  const auto eligible = [have_clear_straight_corridor](
+                            const CandidatePoint& candidate) {
+    return candidate.accepted &&
+           (!have_clear_straight_corridor ||
+            !candidate.straight_corridor_blocked);
+  };
   // Candidate generation places the exact nominal point first, but identify
   // it geometrically so configuration ordering cannot silently change the
-  // safety policy. A usable nominal target P always wins; relocation is only
-  // allowed after P is rejected by a hard endpoint check.
+  // safety policy. A usable nominal target P normally wins.  Stage 5 may
+  // additionally require a clear straight corridor to win over a nominal or
+  // high-score soft-risk candidate; if no such candidate exists, the
+  // original EGO-detour candidate set remains available.
   for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
     const auto& candidate = sector.candidates[index];
     const double radius = distance2d(candidate.x, candidate.y,
                                      sector.center_x, sector.center_y);
     const double angle = std::atan2(candidate.y - sector.center_y,
                                     candidate.x - sector.center_x);
-    if (candidate.accepted &&
+    if (eligible(candidate) &&
         std::abs(radius - sector.nominal_radius) < 1.0e-6 &&
         std::abs(normalizeAngle(angle - sector.nominal_angle_rad)) < 1.0e-6 &&
         std::abs(candidate.z - sector.nominal_height) < 1.0e-6) {
@@ -372,7 +396,7 @@ int chooseBestCandidate(const Sector& sector, const CandidatePoint* locked,
   int best = -1;
   for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
     const auto& candidate = sector.candidates[index];
-    if (!candidate.accepted) continue;
+    if (!eligible(candidate)) continue;
     if (best < 0 || candidate.score > sector.candidates[best].score + 1.0e-9 ||
         (std::abs(candidate.score - sector.candidates[best].score) <= 1.0e-9 &&
          std::make_tuple(candidate.observation_deviation,
@@ -386,11 +410,11 @@ int chooseBestCandidate(const Sector& sector, const CandidatePoint* locked,
     }
   }
   if (locked == nullptr || best < 0) return best;
-  if (locked->accepted &&
+  if (eligible(*locked) &&
       locked->score + replacement_margin >= sector.candidates[best].score) {
     for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
       if (sector.candidates[index].id == locked->id &&
-          sector.candidates[index].accepted) {
+          eligible(sector.candidates[index])) {
         return static_cast<int>(index);
       }
     }
@@ -904,6 +928,65 @@ std::vector<std::size_t> directionalSectorOrder(
         return sectors[lhs].sector_id < sectors[rhs].sector_id;
       });
   return order;
+}
+
+std::pair<int, int> findAcceptedCandidateById(
+    const std::vector<Sector>& sectors,
+    const std::string& candidate_id) {
+  if (candidate_id.empty()) return {-1, -1};
+  for (std::size_t sector_index = 0; sector_index < sectors.size();
+       ++sector_index) {
+    const auto& candidates = sectors[sector_index].candidates;
+    for (std::size_t candidate_index = 0;
+         candidate_index < candidates.size(); ++candidate_index) {
+      if (candidates[candidate_index].id == candidate_id &&
+          candidates[candidate_index].accepted) {
+        return {static_cast<int>(sector_index),
+                static_cast<int>(candidate_index)};
+      }
+    }
+  }
+  return {-1, -1};
+}
+
+bool plannerMapContainsOrbitEnvelope(
+    double tower_center_x,
+    double tower_center_y,
+    double maximum_orbit_radius,
+    double planning_horizon,
+    double map_size_x,
+    double map_size_y,
+    std::string* reason) {
+  const bool finite = std::isfinite(tower_center_x) &&
+                      std::isfinite(tower_center_y) &&
+                      std::isfinite(maximum_orbit_radius) &&
+                      std::isfinite(planning_horizon) &&
+                      std::isfinite(map_size_x) && std::isfinite(map_size_y);
+  if (!finite || maximum_orbit_radius <= 0.0 || planning_horizon < 0.0 ||
+      map_size_x <= 0.0 || map_size_y <= 0.0) {
+    if (reason != nullptr) *reason = "non-finite or non-positive map contract";
+    return false;
+  }
+
+  const double required_radius = maximum_orbit_radius + planning_horizon;
+  const double half_x = 0.5 * map_size_x;
+  const double half_y = 0.5 * map_size_y;
+  const double min_x = tower_center_x - required_radius;
+  const double max_x = tower_center_x + required_radius;
+  const double min_y = tower_center_y - required_radius;
+  const double max_y = tower_center_y + required_radius;
+  const bool contained = min_x > -half_x + 1.0e-4 &&
+                         max_x < half_x - 1.0e-4 &&
+                         min_y > -half_y + 1.0e-4 &&
+                         max_y < half_y - 1.0e-4;
+  if (reason != nullptr) {
+    std::ostringstream stream;
+    stream << "required_xy=[" << min_x << ',' << max_x << "]x["
+           << min_y << ',' << max_y << "] map_xy=[" << -half_x << ','
+           << half_x << "]x[" << -half_y << ',' << half_y << ']';
+    *reason = stream.str();
+  }
+  return contained;
 }
 
 void rotateSectorsToNearest(const geometry_msgs::Point& current,

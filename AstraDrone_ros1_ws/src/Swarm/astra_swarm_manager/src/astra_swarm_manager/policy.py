@@ -391,6 +391,11 @@ def formation_phase_decision(positions, center, ordered_uav_ids, direction,
         return set(), {}, {}, "MISSING_ROLE_POSITION"
 
     holds = set()
+    # Only a held follower (too close to its predecessor) propagates HOLD to
+    # vehicles farther back in the fixed role chain.  A predecessor stopped by
+    # LEADER_WAIT must leave its follower free to advance and close the gap;
+    # propagating that HOLD would freeze both sides of the error permanently.
+    downstream_hold_sources = set()
     gaps = {}
     bands = {}
     for leader_id, follower_id in zip(ids[:-1], ids[1:]):
@@ -405,9 +410,11 @@ def formation_phase_decision(positions, center, ordered_uav_ids, direction,
         # is the only role-preserving fail-closed action.
         if gap > 180.0:
             holds.update((leader_id, follower_id))
+            downstream_hold_sources.add(leader_id)
             bands[key] = "OVERTAKE_OR_REVERSE"
         elif gap < emergency_degrees:
             holds.add(follower_id)
+            downstream_hold_sources.add(follower_id)
             bands[key] = "EMERGENCY"
         elif gap < warning_min_degrees:
             bands[key] = "WARNING_SLOW"
@@ -429,14 +436,15 @@ def formation_phase_decision(positions, center, ordered_uav_ids, direction,
         gap = gaps[key]
         if follower_id in held_before and gap < normal_min_degrees:
             holds.add(follower_id)
+            downstream_hold_sources.add(follower_id)
         if leader_id in held_before and gap > normal_max_degrees:
             holds.add(leader_id)
 
-    # HOLD propagation follows the physical chain.  If a predecessor is held,
-    # every vehicle behind it must also wait; a trailing fault never commands a
-    # predecessor to reverse.
+    # An emergency follower HOLD propagates down the physical chain so a still
+    # farther follower cannot overtake it.  LEADER_WAIT is intentionally not a
+    # propagation source: its follower is the vehicle that must keep moving.
     for index, uid in enumerate(ids[:-1]):
-        if uid in holds:
+        if uid in downstream_hold_sources:
             holds.update(ids[index + 1:])
     return holds, gaps, bands, "OK"
 

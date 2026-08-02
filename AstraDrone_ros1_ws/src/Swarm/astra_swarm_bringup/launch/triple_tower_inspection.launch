@@ -67,8 +67,12 @@
   <arg name="static_pine_y"
        default="$(eval 24.6252 - float(arg('spawn_y')))"/>
   <arg name="map_size_z" default="46.0"/>
-  <arg name="map_size_x" default="60.0"/>
-  <arg name="map_size_y" default="80.0"/>
+  <!-- UAV3's local tower center is x=-18.0551.  A 16.5 m same-sector
+       candidate plus the unchanged 7.5 m EGO horizon reaches x=-42.0551;
+       the former 60 m map ended at x=-30 and produced a false occupancy
+       diagnosis when GridMap returned -1 for out-of-map positions. -->
+  <arg name="map_size_x" default="90.0"/>
+  <arg name="map_size_y" default="90.0"/>
   <arg name="map_resolution" default="0.25"/>
   <arg name="ground_height" default="-0.50"/>
   <arg name="virtual_ceil_height" default="45.0"/>
@@ -81,6 +85,7 @@
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
+  <arg name="prefer_clear_straight_corridor" default="true"/>
   <arg name="uav1_report_file" default="/tmp/astra_swarm_uav1.csv"/>
   <arg name="uav2_report_file" default="/tmp/astra_swarm_uav2.csv"/>
   <arg name="uav3_report_file" default="/tmp/astra_swarm_uav3.csv"/>
@@ -88,6 +93,8 @@
        default="/tmp/astra_swarm_three_uav_evidence.csv"/>
   <arg name="evidence_summary_file"
        default="/tmp/astra_swarm_three_uav_summary.json"/>
+  <arg name="evidence_candidate_file"
+       default="/tmp/astra_swarm_three_uav_candidates.jsonl"/>
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
 
   <include if="$(arg start_sim)"
@@ -158,10 +165,14 @@
     <arg name="inspection_laps" value="$(arg inspection_laps)"/>
     <arg name="mission_overall_timeout"
          value="$(arg mission_overall_timeout)"/>
+    <!-- Keep the EGO map valid across the task's already-authorized vertical
+         recovery envelope.  A floor tied to top_height - 0.4 made normal
+         tracking error look like occupancy because GridMap returns -1 below
+         its map origin.  Mission targets remain fixed at top_height. -->
     <arg name="uav1_low_floor"
-         value="$(eval float(arg('uav1_top_height')) - 0.4)"/>
+         value="$(arg uav1_mission_minimum_height)"/>
     <arg name="uav2_low_floor"
-         value="$(eval float(arg('uav2_top_height')) - 0.4)"/>
+         value="$(arg uav2_mission_minimum_height)"/>
     <arg name="uav1_low_ceiling"
          value="$(eval float(arg('uav1_top_height')) + 1.5)"/>
     <arg name="uav2_low_ceiling"
@@ -182,6 +193,8 @@
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+    <arg name="prefer_clear_straight_corridor"
+         value="$(arg prefer_clear_straight_corridor)"/>
     <arg name="uav1_report_file" value="$(arg uav1_report_file)"/>
     <arg name="uav2_report_file" value="$(arg uav2_report_file)"/>
     <arg name="swarm_uav_ids" value="[1, 2, 3]"/>
@@ -340,7 +353,7 @@
     <arg name="mission_overall_timeout"
          value="$(arg mission_overall_timeout)"/>
     <arg name="low_altitude_floor_height"
-         value="$(eval float(arg('uav3_top_height')) - 0.4)"/>
+         value="$(arg uav3_mission_minimum_height)"/>
     <arg name="low_altitude_ceiling_height"
          value="$(eval float(arg('uav3_top_height')) + 1.5)"/>
     <arg name="coordination_enabled" value="$(arg uav3_coordination_enabled)"/>
@@ -360,6 +373,8 @@
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+    <arg name="prefer_clear_straight_corridor"
+         value="$(arg prefer_clear_straight_corridor)"/>
     <arg name="swarm_origin_x" value="$(arg uav3_spawn_x)"/>
     <arg name="swarm_origin_y" value="$(arg spawn_y)"/>
     <arg name="tower_center_x"
@@ -384,6 +399,7 @@
     <param name="target_phase_deg" value="$(arg target_phase_deg)"/>
     <param name="csv_file" value="$(arg evidence_csv_file)"/>
     <param name="summary_file" value="$(arg evidence_summary_file)"/>
+    <param name="candidate_file" value="$(arg evidence_candidate_file)"/>
   </node>
 
   <node pkg="astra_swarm_bringup" type="swarm_rviz_diagnostics.py"

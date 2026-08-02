@@ -8,6 +8,7 @@
 
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace astra_tower_mission {
@@ -133,6 +134,7 @@ struct CandidateFilterConfig {
   bool unknown_is_hard_constraint{true};
   bool known_obstacle_is_hard_constraint{true};
   bool known_obstacle_corridor_is_hard_constraint{false};
+  bool prefer_clear_straight_corridor{false};
   double corridor_sample_step{0.5};
   double tower_extra_clearance{0.0};
   double score_clearance_weight{0.2};
@@ -197,7 +199,8 @@ bool evaluateCandidate(CandidatePoint* candidate,
 
 int chooseBestCandidate(const Sector& sector,
                         const CandidatePoint* locked_target,
-                        double replacement_margin);
+                        double replacement_margin,
+                        bool prefer_clear_straight_corridor = false);
 
 std::vector<CandidatePoint> buildEntryGateCandidates(
     const RouteConfig& route,
@@ -278,6 +281,19 @@ std::vector<std::size_t> directionalSectorOrder(
     double entry_angle_rad,
     const std::vector<Sector>& sectors,
     OrbitDirection direction);
+
+std::pair<int, int> findAcceptedCandidateById(
+    const std::vector<Sector>& sectors,
+    const std::string& candidate_id);
+
+bool plannerMapContainsOrbitEnvelope(
+    double tower_center_x,
+    double tower_center_y,
+    double maximum_orbit_radius,
+    double planning_horizon,
+    double map_size_x,
+    double map_size_y,
+    std::string* reason = nullptr);
 
 void rotateSectorsToNearest(const geometry_msgs::Point& current,
                             std::vector<Sector>* sectors);

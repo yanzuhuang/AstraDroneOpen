@@ -114,4 +114,18 @@ double selectArrivalTolerance(bool tower_scenario, std::size_t goal_index,
                             : nominal_tolerance;
 }
 
+std::size_t nextSafeReturnGoalIndex(
+    const std::vector<bool>& endpoint_safety, std::size_t failed_index) {
+  if (failed_index >= endpoint_safety.size()) {
+    return endpoint_safety.size();
+  }
+  for (std::size_t index = failed_index + 1U;
+       index < endpoint_safety.size(); ++index) {
+    if (endpoint_safety[index]) {
+      return index;
+    }
+  }
+  return endpoint_safety.size();
+}
+
 }  // namespace astra_tower_mission

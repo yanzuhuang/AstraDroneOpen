@@ -668,6 +668,7 @@ class SwarmManager:
             self.phase_held = set()
             self.phase_gaps = {}
             self.phase_bands = {}
+        formation_phase_held = set(self.phase_held)
         for index, uid in enumerate(self.role_order):
             state = self.states.get(uid)
             if (state is None or uid not in self.orbit_released
@@ -677,10 +678,13 @@ class SwarmManager:
                 state.flight_state in {"HOLD", "HOLD_SAFE"}
                 or state.mission_phase in {"HOLDING", "ERROR",
                                            "SAFETY_INHIBIT"})
-            if direct_hold:
+            if direct_hold and uid not in formation_phase_held:
                 # The source keeps permission to execute its supervised resume;
                 # only vehicles behind it are inhibited.  This avoids a
                 # self-latching coordinator HOLD while preserving no-overtake.
+                # A HOLD already selected by phase control is handled entirely
+                # by formation_phase_decision: in particular, LEADER_WAIT must
+                # not be reflected back onto the follower that closes the gap.
                 affected = sorted(role_chain_hold_ids(
                     self.role_order, uid), key=self.role_order.index)
                 self.phase_held.update(affected)

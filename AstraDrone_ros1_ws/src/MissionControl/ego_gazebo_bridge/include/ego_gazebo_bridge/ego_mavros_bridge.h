@@ -25,6 +25,7 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -168,6 +169,8 @@ class EgoMavrosBridge {
   void controlTimerCallback(const ros::TimerEvent& event);
   void transitionTo(BridgeState next_state, const std::string& reason);
   void publishState();
+  void publishInputHealth(const ros::Time& now);
+  void handleClockRollback(const ros::Time& now);
   void publishSetpoint(const geometry_msgs::PoseStamped& desired,
                        const ros::Time& now);
   void publishTrajectorySetpoint(const ros::Time& now);
@@ -221,6 +224,7 @@ class EgoMavrosBridge {
   ros::Publisher setpoint_publisher_;
   ros::Publisher debug_setpoint_publisher_;
   ros::Publisher state_publisher_;
+  ros::Publisher input_health_publisher_;
   ros::Publisher tracking_error_publisher_;
   ros::Publisher goal_publisher_;
   ros::Publisher planning_cancel_publisher_;
@@ -291,10 +295,13 @@ class EgoMavrosBridge {
   ros::Time alignment_yaw_error_since_;
   ros::Time last_effective_yaw_time_;
   ros::Time last_orbit_speed_scale_time_;
+  ros::Time last_control_time_;
+  ros::Time last_input_health_publish_time_;
   double maximum_tracking_error_{0.0};
   double effective_yaw_{0.0};
   double orbit_speed_scale_{0.0};
   bool cached_control_conflict_{false};
+  std::uint64_t clock_epoch_{0U};
   std::string cached_control_conflict_detail_;
   std::string hold_reason_;
 };

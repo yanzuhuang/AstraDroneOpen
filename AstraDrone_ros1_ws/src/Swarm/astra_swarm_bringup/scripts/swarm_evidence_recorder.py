@@ -4,11 +4,15 @@
 import csv
 import json
 import math
+import threading
+import time
 
 import rospy
-from astra_custom_msgs.msg import PlannerStatus
+from astra_custom_msgs.msg import InspectionCandidateArray, PlannerStatus
 from astra_swarm_msgs.msg import SwarmState
-from mavros_msgs.msg import State
+from geometry_msgs.msg import PoseStamped
+from mavros_msgs.msg import ExtendedState, State
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Float64, String
 from traj_utils.msg import MultiBsplines
 
@@ -20,6 +24,9 @@ class EvidenceRecorder:
             "~csv_file", "/tmp/astra_swarm_evidence.csv")
         self.summary_path = rospy.get_param(
             "~summary_file", "/tmp/astra_swarm_evidence.json")
+        self.candidate_path = rospy.get_param(
+            "~candidate_file", "/tmp/astra_swarm_candidates.jsonl")
+        self.candidate_file_lock = threading.Lock()
         self.tower_center = [
             float(v) for v in rospy.get_param(
                 "~tower_center", [-10.0551, 19.7104])]
@@ -30,6 +37,10 @@ class EvidenceRecorder:
             "TARGET_LOCKED", "NAVIGATING", "EVALUATING",
             "RELOCATING", "RECOVERING", "HOLDING"}
         self.states = {}
+        self.bridge_states = {uid: "" for uid in self.ids}
+        self.bridge_health = {uid: "" for uid in self.ids}
+        self.extended_landed = {uid: -1 for uid in self.ids}
+        self.stream_health = {uid: {} for uid in self.ids}
         self.armed = {uid: False for uid in self.ids}
         self.tracking = {uid: float("nan") for uid in self.ids}
         self.planner = {}
@@ -54,6 +65,9 @@ class EvidenceRecorder:
         self.entry_corridor_nominal_angles = {}
         self.entry_corridor_selection = {}
         self.entry_corridor_diagnostics = {}
+        self.phase_first_times = {uid: {} for uid in self.ids}
+        self.candidate_rejection_observations = {
+            uid: {} for uid in self.ids}
         self.orbit_angle = {uid: None for uid in self.ids}
         self.orbit_accumulated = {uid: 0.0 for uid in self.ids}
         self.orbit_reverse = {uid: 0.0 for uid in self.ids}
@@ -98,6 +112,7 @@ class EvidenceRecorder:
             for leader, follower in zip(
                 self.role_order[:-1], self.role_order[1:])}
         self.file = open(self.csv_path, "w", newline="")
+        self.candidate_file = open(self.candidate_path, "w")
         fields = ["sim_time", "safety_clear", "chain_ids"]
         for uid in self.ids:
             fields += [
@@ -107,7 +122,21 @@ class EvidenceRecorder:
                 "u{}_tracking_error".format(uid),
                 "u{}_trajectory_id".format(uid),
                 "u{}_orbit_released".format(uid),
-                "u{}_orbit_speed_scale".format(uid)]
+                "u{}_orbit_speed_scale".format(uid),
+                "u{}_heartbeat_ok".format(uid),
+                "u{}_localization_valid".format(uid),
+                "u{}_bridge_state".format(uid),
+                "u{}_extended_landed_state".format(uid),
+                "u{}_bridge_input_health".format(uid)]
+            for stream in (
+                    "mavros_pose_raw", "mavros_pose_framed",
+                    "fast_lio_odom_raw", "planner_odom"):
+                fields += [
+                    "u{}_{}_stamp".format(uid, stream),
+                    "u{}_{}_stamp_age".format(uid, stream),
+                    "u{}_{}_receive_age".format(uid, stream),
+                    "u{}_{}_wall_receive_age".format(uid, stream),
+                    "u{}_{}_count".format(uid, stream)]
         for pair in self.pair_min:
             fields += [
                 pair + "_horizontal", pair + "_vertical",
@@ -130,6 +159,39 @@ class EvidenceRecorder:
                 "/uav{}/planner/status".format(uid), PlannerStatus,
                 lambda msg, u=uid: self.planner_cb(u, msg), queue_size=10)
             rospy.Subscriber(
+                "/uav{}/mavros/local_position/pose".format(uid),
+                PoseStamped,
+                lambda msg, u=uid: self.header_stream_cb(
+                    u, "mavros_pose_raw", msg.header.stamp), queue_size=20)
+            rospy.Subscriber(
+                "/uav{}/mavros/local_position/pose_framed".format(uid),
+                PoseStamped,
+                lambda msg, u=uid: self.header_stream_cb(
+                    u, "mavros_pose_framed", msg.header.stamp), queue_size=20)
+            rospy.Subscriber(
+                "/uav{}/fast_lio/Odometry_raw".format(uid), Odometry,
+                lambda msg, u=uid: self.header_stream_cb(
+                    u, "fast_lio_odom_raw", msg.header.stamp), queue_size=20)
+            rospy.Subscriber(
+                "/uav{}/Odometry".format(uid), Odometry,
+                lambda msg, u=uid: self.header_stream_cb(
+                    u, "planner_odom", msg.header.stamp), queue_size=20)
+            rospy.Subscriber(
+                "/uav{}/mavros/extended_state".format(uid), ExtendedState,
+                lambda msg, u=uid: self.extended_cb(u, msg), queue_size=10)
+            rospy.Subscriber(
+                "/uav{}/ego_mavros_bridge/state".format(uid), String,
+                lambda msg, u=uid: self.bridge_states.__setitem__(
+                    u, msg.data), queue_size=10)
+            rospy.Subscriber(
+                "/uav{}/ego_mavros_bridge/input_health".format(uid), String,
+                lambda msg, u=uid: self.bridge_health.__setitem__(
+                    u, msg.data), queue_size=20)
+            rospy.Subscriber(
+                "/uav{}/tower_mission/candidate_targets".format(uid),
+                InspectionCandidateArray,
+                lambda msg, u=uid: self.candidate_cb(u, msg), queue_size=20)
+            rospy.Subscriber(
                 "/uav{}/swarm/orbit_permission".format(uid), Bool,
                 lambda msg, u=uid: self.orbit_permission.__setitem__(
                     u, msg.data), queue_size=10)
@@ -149,12 +211,63 @@ class EvidenceRecorder:
         rospy.Timer(rospy.Duration(0.1), self.timer_cb)
         rospy.on_shutdown(self.finish)
 
+    def header_stream_cb(self, uid, stream, stamp):
+        previous = self.stream_health[uid].get(stream, {})
+        self.stream_health[uid][stream] = {
+            "stamp": stamp.to_sec(),
+            "ros_received": rospy.Time.now().to_sec(),
+            "wall_received": time.monotonic(),
+            "count": previous.get("count", 0) + 1,
+        }
+
+    def extended_cb(self, uid, msg):
+        self.extended_landed[uid] = int(msg.landed_state)
+
+    def candidate_cb(self, uid, msg):
+        record = {
+            "receive_sim_time": rospy.Time.now().to_sec(),
+            "header_stamp": msg.header.stamp.to_sec(),
+            "frame_id": msg.header.frame_id,
+            "uav_id": uid,
+            "current_sector": int(msg.current_sector),
+            "locked_candidate_id": msg.locked_candidate_id,
+            "candidates": [{
+                "candidate_id": item.candidate_id,
+                "sector_id": int(item.sector_id),
+                "layer_id": int(item.layer_id),
+                "target": [item.target.x, item.target.y, item.target.z],
+                "yaw": item.yaw,
+                "accepted": bool(item.accepted),
+                "rejection_reason": item.rejection_reason,
+                "clearance": item.clearance,
+                "score": item.score,
+                "unknown_ratio": item.unknown_ratio,
+            } for item in msg.candidates],
+        }
+        # rospy may dispatch a final queued candidate callback concurrently
+        # with the shutdown hook.  Serialize the write and close so a normal
+        # SIGINT cannot turn complete evidence into a spurious traceback.
+        with self.candidate_file_lock:
+            if self.candidate_file.closed:
+                return
+            self.candidate_file.write(
+                json.dumps(record, sort_keys=True) + "\n")
+            self.candidate_file.flush()
+        counts = self.candidate_rejection_observations[uid]
+        for item in msg.candidates:
+            if item.accepted:
+                continue
+            reason = item.rejection_reason or "UNSPECIFIED"
+            counts[reason] = counts.get(reason, 0) + 1
+
     def state_cb(self, uid, msg):
         previous_phase = self.last_phase.get(uid)
         holding_now = (
             msg.mission_phase == "HOLDING" or msg.flight_state == "HOLD")
         holding_before = self.holding[uid]
         now = rospy.Time.now().to_sec()
+        if msg.mission_phase not in self.phase_first_times[uid]:
+            self.phase_first_times[uid][msg.mission_phase] = now
         if holding_now and not holding_before:
             self.holds[uid] += 1
             self.hold_started[uid] = now
@@ -318,7 +431,33 @@ class EvidenceRecorder:
                     int(uid in self.orbit_release_times),
                 "u{}_orbit_speed_scale".format(uid):
                     self.orbit_speed_scale[uid],
+                "u{}_heartbeat_ok".format(uid): int(state.heartbeat_ok),
+                "u{}_localization_valid".format(uid):
+                    int(state.localization_valid),
+                "u{}_bridge_state".format(uid): self.bridge_states[uid],
+                "u{}_extended_landed_state".format(uid):
+                    self.extended_landed[uid],
+                "u{}_bridge_input_health".format(uid):
+                    self.bridge_health[uid],
             })
+            now_ros = rospy.Time.now().to_sec()
+            now_wall = time.monotonic()
+            for stream in (
+                    "mavros_pose_raw", "mavros_pose_framed",
+                    "fast_lio_odom_raw", "planner_odom"):
+                health = self.stream_health[uid].get(stream)
+                if health is None:
+                    continue
+                row.update({
+                    "u{}_{}_stamp".format(uid, stream): health["stamp"],
+                    "u{}_{}_stamp_age".format(uid, stream):
+                        now_ros - health["stamp"],
+                    "u{}_{}_receive_age".format(uid, stream):
+                        now_ros - health["ros_received"],
+                    "u{}_{}_wall_receive_age".format(uid, stream):
+                        now_wall - health["wall_received"],
+                    "u{}_{}_count".format(uid, stream): health["count"],
+                })
             if (uid in self.orbit_release_times
                     and state.mission_phase in self.active_orbit_phases):
                 desired_yaw = math.atan2(
@@ -396,6 +535,10 @@ class EvidenceRecorder:
         if not self.file.closed:
             self.file.flush()
             self.file.close()
+        with self.candidate_file_lock:
+            if not self.candidate_file.closed:
+                self.candidate_file.flush()
+                self.candidate_file.close()
         orbit = {}
         for uid, stats in self.orbit_height.items():
             orbit[str(uid)] = {
@@ -426,6 +569,9 @@ class EvidenceRecorder:
                 self.entry_corridor_nominal_angles),
             "entry_corridor_selection": self.entry_corridor_selection,
             "entry_corridor_diagnostics": self.entry_corridor_diagnostics,
+            "mission_phase_first_times": self.phase_first_times,
+            "candidate_rejection_observations": (
+                self.candidate_rejection_observations),
             "move_to_orbit_staging_time": self.move_to_orbit_staging_time,
             "orbit_staging_ready_times": self.orbit_staging_ready_times,
             "orbit_release_times": self.orbit_release_times,
@@ -490,6 +636,15 @@ class EvidenceRecorder:
             "final_mission_phase": self.last_phase,
             "final_flight_state": self.last_flight,
             "final_armed": self.armed,
+            "final_bridge_state": self.bridge_states,
+            "final_extended_landed_state": self.extended_landed,
+            "stream_message_counts": {
+                str(uid): {
+                    name: values.get("count", 0)
+                    for name, values in streams.items()
+                }
+                for uid, streams in self.stream_health.items()
+            },
         }
         with open(self.summary_path, "w") as stream:
             json.dump(summary, stream, indent=2, sort_keys=True)

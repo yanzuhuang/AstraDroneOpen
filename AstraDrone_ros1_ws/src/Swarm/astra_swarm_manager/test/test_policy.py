@@ -250,6 +250,38 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(bands["3-2"], "EMERGENCY")
         self.assertEqual(holds, {2, 1})
 
+    def test_leader_wait_keeps_follower_free_to_close_gap(self):
+        positions = {
+            3: self.point(40.0),
+            2: self.point(305.0),  # 95 deg behind UAV3
+            1: self.point(237.5),
+        }
+        holds, gaps, bands, reason = formation_phase_decision(
+            positions, (-10.0, 20.0), [3, 2, 1], 1,
+            57.5, 77.5, 45.0, 45.0, 95.0)
+        self.assertEqual(reason, "OK")
+        self.assertAlmostEqual(gaps["3-2"], 95.0)
+        self.assertEqual(bands["3-2"], "LEADER_WAIT")
+        self.assertEqual(holds, {3})
+
+        # The predecessor remains stopped through hysteresis, but the follower
+        # must remain permitted until the gap falls inside the normal band.
+        positions[2] = self.point(306.0)
+        holds, gaps, _, reason = formation_phase_decision(
+            positions, (-10.0, 20.0), [3, 2, 1], 1,
+            57.5, 77.5, 45.0, 45.0, 95.0, {3})
+        self.assertEqual(reason, "OK")
+        self.assertAlmostEqual(gaps["3-2"], 94.0)
+        self.assertEqual(holds, {3})
+
+        positions[2] = self.point(323.0)
+        holds, gaps, _, reason = formation_phase_decision(
+            positions, (-10.0, 20.0), [3, 2, 1], 1,
+            57.5, 77.5, 45.0, 45.0, 95.0, {3})
+        self.assertEqual(reason, "OK")
+        self.assertAlmostEqual(gaps["3-2"], 77.0)
+        self.assertNotIn(3, holds)
+
     def test_direct_hold_propagates_only_downstream_by_fixed_role(self):
         self.assertEqual(role_chain_hold_ids([3, 2, 1], 3), {2, 1})
         self.assertEqual(role_chain_hold_ids([3, 2, 1], 2), {1})

@@ -6,6 +6,7 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/px4_param_guard.py
+  scripts/spawn_model_verified.py
   scripts/swarm_conflict_injector.py
   scripts/swarm_evidence_recorder.py
   scripts/swarm_rviz_diagnostics.py

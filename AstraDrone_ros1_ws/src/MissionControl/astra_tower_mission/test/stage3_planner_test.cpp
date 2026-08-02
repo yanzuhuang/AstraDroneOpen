@@ -49,6 +49,46 @@ TEST(Stage3Planner, GoalInsideKnownObstacleIsRejected) {
   EXPECT_EQ(point.rejection_reason, "KNOWN_OBSTACLE_CLEARANCE");
 }
 
+TEST(Stage3Planner, CoarseObstacleClearanceIsAppliedExactlyOnce) {
+  Sector sector = makeSector();
+  StaticObstacle obstacle{"pole", 6.0, 0.0, 5.0, 0.5, 0.0, 10.0};
+  CandidateFilterConfig config;
+  config.minimum_clearance = 1.0;
+  config.cloud_inflation = 0.4;
+
+  CandidatePoint exactly_safe = candidate(7.5, 0.0);
+  EXPECT_TRUE(evaluateCandidate(&exactly_safe, sector,
+                                geometry_msgs::Point(), {}, {obstacle},
+                                true, config));
+
+  CandidatePoint too_close = candidate(7.49, 0.0);
+  EXPECT_FALSE(evaluateCandidate(&too_close, sector,
+                                 geometry_msgs::Point(), {}, {obstacle},
+                                 true, config));
+  EXPECT_EQ(too_close.rejection_reason, "KNOWN_OBSTACLE_CLEARANCE");
+}
+
+TEST(Stage3Planner, InclusiveOuterRadiusSurvivesPolarRoundOff) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.height = 3.0;
+  route.minimum_height = 2.0;
+  route.maximum_height = 4.0;
+  route.tower_collision_radius = 6.41;
+  route.minimum_safety_distance = 2.0;
+  const std::vector<CandidateOffset> offsets{{12.0, 4.0, 0.0}};
+  auto sectors = buildInspectionSectors(route, 8, 1, 22.0, 4.0, 1.0,
+                                        offsets);
+  ASSERT_EQ(sectors.size(), 8U);
+  ASSERT_EQ(sectors.front().candidates.size(), 1U);
+  CandidateFilterConfig config;
+  EXPECT_TRUE(evaluateCandidate(&sectors.front().candidates.front(),
+                                sectors.front(), geometry_msgs::Point(),
+                                {}, {}, true, config));
+}
+
 TEST(Stage3Planner, LowAltitudeBlockedNominalUsesSameSectorCandidate) {
   RouteConfig route;
   route.center_x = -10.0551;
@@ -544,6 +584,27 @@ TEST(Stage3Planner, NominalTargetWinsWheneverHardChecksAcceptIt) {
   EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0), 0);
 }
 
+TEST(Stage3Planner, Stage5PrefersClearStraightCorridorWithinSameSector) {
+  Sector sector = makeSector();
+  CandidatePoint nominal = candidate(8.0, 0.0);
+  nominal.id = "nominal_soft_risk";
+  nominal.accepted = true;
+  nominal.straight_corridor_blocked = true;
+  nominal.score = 100.0;
+  CandidatePoint outer = candidate(10.0, 0.0);
+  outer.id = "outer_clear";
+  outer.accepted = true;
+  outer.straight_corridor_blocked = false;
+  outer.score = -100.0;
+  sector.candidates = {nominal, outer};
+
+  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0), 0);
+  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0, true), 1);
+
+  sector.candidates[1].straight_corridor_blocked = true;
+  EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0, true), 0);
+}
+
 TEST(Stage3Planner, NearestSectorBecomesFirstWithoutChangingOrbitOrder) {
   RouteConfig route;
   route.center_x = 0.0;
@@ -1019,6 +1080,43 @@ TEST(Stage3Planner, OneAndMultipleLapsAreExplicitlyClosedAtWaypointOne) {
   EXPECT_EQ(two_laps[8], 0U);
   EXPECT_EQ(two_laps.back(), 0U);
   EXPECT_EQ(std::count(two_laps.begin(), two_laps.end(), 0U), 3);
+}
+
+TEST(Stage3Planner, JointEntryCandidateRetainsItsOwningSector) {
+  Sector first;
+  first.sector_id = 4;
+  CandidatePoint first_best;
+  first_best.id = "l0_s4_c0";
+  first_best.accepted = true;
+  first.candidates.push_back(first_best);
+  Sector locked;
+  locked.sector_id = 0;
+  CandidatePoint locked_candidate;
+  locked_candidate.id = "l0_s0_c2";
+  locked_candidate.accepted = true;
+  locked.candidates.push_back(locked_candidate);
+  const auto selected = findAcceptedCandidateById(
+      std::vector<Sector>{first, locked}, "l0_s0_c2");
+  EXPECT_EQ(selected.first, 1);
+  EXPECT_EQ(selected.second, 0);
+  locked_candidate.accepted = false;
+  locked.candidates.front() = locked_candidate;
+  EXPECT_EQ(findAcceptedCandidateById(
+                std::vector<Sector>{first, locked}, "l0_s0_c2"),
+            (std::pair<int, int>{-1, -1}));
+}
+
+TEST(Stage3Planner, Stage5PlannerMapContainsEveryOrbitHorizon) {
+  std::string reason;
+  EXPECT_FALSE(plannerMapContainsOrbitEnvelope(
+      -18.0551, 19.7104, 16.5, 7.5, 60.0, 80.0, &reason));
+  EXPECT_NE(reason.find("required_xy"), std::string::npos);
+  EXPECT_TRUE(plannerMapContainsOrbitEnvelope(
+      -18.0551, 19.7104, 16.5, 7.5, 90.0, 90.0, &reason));
+  EXPECT_TRUE(plannerMapContainsOrbitEnvelope(
+      -14.0551, 19.7104, 16.5, 7.5, 90.0, 90.0, nullptr));
+  EXPECT_TRUE(plannerMapContainsOrbitEnvelope(
+      -10.0551, 19.7104, 16.5, 7.5, 90.0, 90.0, nullptr));
 }
 
 TEST(Stage3Planner, LandingGetsADeadlineIndependentFromEgoReturn) {

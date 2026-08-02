@@ -23,16 +23,15 @@ constexpr double kAuthorityCheckInterval = 1.0;
 constexpr double kTfTimeout = 0.05;
 
 bool isFresh(const ros::Time& now, const ros::Time& received,
-             double timeout) {
-  return !received.isZero() && now >= received &&
-         (now - received) <= ros::Duration(timeout);
+             double timeout, double future_tolerance) {
+  return isTimestampUsable(now, received, timeout, future_tolerance);
 }
 
 bool isStampedFresh(const ros::Time& now, const ros::Time& received,
-                    const ros::Time& source_stamp, double timeout) {
-  return isFresh(now, received, timeout) && !source_stamp.isZero() &&
-         now >= source_stamp &&
-         (now - source_stamp) <= ros::Duration(timeout);
+                    const ros::Time& source_stamp, double timeout,
+                    double future_tolerance) {
+  return isFresh(now, received, timeout, future_tolerance) &&
+         isTimestampUsable(now, source_stamp, timeout, future_tolerance);
 }
 
 bool pointCloudHasFiniteXyz(const sensor_msgs::PointCloud2& cloud,
@@ -444,6 +443,8 @@ void EgoMavrosBridge::setupRosInterfaces() {
           "debug_setpoint", 10);
   state_publisher_ = private_node_handle_.advertise<std_msgs::String>(
       "state", 1, true);
+  input_health_publisher_ = private_node_handle_.advertise<std_msgs::String>(
+      "input_health", 10, true);
   tracking_error_publisher_ =
       private_node_handle_.advertise<std_msgs::Float64>(
           "tracking_error", 10);
@@ -1032,7 +1033,8 @@ bool EgoMavrosBridge::landService(std_srvs::Trigger::Request&,
           : std::numeric_limits<double>::infinity();
   const bool pose_fresh =
       have_mavros_pose_ && isFinitePose(mavros_pose_) &&
-      isFresh(now, last_mavros_pose_time_, config_.mavros_pose_timeout);
+      isFresh(now, last_mavros_pose_time_, config_.mavros_pose_timeout,
+              config_.timestamp_future_tolerance);
   const bool verified_home_hover =
       have_home_ && homeHoverAllowsAutoLand(
                         state_ == BridgeState::kHomeHover, true,
@@ -1100,6 +1102,16 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
   if (now.isZero()) {
     return;
   }
+  if (!last_control_time_.isZero() &&
+      now + ros::Duration(config_.timestamp_future_tolerance) <
+          last_control_time_) {
+    handleClockRollback(now);
+    last_control_time_ = now;
+    publishInputHealth(now);
+    return;
+  }
+  last_control_time_ = now;
+  publishInputHealth(now);
   // With /use_sim_time the constructor can run before the first /clock
   // sample. Anchor finite state timeouts on the first usable simulation time.
   if (state_entered_time_.isZero()) {
@@ -1429,7 +1441,8 @@ void EgoMavrosBridge::controlTimerCallback(const ros::TimerEvent&) {
       const bool extended_fresh =
           have_extended_state_ &&
           isFresh(now, last_extended_state_time_,
-                  config_.extended_state_timeout);
+                  config_.extended_state_timeout,
+                  config_.timestamp_future_tolerance);
       if (!fcu_state_.armed && extended_fresh &&
           extended_state_.landed_state ==
               mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND) {
@@ -1510,6 +1523,136 @@ void EgoMavrosBridge::publishState() {
   state_publisher_.publish(message);
 }
 
+void EgoMavrosBridge::publishInputHealth(const ros::Time& now) {
+  if (!input_health_publisher_ || now.isZero()) return;
+  if (!last_input_health_publish_time_.isZero() &&
+      now >= last_input_health_publish_time_ &&
+      now - last_input_health_publish_time_ < ros::Duration(0.1)) {
+    return;
+  }
+  last_input_health_publish_time_ = now;
+  const auto age = [&now](const ros::Time& stamp) {
+    return stamp.isZero() ? std::numeric_limits<double>::quiet_NaN()
+                          : (now - stamp).toSec();
+  };
+  const auto append_age = [](std::ostringstream* stream, const char* name,
+                             double value) {
+    *stream << '\"' << name << "\":";
+    if (std::isfinite(value)) {
+      *stream << value;
+    } else {
+      *stream << "null";
+    }
+  };
+
+  std::ostringstream stream;
+  stream.setf(std::ios::fixed);
+  stream.precision(6);
+  stream << "{\"now\":" << now.toSec()
+         << ",\"clock_epoch\":" << clock_epoch_
+         << ",\"bridge_state\":\"" << bridgeStateName(state_) << "\""
+         << ",\"fcu_have\":" << (have_fcu_state_ ? "true" : "false")
+         << ',';
+  append_age(&stream, "fcu_receive_age", age(last_fcu_state_time_));
+  stream << ",\"extended_have\":"
+         << (have_extended_state_ ? "true" : "false") << ',';
+  append_age(&stream, "extended_receive_age", age(last_extended_state_time_));
+  stream << ",\"mavros_pose_have\":"
+         << (have_mavros_pose_ ? "true" : "false") << ',';
+  append_age(&stream, "mavros_pose_receive_age", age(last_mavros_pose_time_));
+  stream << ',';
+  append_age(&stream, "mavros_pose_stamp_age", age(last_mavros_pose_stamp_));
+  stream << ",\"mavros_pose_fresh\":"
+         << (have_mavros_pose_ &&
+                     isStampedFresh(now, last_mavros_pose_time_,
+                                    last_mavros_pose_stamp_,
+                                    config_.mavros_pose_timeout,
+                                    config_.timestamp_future_tolerance)
+                 ? "true" : "false")
+         << ",\"planner_odom_have\":"
+         << (have_planner_odom_ ? "true" : "false") << ',';
+  append_age(&stream, "planner_odom_receive_age", age(last_planner_odom_time_));
+  stream << ',';
+  append_age(&stream, "planner_odom_stamp_age", age(last_planner_odom_stamp_));
+  stream << ",\"planner_odom_fresh\":"
+         << (have_planner_odom_ &&
+                     isStampedFresh(now, last_planner_odom_time_,
+                                    last_planner_odom_stamp_,
+                                    config_.planner_odom_timeout,
+                                    config_.timestamp_future_tolerance)
+                 ? "true" : "false")
+         << ",\"cloud_have\":" << (have_cloud_ ? "true" : "false")
+         << ',';
+  append_age(&stream, "cloud_receive_age", age(last_cloud_time_));
+  stream << ',';
+  append_age(&stream, "cloud_stamp_age", age(last_cloud_stamp_));
+  stream << ",\"cloud_fresh\":"
+         << (have_cloud_ &&
+                     isStampedFresh(now, last_cloud_time_, last_cloud_stamp_,
+                                    config_.cloud_timeout,
+                                    config_.timestamp_future_tolerance)
+                 ? "true" : "false")
+         << ",\"command_have\":"
+         << (have_planner_target_ ? "true" : "false") << ',';
+  append_age(&stream, "command_receive_age", age(last_command_time_));
+  stream << ',';
+  append_age(&stream, "command_stamp_age", age(last_command_stamp_));
+  stream << ",\"command_fresh\":"
+         << (commandFresh(now) ? "true" : "false") << '}';
+  std_msgs::String message;
+  message.data = stream.str();
+  input_health_publisher_.publish(message);
+}
+
+void EgoMavrosBridge::handleClockRollback(const ros::Time& now) {
+  const double rollback = (last_control_time_ - now).toSec();
+  ++clock_epoch_;
+  ROS_ERROR("[BRIDGE_TIME] ROS clock rollback detected: previous=%.6f "
+            "now=%.6f rollback=%.6fs epoch=%llu; invalidating all timed "
+            "inputs and waiting for new samples.",
+            last_control_time_.toSec(), now.toSec(), rollback,
+            static_cast<unsigned long long>(clock_epoch_));
+
+  if (have_mavros_pose_ && isFinitePose(mavros_pose_)) {
+    latchHoldAtCurrentPose();
+  }
+  have_fcu_state_ = false;
+  have_extended_state_ = false;
+  have_mavros_pose_ = false;
+  have_planner_odom_ = false;
+  have_cloud_ = false;
+  have_planner_target_ = false;
+  have_valid_goal_ = false;
+  have_orbit_speed_scale_ = false;
+  last_fcu_state_time_ = ros::Time(0);
+  last_extended_state_time_ = ros::Time(0);
+  last_mavros_pose_time_ = ros::Time(0);
+  last_mavros_pose_stamp_ = ros::Time(0);
+  last_planner_odom_time_ = ros::Time(0);
+  last_planner_odom_stamp_ = ros::Time(0);
+  last_cloud_time_ = ros::Time(0);
+  last_cloud_stamp_ = ros::Time(0);
+  last_command_time_ = ros::Time(0);
+  last_command_stamp_ = ros::Time(0);
+  last_orbit_speed_scale_time_ = ros::Time(0);
+  last_input_health_publish_time_ = ros::Time(0);
+  trajectory_gate_.cancel();
+  planning_cancel_publisher_.publish(std_msgs::Empty());
+
+  const bool airborne_state =
+      state_ == BridgeState::kTakeoff || state_ == BridgeState::kHoverReady ||
+      state_ == BridgeState::kTrackEgo || state_ == BridgeState::kHold ||
+      state_ == BridgeState::kHomeHover;
+  if (airborne_state) {
+    startHold("ROS clock epoch changed; timed inputs invalidated");
+  } else if (state_ != BridgeState::kDryRun &&
+             state_ != BridgeState::kLanding &&
+             state_ != BridgeState::kDone && state_ != BridgeState::kError) {
+    transitionTo(BridgeState::kWaitInputs,
+                 "ROS clock epoch changed; waiting for fresh inputs");
+  }
+}
+
 void EgoMavrosBridge::publishSetpoint(
     const geometry_msgs::PoseStamped& desired, const ros::Time& now) {
   if (!config_.enable_control || !setpoint_publisher_) {
@@ -1584,20 +1727,23 @@ void EgoMavrosBridge::latchHoldAtCurrentPose() {
 bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
                                       std::string* reason) const {
   if (!have_fcu_state_ || !fcu_state_.connected ||
-      !isFresh(now, last_fcu_state_time_, config_.fcu_state_timeout)) {
+      !isFresh(now, last_fcu_state_time_, config_.fcu_state_timeout,
+               config_.timestamp_future_tolerance)) {
     *reason = "FCU state is unavailable, disconnected or stale";
     return false;
   }
   if (!have_extended_state_ ||
       !isFresh(now, last_extended_state_time_,
-               config_.extended_state_timeout)) {
+               config_.extended_state_timeout,
+               config_.timestamp_future_tolerance)) {
     *reason = "PX4 extended state is unavailable or stale";
     return false;
   }
   if (!have_mavros_pose_ ||
       !isStampedFresh(now, last_mavros_pose_time_,
                       last_mavros_pose_stamp_,
-                      config_.mavros_pose_timeout)) {
+                      config_.mavros_pose_timeout,
+                      config_.timestamp_future_tolerance)) {
     *reason =
         "MAVROS local pose is unavailable, stale or has an unusable timestamp";
     return false;
@@ -1605,14 +1751,16 @@ bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
   if (!have_planner_odom_ ||
       !isStampedFresh(now, last_planner_odom_time_,
                       last_planner_odom_stamp_,
-                      config_.planner_odom_timeout)) {
+                      config_.planner_odom_timeout,
+                      config_.timestamp_future_tolerance)) {
     *reason =
         "planner odometry is unavailable, stale or has an unusable timestamp";
     return false;
   }
   if (!have_cloud_ ||
       !isStampedFresh(now, last_cloud_time_, last_cloud_stamp_,
-                      config_.cloud_timeout)) {
+                      config_.cloud_timeout,
+                      config_.timestamp_future_tolerance)) {
     *reason =
         "obstacle point cloud is unavailable, stale or has an unusable timestamp";
     return false;
@@ -1620,7 +1768,8 @@ bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
   if (config_.require_orbit_speed_scale &&
       (!have_orbit_speed_scale_ ||
        !isFresh(now, last_orbit_speed_scale_time_,
-                config_.orbit_speed_scale_timeout))) {
+                config_.orbit_speed_scale_timeout,
+                config_.timestamp_future_tolerance))) {
     *reason = "orbit speed scale is unavailable, invalid or stale";
     return false;
   }
@@ -1630,7 +1779,8 @@ bool EgoMavrosBridge::baseInputsFresh(const ros::Time& now,
 
 bool EgoMavrosBridge::commandFresh(const ros::Time& now) const {
   return have_planner_target_ &&
-         isFresh(now, last_command_time_, config_.command_timeout) &&
+         isFresh(now, last_command_time_, config_.command_timeout,
+                 config_.timestamp_future_tolerance) &&
          isTimestampUsable(now, last_command_stamp_,
                            config_.command_timeout,
                            config_.timestamp_future_tolerance);
@@ -1986,9 +2136,11 @@ void EgoMavrosBridge::startHold(const std::string& reason) {
 bool EgoMavrosBridge::publishReturnGoal(std::string* reason) {
   const ros::Time now = ros::Time::now();
   if (!have_planner_odom_ ||
-      !isFresh(now, last_planner_odom_time_, config_.planner_odom_timeout) ||
+      !isFresh(now, last_planner_odom_time_, config_.planner_odom_timeout,
+               config_.timestamp_future_tolerance) ||
       !have_cloud_ ||
-      !isFresh(now, last_cloud_time_, config_.cloud_timeout)) {
+      !isFresh(now, last_cloud_time_, config_.cloud_timeout,
+               config_.timestamp_future_tolerance)) {
     *reason = "planner odometry or cloud is stale";
     return false;
   }

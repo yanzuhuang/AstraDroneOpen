@@ -137,15 +137,39 @@ class SafetyMonitor:
     def timer_cb(self, _event):
         now = rospy.Time.now()
         for uid in self.uav_ids:
-            if (uid not in self.states or uid not in self.received or
-                    (now - self.received[uid]).to_sec() > self.timeout or
-                    not self.states[uid].heartbeat_ok or
-                    not self.states[uid].localization_valid):
+            state = self.states.get(uid)
+            received = self.received.get(uid)
+            if state is None or received is None:
                 self.clear_pub.publish(Bool(data=False))
                 self.publish_event(
-                    uid, 0,
-                    "HEARTBEAT_OR_LOCALIZATION_TIMEOUT",
-                    "new permissions are inhibited", SafetyEvent.STOP)
+                    uid, 0, "SWARM_STATE_MISSING",
+                    "no swarm state has been received; new permissions are "
+                    "inhibited", SafetyEvent.STOP)
+                return
+            state_age = (now - received).to_sec()
+            if state_age > self.timeout:
+                self.clear_pub.publish(Bool(data=False))
+                self.publish_event(
+                    uid, 0, "SWARM_STATE_TIMEOUT",
+                    "swarm state age {:.3f}s exceeds {:.3f}s; new "
+                    "permissions are inhibited".format(
+                        state_age, self.timeout), SafetyEvent.STOP)
+                return
+            if not state.heartbeat_ok:
+                self.clear_pub.publish(Bool(data=False))
+                self.publish_event(
+                    uid, 0, "HEARTBEAT_TIMEOUT",
+                    "heartbeat_ok=false with swarm state age {:.3f}s; new "
+                    "permissions are inhibited".format(state_age),
+                    SafetyEvent.STOP)
+                return
+            if not state.localization_valid:
+                self.clear_pub.publish(Bool(data=False))
+                self.publish_event(
+                    uid, 0, "LOCALIZATION_TIMEOUT",
+                    "localization_valid=false with swarm state age {:.3f}s; "
+                    "new permissions are inhibited".format(state_age),
+                    SafetyEvent.STOP)
                 return
         for uid in self.uav_ids:
             trajectory = self.trajectories.get(uid)

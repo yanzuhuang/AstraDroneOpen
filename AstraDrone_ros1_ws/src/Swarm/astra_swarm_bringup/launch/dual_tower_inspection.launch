@@ -102,6 +102,7 @@
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
+  <arg name="prefer_clear_straight_corridor" default="false"/>
   <arg name="uav1_report_file" default="/tmp/astra_swarm_uav1.csv"/>
   <arg name="uav2_report_file" default="/tmp/astra_swarm_uav2.csv"/>
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
@@ -365,6 +366,8 @@
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+    <arg name="prefer_clear_straight_corridor"
+         value="$(arg prefer_clear_straight_corridor)"/>
     <arg name="swarm_origin_x" value="$(arg uav1_spawn_x)"/>
     <arg name="swarm_origin_y" value="$(arg spawn_y)"/>
     <arg name="tower_center_x"
@@ -430,6 +433,8 @@
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
+    <arg name="prefer_clear_straight_corridor"
+         value="$(arg prefer_clear_straight_corridor)"/>
     <arg name="swarm_origin_x" value="$(arg uav2_spawn_x)"/>
     <arg name="swarm_origin_y" value="$(arg spawn_y)"/>
     <arg name="tower_center_x"

@@ -92,6 +92,21 @@ TEST(EgoTaskProgress, RelaxesOnlyTowerTransitTransitions) {
                    selectArrivalTolerance(false, 0U, 0U, 0.40, 0.50));
 }
 
+TEST(EgoTaskProgress, SkipsBlockedHistoricalReturnSamples) {
+  const std::vector<bool> endpoint_safety{false, false, false, true, true};
+  EXPECT_EQ(3U, nextSafeReturnGoalIndex(endpoint_safety, 0U));
+  EXPECT_EQ(4U, nextSafeReturnGoalIndex(endpoint_safety, 3U));
+}
+
+TEST(EgoTaskProgress, FailsClosedWhenNoSafeReturnSampleRemains) {
+  const std::vector<bool> endpoint_safety{true, false, false};
+  EXPECT_EQ(endpoint_safety.size(),
+            nextSafeReturnGoalIndex(endpoint_safety, 0U));
+  EXPECT_EQ(endpoint_safety.size(),
+            nextSafeReturnGoalIndex(endpoint_safety,
+                                    endpoint_safety.size()));
+}
+
 }  // namespace
 }  // namespace astra_tower_mission
 

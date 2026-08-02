@@ -4,6 +4,7 @@
  * This node owns task policy only.  It never publishes a MAVROS setpoint;
  * bridge services are the sole HOLD/RESUME/RETURN/LAND control boundary.
  */
+#include "astra_tower_mission/ego_task_utils.h"
 #include "astra_tower_mission/stage3_planner.h"
 
 #include <astra_custom_msgs/InspectionCandidate.h>
@@ -601,6 +602,10 @@ class Stage3EgoMissionNode {
                         4.0);
     private_node_.param("mission/sector_height_half_width", sector_height_half_width_,
                         3.0);
+    private_node_.param("planner_map/size_x", planner_map_size_x_, 0.0);
+    private_node_.param("planner_map/size_y", planner_map_size_y_, 0.0);
+    private_node_.param("planner_map/planning_horizon",
+                        planner_map_planning_horizon_, 0.0);
     private_node_.param("mission/maximum_temporary_descent",
                         maximum_temporary_descent_, 3.0);
     private_node_.param("mission/target_replacement_margin",
@@ -622,6 +627,8 @@ class Stage3EgoMissionNode {
     private_node_.param(
         "candidate/known_obstacle_corridor_is_hard_constraint",
         filter_config_.known_obstacle_corridor_is_hard_constraint, false);
+    private_node_.param("candidate/prefer_clear_straight_corridor",
+                        filter_config_.prefer_clear_straight_corridor, false);
     private_node_.param("candidate/corridor_sample_step",
                         filter_config_.corridor_sample_step, 0.5);
     private_node_.param("candidate/blocked_corridor_penalty",
@@ -672,6 +679,26 @@ class Stage3EgoMissionNode {
       for (double radius : radius_offsets)
         for (double height : height_offsets)
           offsets_.push_back({angle, radius, height});
+    if (low_altitude_mode_ && planner_map_size_x_ > 0.0 &&
+        planner_map_size_y_ > 0.0) {
+      const double maximum_radius_offset =
+          radius_offsets.empty()
+              ? 0.0
+              : std::max(0.0, *std::max_element(radius_offsets.begin(),
+                                                radius_offsets.end()));
+      std::string map_contract;
+      if (!plannerMapContainsOrbitEnvelope(
+              route_.center_x, route_.center_y,
+              route_.radius + maximum_radius_offset,
+              planner_map_planning_horizon_, planner_map_size_x_,
+              planner_map_size_y_, &map_contract)) {
+        throw std::runtime_error(
+            "EGO map does not contain the full orbit plus planning horizon: " +
+            map_contract);
+      }
+      ROS_WARN("[STAGE3_PREFLIGHT] EGO map envelope verified: %s",
+               map_contract.c_str());
+    }
     entry_gate_config_.inspection_height = inspection_height_;
     entry_gate_config_.minimum_height = route_.minimum_height;
     entry_gate_config_.maximum_height = virtual_ceil_height_;
@@ -2598,6 +2625,7 @@ class Stage3EgoMissionNode {
 
     int selected_order_index = -1;
     int selected_candidate_index = -1;
+    std::vector<int> best_candidate_indices(sectors_.size(), -1);
     for (std::size_t order_index = 0; order_index < sectors_.size();
          ++order_index) {
       Sector& sector = sectors_[order_index];
@@ -2621,20 +2649,11 @@ class Stage3EgoMissionNode {
           candidate.rejection_reason = "FIRST_LEG_TOWER_KEEP_OUT";
         }
       }
-      const int candidate_index = chooseBestCandidate(sector, nullptr, 0.0);
-      int selected_index = candidate_index;
-      if (entry_corridor_locked_ &&
-          !selected_entry_corridor_.orbit_candidate_id.empty()) {
-        for (std::size_t index = 0; index < sector.candidates.size();
-             ++index) {
-          if (sector.candidates[index].id ==
-                  selected_entry_corridor_.orbit_candidate_id &&
-              sector.candidates[index].accepted) {
-            selected_index = static_cast<int>(index);
-            break;
-          }
-        }
-      }
+      const int candidate_index = chooseBestCandidate(
+          sector, nullptr, 0.0,
+          filter_config_.prefer_clear_straight_corridor);
+      best_candidate_indices[order_index] = candidate_index;
+      const int selected_index = candidate_index;
       const bool skipped = sector.sector_id == skipped_sector_id;
       // skip_current_sector is retained for call-site compatibility, but an
       // unreachable first target must now try the next candidate in the same
@@ -2660,9 +2679,27 @@ class Stage3EgoMissionNode {
                safe ? "true" : "false",
                skipped ? "SAME_SECTOR_RETRY" : "DIRECTIONAL_SECTOR",
                candidate == nullptr ? "none" : candidate->id.c_str());
-      if (selected_order_index < 0 && safe) {
+    }
+
+    if (entry_corridor_locked_ &&
+        !selected_entry_corridor_.orbit_candidate_id.empty()) {
+      const auto locked = findAcceptedCandidateById(
+          sectors_, selected_entry_corridor_.orbit_candidate_id);
+      selected_order_index = locked.first;
+      selected_candidate_index = locked.second;
+      if (selected_order_index < 0) {
+        ROS_ERROR("[STAGE5_ENTRY] UAV%d jointly locked orbit candidate %s "
+                  "is no longer accepted; refusing a mismatched sector",
+                  uav_id_,
+                  selected_entry_corridor_.orbit_candidate_id.c_str());
+      }
+    } else {
+      for (std::size_t order_index = 0;
+           order_index < best_candidate_indices.size(); ++order_index) {
+        if (best_candidate_indices[order_index] < 0) continue;
         selected_order_index = static_cast<int>(order_index);
-        selected_candidate_index = selected_index;
+        selected_candidate_index = best_candidate_indices[order_index];
+        break;
       }
     }
 
@@ -2681,6 +2718,43 @@ class Stage3EgoMissionNode {
     safe_sector.locked_index = selected_candidate_index;
     safe_sector.state = SectorState::kTargetLocked;
     active_target_ = safe_sector.candidates[selected_candidate_index];
+    // The joint Stage-5 selector may deliberately choose a temporary
+    // 14.5/16.5 m staging radius to keep the three ingress trajectories
+    // separated.  Preserve that selected staging point for the first
+    // waypoint; subsequent sector targets remain the nominal orbit radius,
+    // allowing a smooth return to the 12.5 m inspection circle after release.
+    if (entry_corridor_locked_ &&
+        !selected_entry_corridor_.orbit_candidate_id.empty()) {
+      const CandidatePoint& staging = selected_entry_corridor_.orbit_staging;
+      const double staging_radius = std::hypot(
+          staging.x - route_.center_x, staging.y - route_.center_y);
+      const double nominal_radius = std::hypot(
+          active_target_.x - route_.center_x,
+          active_target_.y - route_.center_y);
+      const double staging_delta = std::sqrt(
+          (staging.x - active_target_.x) *
+              (staging.x - active_target_.x) +
+          (staging.y - active_target_.y) *
+              (staging.y - active_target_.y) +
+          (staging.z - active_target_.z) *
+              (staging.z - active_target_.z));
+      if (std::isfinite(staging_radius) &&
+          std::isfinite(nominal_radius) &&
+          std::isfinite(staging_delta) && staging_delta > 1.0e-6) {
+        active_target_.x = staging.x;
+        active_target_.y = staging.y;
+        active_target_.z = staging.z;
+        active_target_.yaw = staging.yaw;
+        ROS_WARN(
+            "[STAGE5_ENTRY] UAV%d applying jointly selected staging "
+            "angle=%.1fdeg radius=%.2fm (nominal=%.2fm) for first waypoint; "
+            "later sectors return to nominal orbit radius",
+            uav_id_, positiveAngleDegrees(std::atan2(
+                         staging.y - route_.center_y,
+                         staging.x - route_.center_x)),
+            staging_radius, nominal_radius);
+      }
+    }
     layer_start_anchor_ = active_target_;
     have_layer_start_anchor_ = true;
     layer_start_anchors_[current_layer_] = active_target_;
@@ -2839,8 +2913,41 @@ class Stage3EgoMissionNode {
     const CandidatePoint* locked = sector.locked_index >= 0
                                        ? &sector.candidates[sector.locked_index]
                                        : nullptr;
-    const int selected = chooseBestCandidate(sector, locked, target_replacement_margin_);
+    const int selected = chooseBestCandidate(
+        sector, locked, target_replacement_margin_,
+        filter_config_.prefer_clear_straight_corridor);
     if (selected < 0) {
+      std::unordered_map<std::string, int> rejection_counts;
+      for (const auto& candidate : sector.candidates) {
+        const std::string reason = candidate.rejection_reason.empty()
+                                       ? "UNSPECIFIED"
+                                       : candidate.rejection_reason;
+        ++rejection_counts[reason];
+        const double angle = positiveAngleDegrees(std::atan2(
+            candidate.y - route_.center_y,
+            candidate.x - route_.center_x));
+        const double radius = std::hypot(candidate.x - route_.center_x,
+                                         candidate.y - route_.center_y);
+        ROS_ERROR("[STAGE3_CANDIDATE_EXHAUSTED] uav=%d sector=%d id=%s "
+                  "xyz=(%.6f,%.6f,%.6f) angle=%.6fdeg radius=%.6fm "
+                  "accepted=%s planner_unreachable=%s clearance=%.6fm "
+                  "reason=%s",
+                  uav_id_, sector.sector_id + 1, candidate.id.c_str(),
+                  candidate.x, candidate.y, candidate.z, angle, radius,
+                  candidate.accepted ? "true" : "false",
+                  candidate.planner_unreachable ? "true" : "false",
+                  candidate.clearance, reason.c_str());
+      }
+      std::ostringstream breakdown;
+      for (const auto& item : rejection_counts) {
+        if (!breakdown.str().empty()) breakdown << '|';
+        breakdown << item.first << ':' << item.second;
+      }
+      ROS_ERROR("[STAGE3_CANDIDATE_EXHAUSTED] uav=%d sector=%d total=%zu "
+                "breakdown=%s map_clearance=%.3fm raw_or_coarse_clearance=%.3fm",
+                uav_id_, sector.sector_id + 1, sector.candidates.size(),
+                breakdown.str().c_str(), mappedTaskClearance(),
+                filter_config_.minimum_clearance);
       CandidatePoint detour;
       CandidatePoint final_target;
       int final_index = -1;
@@ -4536,7 +4643,11 @@ class Stage3EgoMissionNode {
         } else {
           ROS_WARN("[STAGE3_DIAG] uav=%d MOVE_TO_ORBIT_STAGING accepted "
                    "first_point_angle=%.1fdeg radius=%.2fm",
-                   uav_id_, entry_angle_deg_, route_.radius);
+                   uav_id_, positiveAngleDegrees(std::atan2(
+                                active_target_.y - route_.center_y,
+                                active_target_.x - route_.center_x)),
+                   std::hypot(active_target_.x - route_.center_x,
+                              active_target_.y - route_.center_y));
         }
       }
     } else if (state_ == MissionState::kWaitOrbitPermission) {
@@ -5043,8 +5154,40 @@ class Stage3EgoMissionNode {
             transition(MissionState::kNormalReturn,
                        "bounded normal-return retry");
           } else {
-            requestReturnOrLand(
-                "normal return retries exhausted; RETURN_EGRESS fallback");
+            std::vector<bool> endpoint_safety(normal_return_goals_.size(),
+                                              false);
+            for (std::size_t index = normal_return_index_ + 1U;
+                 index < normal_return_goals_.size(); ++index) {
+              endpoint_safety[index] =
+                  normalReturnGoalSafe(normal_return_goals_[index], now);
+            }
+            const std::size_t failed_index = normal_return_index_;
+            const std::size_t next_index = nextSafeReturnGoalIndex(
+                endpoint_safety, failed_index);
+            if (next_index < normal_return_goals_.size()) {
+              ROS_WARN(
+                  "[STAGE3_DIAG] uav=%d blocked reverse-ingress endpoint "
+                  "skipped failed_index=%zu failed_target=%s "
+                  "next_index=%zu next_target=%s skipped=%zu "
+                  "map_fresh=true action=CONTINUE_REVERSE_ACTUAL_INGRESS",
+                  uav_id_, failed_index + 1U,
+                  normal_return_goals_[failed_index].id.c_str(),
+                  next_index + 1U,
+                  normal_return_goals_[next_index].id.c_str(),
+                  next_index - failed_index);
+              normal_return_index_ = next_index;
+              normal_return_retries_ = 0;
+              have_sent_goal_ = false;
+              transition(
+                  MissionState::kNormalReturn,
+                  "blocked historical ingress sample skipped after bounded "
+                  "retries; continuing reverse actual ingress with the next "
+                  "safe endpoint and a fresh EGO plan");
+            } else {
+              requestReturnOrLand(
+                  "normal return retries exhausted and no later reverse "
+                  "ingress endpoint is safe; RETURN_EGRESS fallback");
+            }
           }
         } else if (sector_retry_pending_) {
           sector_retry_pending_ = false;
@@ -5462,6 +5605,8 @@ class Stage3EgoMissionNode {
       transit_height_{4.0};
   double observation_radius_offset_{5.0}, observation_angle_deg_{-67.5}, approach_segment_length_{6.0};
   double sector_angle_half_width_deg_{12.0}, sector_radius_half_width_{4.0}, sector_height_half_width_{1.0};
+  double planner_map_size_x_{0.0}, planner_map_size_y_{0.0},
+      planner_map_planning_horizon_{0.0};
   double maximum_temporary_descent_{3.0};
   double target_replacement_margin_{2.0}, recovery_height_{35.0}, start_angle_deg_{0.0};
   double entry_gate_segment_length_{6.0}, entry_gate_target_timeout_{90.0};

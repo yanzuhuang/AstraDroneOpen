@@ -44,6 +44,7 @@
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
+  <arg name="prefer_clear_straight_corridor" default="false"/>
   <arg name="swarm_common_frame" default="world"/>
   <arg name="swarm_origin_x" default="0.0"/>
   <arg name="swarm_origin_y" default="0.0"/>
@@ -205,6 +206,15 @@
       <rosparam param="candidate/radius_offsets_m">
         [0.0, 2.0, 4.0]
       </rosparam>
+      <param name="candidate/prefer_clear_straight_corridor"
+             value="$(arg prefer_clear_straight_corridor)"/>
+      <!-- The vendor grid is fixed about the local planning-frame origin.
+           Give the task the same bounds so an orbit can never be accepted
+           when its planning-horizon envelope extends outside that grid. -->
+      <param name="planner_map/size_x" value="$(arg map_size_x)"/>
+      <param name="planner_map/size_y" value="$(arg map_size_y)"/>
+      <param name="planner_map/planning_horizon"
+             value="$(arg planning_horizon)"/>
       <param name="mission/virtual_ceil_height"
              value="$(arg virtual_ceil_height)"/>
       <param name="low_altitude/enabled"
