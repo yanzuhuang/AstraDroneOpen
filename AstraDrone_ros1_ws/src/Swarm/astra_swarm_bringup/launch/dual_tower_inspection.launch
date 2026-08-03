@@ -60,12 +60,6 @@
   <arg name="uav1_spawn_x" default="0.0"/>
   <arg name="uav2_spawn_x" default="2.0"/>
   <arg name="spawn_y" default="0.0"/>
-  <arg name="uav1_static_pine_x"
-       default="$(eval -21.0347 - float(arg('uav1_spawn_x')))"/>
-  <arg name="uav2_static_pine_x"
-       default="$(eval -21.0347 - float(arg('uav2_spawn_x')))"/>
-  <arg name="static_pine_y"
-       default="$(eval 24.6252 - float(arg('spawn_y')))"/>
   <arg name="swarm_uav_ids" default="[1, 2]"/>
   <arg name="swarm_vehicle_namespaces" default="[/uav1, /uav2]"/>
   <arg name="swarm_mission_heights" default="[34.0, 28.0]"/>
@@ -178,23 +172,26 @@
       <param name="home_x" value="$(arg uav1_spawn_x)"/>
       <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
-      <!-- The worksite pine collision mesh is sparse foliage.  At 2 to 4 m,
-           stamp its measured 1.59 m mesh envelope into every local cloud so
-           EGO cannot plan through holes between visual triangles. -->
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/x"
-                subst_value="true">[$(arg uav1_static_pine_x)]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/y"
-                subst_value="true">[$(arg static_pine_y)]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/z_min">[0.15]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/z_max">[4.70]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/radius">[1.90]</rosparam>
-      <param if="$(arg low_altitude_enabled)"
-             name="static_cylinders/resolution" value="0.50"/>
+    </node>
+
+    <!-- Self and peer responsibilities remain separate.  The peer-filtered
+         cloud is sampled against the odometry-synchronized, model-derived
+         self mask before the existing ground filter/EGO input. -->
+    <node pkg="astra_swarm_perception" type="self_cloud_filter_node"
+          name="self_cloud_filter" output="screen" required="true">
+      <rosparam command="load"
+                file="$(find astra_swarm_perception)/config/iris_mid360_self_exclusion.yaml"/>
+      <param name="input_topic"
+             value="/uav1/cloud_registered_peer_filtered"/>
+      <param name="odom_topic" value="/uav1/Odometry"/>
+      <param name="output_topic"
+             value="/uav1/cloud_registered_self_filtered"/>
+      <param name="before_topic" value="/uav1/stage5/cloud_before_self"/>
+      <param name="after_topic" value="/uav1/stage5/cloud_after_self"/>
+      <param name="inflated_occupancy_topic"
+             value="/uav1/stage3/occupancy_inflate"/>
+      <param name="diagnostic_topic"
+             value="/uav1/stage5/cloud_filter_diagnostics"/>
     </node>
 
     <group ns="swarm">
@@ -275,20 +272,23 @@
       <param name="home_x" value="$(arg uav2_spawn_x)"/>
       <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/x"
-                subst_value="true">[$(arg uav2_static_pine_x)]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/y"
-                subst_value="true">[$(arg static_pine_y)]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/z_min">[0.15]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/z_max">[4.70]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/radius">[1.90]</rosparam>
-      <param if="$(arg low_altitude_enabled)"
-             name="static_cylinders/resolution" value="0.50"/>
+    </node>
+
+    <node pkg="astra_swarm_perception" type="self_cloud_filter_node"
+          name="self_cloud_filter" output="screen" required="true">
+      <rosparam command="load"
+                file="$(find astra_swarm_perception)/config/iris_mid360_self_exclusion.yaml"/>
+      <param name="input_topic"
+             value="/uav2/cloud_registered_peer_filtered"/>
+      <param name="odom_topic" value="/uav2/Odometry"/>
+      <param name="output_topic"
+             value="/uav2/cloud_registered_self_filtered"/>
+      <param name="before_topic" value="/uav2/stage5/cloud_before_self"/>
+      <param name="after_topic" value="/uav2/stage5/cloud_after_self"/>
+      <param name="inflated_occupancy_topic"
+             value="/uav2/stage3/occupancy_inflate"/>
+      <param name="diagnostic_topic"
+             value="/uav2/stage5/cloud_filter_diagnostics"/>
     </node>
 
     <group ns="swarm">

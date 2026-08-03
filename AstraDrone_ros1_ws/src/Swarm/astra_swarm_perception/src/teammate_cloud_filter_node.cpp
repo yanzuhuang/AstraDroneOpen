@@ -1,4 +1,7 @@
 #include <astra_swarm_msgs/SwarmState.h>
+#include <diagnostic_msgs/DiagnosticArray.h>
+#include <diagnostic_msgs/DiagnosticStatus.h>
+#include <diagnostic_msgs/KeyValue.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
@@ -21,6 +24,9 @@ class TeammateCloudFilter {
     pnh_.param<std::string>("input_topic", input, "cloud_registered");
     pnh_.param<std::string>("output_topic", output,
                             "cloud_registered_peer_filtered");
+    std::string diagnostic_topic;
+    pnh_.param<std::string>("diagnostic_topic", diagnostic_topic,
+                            "stage5/cloud_filter_diagnostics");
     cloud_sub_ = nh_.subscribe(input, 1, &TeammateCloudFilter::cloudCb, this);
     std::vector<std::string> peer_topics;
     XmlRpc::XmlRpcValue configured_topics;
@@ -47,6 +53,8 @@ class TeammateCloudFilter {
           boost::bind(&TeammateCloudFilter::peerCb, this, _1, index)));
     }
     cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(output, 1);
+    diagnostic_pub_ =
+        nh_.advertise<diagnostic_msgs::DiagnosticArray>(diagnostic_topic, 10);
   }
 
  private:
@@ -141,6 +149,10 @@ class TeammateCloudFilter {
     }
     if (!have_live_peer && static_points_.empty()) {
       cloud_pub_.publish(message);
+      publishDiagnostic(message->header,
+                        static_cast<std::size_t>(message->width) * message->height,
+                        0U, 0U,
+                        static_cast<std::size_t>(message->width) * message->height);
       return;
     }
     sensor_msgs::PointCloud2 output;
@@ -158,10 +170,13 @@ class TeammateCloudFilter {
     sensor_msgs::PointCloud2Iterator<float> out_y(output, "y");
     sensor_msgs::PointCloud2Iterator<float> out_z(output, "z");
     std::size_t kept = 0U;
+    std::size_t peer_removed = 0U;
+    std::size_t nonfinite_removed = 0U;
     const double radius_squared = radius_ * radius_;
     for (; in_x != in_x.end(); ++in_x, ++in_y, ++in_z) {
       if (!std::isfinite(*in_x) || !std::isfinite(*in_y) ||
           !std::isfinite(*in_z)) {
+        ++nonfinite_removed;
         continue;
       }
       bool inside_peer_envelope = false;
@@ -178,7 +193,10 @@ class TeammateCloudFilter {
           break;
         }
       }
-      if (inside_peer_envelope) continue;
+      if (inside_peer_envelope) {
+        ++peer_removed;
+        continue;
+      }
       *out_x = *in_x;
       *out_y = *in_y;
       *out_z = *in_z;
@@ -199,12 +217,46 @@ class TeammateCloudFilter {
     modifier.resize(kept);
     output.width = static_cast<std::uint32_t>(kept);
     cloud_pub_.publish(output);
+    publishDiagnostic(message->header,
+                      static_cast<std::size_t>(message->width) * message->height,
+                      peer_removed, nonfinite_removed, kept);
+    ROS_INFO_THROTTLE(1.0,
+                      "[STAGE5_PEER_FILTER] input=%u peer_removed=%zu "
+                      "nonfinite_removed=%zu static_added=%zu output=%zu",
+                      message->width * message->height, peer_removed,
+                      nonfinite_removed, static_points_.size(), kept);
+  }
+
+  void publishDiagnostic(const std_msgs::Header& header, std::size_t input,
+                         std::size_t peer_removed,
+                         std::size_t nonfinite_removed,
+                         std::size_t output) {
+    diagnostic_msgs::DiagnosticArray array;
+    array.header = header;
+    diagnostic_msgs::DiagnosticStatus status;
+    status.level = diagnostic_msgs::DiagnosticStatus::OK;
+    status.name = ros::this_node::getNamespace() + "/peer_filter";
+    status.hardware_id = ros::this_node::getName();
+    status.message = "OK";
+    const auto add = [&status](const std::string& key, std::size_t value) {
+      diagnostic_msgs::KeyValue item;
+      item.key = key;
+      item.value = std::to_string(value);
+      status.values.push_back(item);
+    };
+    add("input_points", input);
+    add("peer_removed_points", peer_removed);
+    add("nonfinite_removed_points", nonfinite_removed);
+    add("static_points_added", static_points_.size());
+    add("output_points", output);
+    array.status.push_back(status);
+    diagnostic_pub_.publish(array);
   }
 
   ros::NodeHandle nh_, pnh_;
   ros::Subscriber cloud_sub_;
   std::vector<ros::Subscriber> peer_subs_;
-  ros::Publisher cloud_pub_;
+  ros::Publisher cloud_pub_, diagnostic_pub_;
   double home_x_{0.0}, home_y_{0.0}, home_z_{0.0};
   double radius_{1.2}, timeout_{1.0};
   std::vector<Peer> peers_;

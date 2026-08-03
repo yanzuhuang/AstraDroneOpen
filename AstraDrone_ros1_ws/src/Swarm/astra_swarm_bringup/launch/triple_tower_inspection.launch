@@ -62,10 +62,6 @@
   <arg name="uav2_spawn_x" default="4.0"/>
   <arg name="uav3_spawn_x" default="8.0"/>
   <arg name="spawn_y" default="0.0"/>
-  <arg name="uav3_static_pine_x"
-       default="$(eval -21.0347 - float(arg('uav3_spawn_x')))"/>
-  <arg name="static_pine_y"
-       default="$(eval 24.6252 - float(arg('spawn_y')))"/>
   <arg name="map_size_z" default="46.0"/>
   <!-- UAV3's local tower center is x=-18.0551.  A 16.5 m same-sector
        candidate plus the unchanged 7.5 m EGO horizon reaches x=-42.0551;
@@ -279,23 +275,22 @@
       <param name="home_x" value="$(arg uav3_spawn_x)"/>
       <param name="home_y" value="$(arg spawn_y)"/>
       <param name="home_z" value="0.0"/>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/x"
-                subst_value="true">[$(arg uav3_static_pine_x)]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/y"
-                subst_value="true">[$(arg static_pine_y)]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/z_min">[0.15]</rosparam>
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/z_max">[4.70]</rosparam>
-      <!-- Conservative envelope: larger than the measured 1.65 m trunk
-           radius while using a coarser cached lattice so three planners do
-           not starve MAVROS callbacks. -->
-      <rosparam if="$(arg low_altitude_enabled)"
-                param="static_cylinders/radius">[1.90]</rosparam>
-      <param if="$(arg low_altitude_enabled)"
-             name="static_cylinders/resolution" value="0.50"/>
+    </node>
+    <node pkg="astra_swarm_perception" type="self_cloud_filter_node"
+          name="self_cloud_filter" output="screen" required="true">
+      <rosparam command="load"
+                file="$(find astra_swarm_perception)/config/iris_mid360_self_exclusion.yaml"/>
+      <param name="input_topic"
+             value="/uav3/cloud_registered_peer_filtered"/>
+      <param name="odom_topic" value="/uav3/Odometry"/>
+      <param name="output_topic"
+             value="/uav3/cloud_registered_self_filtered"/>
+      <param name="before_topic" value="/uav3/stage5/cloud_before_self"/>
+      <param name="after_topic" value="/uav3/stage5/cloud_after_self"/>
+      <param name="inflated_occupancy_topic"
+             value="/uav3/stage3/occupancy_inflate"/>
+      <param name="diagnostic_topic"
+             value="/uav3/stage5/cloud_filter_diagnostics"/>
     </node>
     <group ns="swarm">
       <node pkg="astra_swarm_manager" type="swarm_state_publisher.py"

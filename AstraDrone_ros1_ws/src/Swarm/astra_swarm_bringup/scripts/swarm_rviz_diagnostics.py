@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three-UAV RViz paths, mission annotations, and topic diagnostics."""
+"""Three-UAV actual paths, main-waypoint markers, and topic diagnostics."""
 
 import copy
 import json
@@ -190,25 +190,11 @@ class SwarmRvizDiagnostics:
     def publish_static_markers(self):
         now = rospy.Time.now()
         markers = MarkerArray()
-        ring = Marker()
-        ring.header.frame_id = "world"
-        ring.header.stamp = now
-        ring.ns = "inspection_ring"
-        ring.id = 0
-        ring.type = Marker.LINE_STRIP
-        ring.action = Marker.ADD
-        ring.pose.orientation.w = 1.0
-        ring.scale.x = 0.08
-        ring.color.r = ring.color.g = ring.color.b = 0.85
-        ring.color.a = 0.7
-        for index in range(73):
-            angle = 2.0 * math.pi * index / 72.0
-            point = Point()
-            point.x = self.tower[0] + self.radius * math.cos(angle)
-            point.y = self.tower[1] + self.radius * math.sin(angle)
-            point.z = max(self.heights)
-            ring.points.append(point)
-        markers.markers.append(ring)
+        clear = Marker()
+        clear.header.frame_id = "world"
+        clear.header.stamp = now
+        clear.action = Marker.DELETEALL
+        markers.markers.append(clear)
 
         for waypoint in range(8):
             angle = waypoint * math.pi / 4.0
@@ -217,8 +203,9 @@ class SwarmRvizDiagnostics:
             point.y = self.tower[1] + self.radius * math.sin(angle)
             point.z = max(self.heights) + 0.35
             sphere = Marker()
-            sphere.header = ring.header
-            sphere.ns = "inspection_waypoints"
+            sphere.header.frame_id = "world"
+            sphere.header.stamp = now
+            sphere.ns = "main_waypoints"
             sphere.id = waypoint
             sphere.type = Marker.SPHERE
             sphere.action = Marker.ADD
@@ -229,107 +216,18 @@ class SwarmRvizDiagnostics:
             sphere.color.a = 0.9
             markers.markers.append(sphere)
             label = Marker()
-            label.header = ring.header
-            label.ns = "inspection_waypoint_labels"
+            label.header = sphere.header
+            label.ns = "main_waypoint_labels"
             label.id = waypoint
             label.type = Marker.TEXT_VIEW_FACING
             label.action = Marker.ADD
             label.pose.position = copy.deepcopy(point)
-            label.pose.position.z += 0.45
+            label.pose.position.z += 0.50
             label.pose.orientation.w = 1.0
-            label.scale.z = 0.55
+            label.scale.z = 0.42
             label.color.r = label.color.g = label.color.b = 1.0
             label.color.a = 1.0
             label.text = "WP{}".format(waypoint + 1)
-            markers.markers.append(label)
-
-        for index, uid in enumerate(self.uav_ids):
-            angle = math.radians(self.entry_angles[index] % 360.0)
-            first = Point()
-            first.x = self.tower[0] + self.radius * math.cos(angle)
-            first.y = self.tower[1] + self.radius * math.sin(angle)
-            first.z = self.heights[index]
-            pre_entry = Point()
-            pre_entry.x = self.tower[0] + self.pre_entry_radius * math.cos(angle)
-            pre_entry.y = self.tower[1] + self.pre_entry_radius * math.sin(angle)
-            pre_entry.z = self.heights[index]
-            gate = Marker()
-            gate.header = ring.header
-            gate.ns = "entry_gates"
-            gate.id = uid
-            gate.type = Marker.CUBE
-            gate.action = Marker.ADD
-            gate.pose.position.x = (
-                self.tower[0] + self.entry_radius * math.cos(angle))
-            gate.pose.position.y = (
-                self.tower[1] + self.entry_radius * math.sin(angle))
-            gate.pose.position.z = self.heights[index]
-            gate.pose.orientation.w = 1.0
-            gate.scale.x = gate.scale.y = gate.scale.z = 0.45
-            self.color(gate, uid)
-            markers.markers.append(gate)
-            exit_gate = copy.deepcopy(gate)
-            exit_gate.ns = "exit_gates"
-            exit_gate.id = uid
-            exit_gate.type = Marker.CYLINDER
-            exit_gate.pose.position.z -= 0.45
-            exit_gate.scale.x = exit_gate.scale.y = 0.60
-            exit_gate.scale.z = 0.16
-            self.color(exit_gate, uid, 0.75)
-            markers.markers.append(exit_gate)
-            pre = Marker()
-            pre.header = ring.header
-            pre.ns = "pre_entry_gates"
-            pre.id = uid
-            pre.type = Marker.SPHERE
-            pre.action = Marker.ADD
-            pre.pose.position = pre_entry
-            pre.pose.orientation.w = 1.0
-            pre.scale.x = pre.scale.y = pre.scale.z = 0.35
-            self.color(pre, uid, 0.8)
-            markers.markers.append(pre)
-            first_marker = Marker()
-            first_marker.header = ring.header
-            first_marker.ns = "first_orbit_targets"
-            first_marker.id = uid
-            first_marker.type = Marker.SPHERE
-            first_marker.action = Marker.ADD
-            first_marker.pose.position = first
-            first_marker.pose.orientation.w = 1.0
-            first_marker.scale.x = first_marker.scale.y = first_marker.scale.z = 0.38
-            self.color(first_marker, uid)
-            markers.markers.append(first_marker)
-            corridor = Marker()
-            corridor.header = ring.header
-            corridor.ns = "pre_entry_corridors"
-            corridor.id = uid
-            corridor.type = Marker.LINE_STRIP
-            corridor.action = Marker.ADD
-            corridor.pose.orientation.w = 1.0
-            corridor.scale.x = 0.08
-            self.color(corridor, uid, 0.75)
-            home = Point()
-            home.x = float(self.homes[index][0])
-            home.y = float(self.homes[index][1])
-            home.z = self.heights[index]
-            corridor.points = [home, pre_entry, copy.deepcopy(gate.pose.position),
-                               first]
-            markers.markers.append(corridor)
-            label = Marker()
-            label.header = ring.header
-            label.ns = "entry_exit_gate_labels"
-            label.id = uid
-            label.type = Marker.TEXT_VIEW_FACING
-            label.action = Marker.ADD
-            label.pose = copy.deepcopy(gate.pose)
-            label.pose.position.z += 0.65
-            label.scale.z = 0.45
-            self.color(label, uid)
-            role = ("LEADER" if uid == self.role_order[0] else
-                    "TRAILING" if uid == self.role_order[-1] else "MIDDLE")
-            label.text = (
-                "UAV{} {} PRE/ENTRY/FIRST/EXIT {:.1f}deg"
-                .format(uid, role, self.entry_angles[index] % 360.0))
             markers.markers.append(label)
         self.static_pub.publish(markers)
 

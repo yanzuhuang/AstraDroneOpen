@@ -1167,6 +1167,8 @@ class Stage3EgoMissionNode {
       orbit_start_angle_ = angle;
       previous_orbit_angle_ = angle;
       accumulated_orbit_angle_ = 0.0;
+      directed_orbit_position_ = 0.0;
+      furthest_directed_orbit_position_ = 0.0;
       visited_sector_mask_ = 0U;
       orbit_tracking_initialized_ = true;
     } else {
@@ -1178,6 +1180,11 @@ class Stage3EgoMissionNode {
       // make the independent completion predicate pass early.
       if (std::abs(delta) <= kPi / 2.0 && directed_delta > 0.0) {
         accumulated_orbit_angle_ += directed_delta;
+      }
+      if (std::abs(delta) <= kPi / 2.0) {
+        directed_orbit_position_ += directed_delta;
+        furthest_directed_orbit_position_ = std::max(
+            furthest_directed_orbit_position_, directed_orbit_position_);
       }
       if (directed_delta < -5.0 * kPi / 180.0) reverse_orbit_detected_ = true;
       previous_orbit_angle_ = angle;
@@ -2548,6 +2555,8 @@ class Stage3EgoMissionNode {
     orbit_staging_arrived_ = false;
     reverse_orbit_detected_ = false;
     accumulated_orbit_angle_ = 0.0;
+    directed_orbit_position_ = 0.0;
+    furthest_directed_orbit_position_ = 0.0;
     visited_sector_mask_ = 0U;
     have_last_inspection_target_ = false;
     have_layer_start_anchor_ = false;
@@ -2903,6 +2912,16 @@ class Stage3EgoMissionNode {
         anchor->target_invalid = false;
         anchor->rejection_reason = "PLANNER_UNREACHABLE";
       }
+      const double anchor_angle = std::atan2(
+          anchor->y - route_.center_y, anchor->x - route_.center_x);
+      if (anchor->accepted && orbit_tracking_initialized_ &&
+          !orbitTargetAtOrAhead(
+              anchor_angle, orbit_start_angle_, route_.direction,
+              furthest_directed_orbit_position_, true)) {
+        anchor->accepted = false;
+        anchor->target_invalid = true;
+        anchor->rejection_reason = "NON_MONOTONIC_ORBIT_TARGET";
+      }
       publishCandidateDebug(now);
       if (!anchor->accepted) {
         sector.failure_reason =
@@ -2940,6 +2959,17 @@ class Stage3EgoMissionNode {
         candidate.target_invalid = false;
         candidate.rejection_reason = "PLANNER_UNREACHABLE";
       }
+      const double candidate_angle = std::atan2(
+          candidate.y - route_.center_y,
+          candidate.x - route_.center_x);
+      if (candidate.accepted && orbit_tracking_initialized_ &&
+          !orbitTargetAtOrAhead(
+              candidate_angle, orbit_start_angle_, route_.direction,
+              furthest_directed_orbit_position_, false)) {
+        candidate.accepted = false;
+        candidate.target_invalid = true;
+        candidate.rejection_reason = "NON_MONOTONIC_ORBIT_TARGET";
+      }
     }
     // Evaluate the next sector with the same fresh map while the current
     // target is executing. It is deliberately not locked or published as a
@@ -2966,7 +2996,11 @@ class Stage3EgoMissionNode {
     const CandidatePoint* locked = sector.locked_index >= 0
                                        ? &sector.candidates[sector.locked_index]
                                        : nullptr;
-    const int selected = chooseBestCandidate(
+    const int selected = low_altitude_mode_
+        ? chooseBestCandidateByRadiusTier(
+              sector, locked, target_replacement_margin_,
+              filter_config_.prefer_clear_straight_corridor, 2.0)
+        : chooseBestCandidate(
         sector, locked, target_replacement_margin_,
         filter_config_.prefer_clear_straight_corridor);
     if (selected < 0) {
@@ -3034,7 +3068,56 @@ class Stage3EgoMissionNode {
       current_target_plan_attempt_ = 0;
     }
     active_target_ = sector.candidates[selected];
-    transition(MissionState::kTargetLocked, "safe candidate locked: " + active_target_.id);
+    const double selected_angle = positiveAngleDegrees(std::atan2(
+        active_target_.y - route_.center_y,
+        active_target_.x - route_.center_x));
+    const double selected_radius = std::hypot(
+        active_target_.x - route_.center_x,
+        active_target_.y - route_.center_y);
+    const int selected_radius_tier = static_cast<int>(std::lround(
+        (selected_radius - sector.nominal_radius) / 2.0));
+    std::ostringstream exhausted;
+    for (int tier = 0; tier < selected_radius_tier; ++tier) {
+      if (!exhausted.str().empty()) exhausted << ';';
+      exhausted << "tier" << tier << '=';
+      std::unordered_map<std::string, int> reasons;
+      int tier_candidates = 0;
+      for (const auto& candidate : sector.candidates) {
+        const double radius = std::hypot(
+            candidate.x - route_.center_x,
+            candidate.y - route_.center_y);
+        const int candidate_tier = static_cast<int>(std::lround(
+            (radius - sector.nominal_radius) / 2.0));
+        if (candidate_tier != tier ||
+            std::abs(radius - (sector.nominal_radius + 2.0 * tier)) >
+                1.0e-6) {
+          continue;
+        }
+        ++tier_candidates;
+        ++reasons[candidate.rejection_reason.empty()
+                      ? (candidate.accepted ? "ACCEPTED" : "UNSPECIFIED")
+                      : candidate.rejection_reason];
+      }
+      exhausted << "candidates:" << tier_candidates << '[';
+      bool first_reason = true;
+      for (const auto& reason : reasons) {
+        if (!first_reason) exhausted << '|';
+        exhausted << reason.first << ':' << reason.second;
+        first_reason = false;
+      }
+      exhausted << ']';
+    }
+    ROS_WARN("[STAGE5_ORBIT_TIER] uav=%d visit=%zu sector=%d "
+             "selected_tier=%d angle=%.6fdeg radius=%.6fm candidate_id=%s "
+             "furthest_progress=%.6fdeg exhausted_lower_tiers=\"%s\"",
+             uav_id_, visit_cursor_ + 1U, sector.sector_id + 1,
+             selected_radius_tier, selected_angle, selected_radius,
+             active_target_.id.c_str(),
+             furthest_directed_orbit_position_ * 180.0 / kPi,
+             exhausted.str().empty() ? "NONE" : exhausted.str().c_str());
+    transition(MissionState::kTargetLocked,
+               "hard-radius-tier safe candidate locked: " +
+                   active_target_.id);
     return true;
   }
 
@@ -3380,10 +3463,22 @@ class Stage3EgoMissionNode {
         recoveryTargetsStayInSector(
             counter_clockwise_targets, sector,
             maximum_temporary_descent_);
-    if (!clockwise_local && !counter_clockwise_local) return false;
-    const bool choose_clockwise = clockwise_local &&
-        (!counter_clockwise_local ||
-         clockwise_assessment.score > counter_clockwise_assessment.score);
+    const bool configured_direction_local =
+        route_.direction == OrbitDirection::kCounterClockwise
+            ? counter_clockwise_local
+            : clockwise_local;
+    if (!configured_direction_local) {
+      ROS_ERROR("[STAGE5_ORBIT_ORDER] uav=%d sector=%d configured %s "
+                "recovery has no safe same-sector solution; opposite "
+                "direction recovery is forbidden",
+                uav_id_, sector.sector_id + 1,
+                route_.direction == OrbitDirection::kCounterClockwise
+                    ? "counter_clockwise"
+                    : "clockwise");
+      return false;
+    }
+    const bool choose_clockwise =
+        route_.direction == OrbitDirection::kClockwise;
     recovery_targets_ = choose_clockwise ? clockwise_targets
                                          : counter_clockwise_targets;
     recovery_config_.direction = choose_clockwise
@@ -3392,6 +3487,27 @@ class Stage3EgoMissionNode {
     const RecoveryAssessment& selected_assessment = choose_clockwise
                                                         ? clockwise_assessment
                                                         : counter_clockwise_assessment;
+    if (orbit_tracking_initialized_) {
+      double minimum_progress = furthest_directed_orbit_position_;
+      const CandidatePoint recovery_sequence[] = {
+          recovery_targets_.r1, recovery_targets_.r2,
+          recovery_targets_.reentry};
+      for (const auto& target : recovery_sequence) {
+        const double angle = std::atan2(
+            target.y - route_.center_y, target.x - route_.center_x);
+        if (!orbitTargetAtOrAhead(angle, orbit_start_angle_,
+                                  route_.direction, minimum_progress, false)) {
+          ROS_ERROR("[STAGE5_ORBIT_ORDER] uav=%d sector=%d recovery target "
+                    "%s would fall behind %.6fdeg directed progress; "
+                    "task-level recovery rejected",
+                    uav_id_, sector.sector_id + 1, target.id.c_str(),
+                    minimum_progress * 180.0 / kPi);
+          return false;
+        }
+        minimum_progress = directedOrbitTargetProgress(
+            angle, orbit_start_angle_, route_.direction, false);
+      }
+    }
     ROS_WARN("[STAGE3_TASK] sector-local recovery selected %s at z=%.2f; "
              "blocked straight corridors=%d (soft risk only), re-entry=%s",
              choose_clockwise ? "clockwise" : "counter_clockwise",
@@ -5781,7 +5897,8 @@ class Stage3EgoMissionNode {
       entry_gate_recheck_time_, last_low_no_path_check_;
   double best_goal_distance_{std::numeric_limits<double>::infinity()};
   double orbit_start_angle_{0.0}, previous_orbit_angle_{0.0},
-      accumulated_orbit_angle_{0.0};
+      accumulated_orbit_angle_{0.0}, directed_orbit_position_{0.0},
+      furthest_directed_orbit_position_{0.0};
   std::uint8_t visited_sector_mask_{0U};
   bool orbit_tracking_initialized_{false}, reverse_orbit_detected_{false};
   std::uint32_t trajectory_baseline_{0};

@@ -422,6 +422,131 @@ int chooseBestCandidate(const Sector& sector, const CandidatePoint* locked,
   return best;
 }
 
+int chooseBestCandidateByRadiusTier(
+    const Sector& sector, const CandidatePoint* locked,
+    double replacement_margin, bool prefer_clear_straight_corridor,
+    double radius_step) {
+  if (!std::isfinite(radius_step) || radius_step <= 0.0) return -1;
+
+  constexpr double kRadiusEpsilon = 1.0e-6;
+  constexpr double kAngleEpsilon = 1.0e-6;
+  const auto radius_tier = [&sector, radius_step](
+                               const CandidatePoint& candidate) {
+    const double radius = distance2d(candidate.x, candidate.y,
+                                     sector.center_x, sector.center_y);
+    const double raw_tier = (radius - sector.nominal_radius) / radius_step;
+    const int tier = static_cast<int>(std::lround(raw_tier));
+    if (tier < 0 || tier > 2 ||
+        std::abs(raw_tier - static_cast<double>(tier)) > 1.0e-6) {
+      return -1;
+    }
+    return tier;
+  };
+
+  for (int tier = 0; tier <= 2; ++tier) {
+    const bool have_clear_straight_corridor =
+        prefer_clear_straight_corridor &&
+        std::any_of(sector.candidates.begin(), sector.candidates.end(),
+                    [&](const CandidatePoint& candidate) {
+                      return candidate.accepted &&
+                             radius_tier(candidate) == tier &&
+                             !candidate.straight_corridor_blocked;
+                    });
+    const auto eligible = [&](const CandidatePoint& candidate) {
+      return candidate.accepted && radius_tier(candidate) == tier &&
+             (!have_clear_straight_corridor ||
+              !candidate.straight_corridor_blocked);
+    };
+    if (!std::any_of(sector.candidates.begin(), sector.candidates.end(),
+                     eligible)) {
+      continue;
+    }
+
+    // A still-safe lock in the current minimum tier is the most stable
+    // choice after a HOLD/map refresh.  A lower radius tier becoming safe
+    // still wins because it is examined before the lock's tier.
+    if (locked != nullptr && eligible(*locked)) {
+      for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
+        if (sector.candidates[index].id == locked->id &&
+            eligible(sector.candidates[index])) {
+          return static_cast<int>(index);
+        }
+      }
+    }
+
+    // Within a radius tier, retain the established exact-angle preference.
+    for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
+      const CandidatePoint& candidate = sector.candidates[index];
+      const double angle = std::atan2(candidate.y - sector.center_y,
+                                      candidate.x - sector.center_x);
+      if (eligible(candidate) &&
+          std::abs(normalizeAngle(angle - sector.nominal_angle_rad)) <
+              kAngleEpsilon &&
+          std::abs(candidate.z - sector.nominal_height) < kRadiusEpsilon) {
+        return static_cast<int>(index);
+      }
+    }
+
+    int best = -1;
+    for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
+      const CandidatePoint& candidate = sector.candidates[index];
+      if (!eligible(candidate)) continue;
+      if (best < 0 ||
+          candidate.score > sector.candidates[best].score + 1.0e-9 ||
+          (std::abs(candidate.score - sector.candidates[best].score) <=
+               1.0e-9 &&
+           std::make_tuple(candidate.observation_deviation,
+                           candidate.height_deviation,
+                           candidate.route_distance, candidate.id) <
+               std::make_tuple(
+                   sector.candidates[best].observation_deviation,
+                   sector.candidates[best].height_deviation,
+                   sector.candidates[best].route_distance,
+                   sector.candidates[best].id))) {
+        best = static_cast<int>(index);
+      }
+    }
+    if (best < 0 || locked == nullptr || !eligible(*locked)) return best;
+    if (locked->score + replacement_margin >=
+        sector.candidates[best].score) {
+      for (std::size_t index = 0; index < sector.candidates.size(); ++index) {
+        if (sector.candidates[index].id == locked->id &&
+            eligible(sector.candidates[index])) {
+          return static_cast<int>(index);
+        }
+      }
+    }
+    return best;
+  }
+  return -1;
+}
+
+double directedOrbitTargetProgress(double target_angle,
+                                   double orbit_start_angle,
+                                   OrbitDirection direction,
+                                   bool closing_lap) {
+  double progress = direction == OrbitDirection::kCounterClockwise
+                        ? normalizeAngle(target_angle - orbit_start_angle)
+                        : normalizeAngle(orbit_start_angle - target_angle);
+  if (progress < 0.0) progress += 2.0 * kPi;
+  if (closing_lap && progress < kPi / 2.0) progress += 2.0 * kPi;
+  return progress;
+}
+
+bool orbitTargetAtOrAhead(double target_angle, double orbit_start_angle,
+                          OrbitDirection direction, double minimum_progress,
+                          bool closing_lap, double epsilon) {
+  if (!std::isfinite(target_angle) || !std::isfinite(orbit_start_angle) ||
+      !std::isfinite(minimum_progress) || !std::isfinite(epsilon) ||
+      epsilon < 0.0) {
+    return false;
+  }
+  return directedOrbitTargetProgress(target_angle, orbit_start_angle,
+                                     direction, closing_lap) +
+             epsilon >=
+         minimum_progress;
+}
+
 std::vector<CandidatePoint> buildEntryGateCandidates(
     const RouteConfig& route, int entry_sector_user, double minimum_radius,
     double maximum_radius, double preferred_radius,

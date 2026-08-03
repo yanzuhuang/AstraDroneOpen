@@ -5,11 +5,10 @@ Panels:
       Expanded:
         - /Global Options1
         - /Three UAV Models1
-        - /Independent Point Clouds1
-        - /Independent EGO Trajectories1
-        - /Actual Flight Paths1
-        - /Mission Targets and Route1
-        - /Mission Diagnostics1
+        - /FAST-LIO Point Clouds1
+        - /EGO Local Planning1
+        - /Actual Flight History1
+        - /Main Waypoints1
       Splitter Ratio: 0.55
     Tree Height: 760
   - Class: rviz/Views
@@ -25,16 +24,16 @@ Visualization Manager:
   Class: ""
   Displays:
     - Class: rviz/Grid
-      Name: World Grid
+      Name: Grid
       Enabled: true
       Alpha: 0.5
-      Cell Size: 2
+      Cell Size: 1
       Color: 120; 120; 120
       Line Style:
         Line Width: 0.03
         Value: Lines
       Plane: XY
-      Plane Cell Count: 60
+      Plane Cell Count: 40
       Reference Frame: <Fixed Frame>
       Value: true
     - Class: rviz/Group
@@ -42,7 +41,7 @@ Visualization Manager:
       Enabled: true
       Displays:
         - Class: rviz/RobotModel
-          Name: UAV1 Model
+          Name: uav1
           Enabled: true
           Alpha: 1
           Collision Enabled: false
@@ -51,7 +50,7 @@ Visualization Manager:
           Update Interval: 0
           Visual Enabled: true
         - Class: rviz/RobotModel
-          Name: UAV2 Model
+          Name: uav2
           Enabled: true
           Alpha: 1
           Collision Enabled: false
@@ -60,7 +59,7 @@ Visualization Manager:
           Update Interval: 0
           Visual Enabled: true
         - Class: rviz/RobotModel
-          Name: UAV3 Model
+          Name: uav3
           Enabled: true
           Alpha: 1
           Collision Enabled: false
@@ -69,94 +68,127 @@ Visualization Manager:
           Update Interval: 0
           Visual Enabled: true
     - Class: rviz/Group
-      Name: Independent Point Clouds
+      Name: FAST-LIO Point Clouds
       Enabled: true
       Displays:
         - Class: rviz/PointCloud2
-          Name: UAV1 Cloud (Orange)
+          Name: uav1 cloud
           Enabled: true
-          Topic: /uav1/cloud_registered_peer_filtered
-          Alpha: 0.35
-          Color: 255; 140; 0
-          Color Transformer: FlatColor
+          Topic: /uav1/stage3/cloud_registered_filtered
+          Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 3
+            Min Value: -1
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Color: 255; 255; 255
+          Color Transformer: AxisColor
           Decay Time: 1
+          Invert Rainbow: false
+          Max Color: 255; 80; 80
+          Min Color: 80; 120; 255
           Position Transformer: XYZ
           Queue Size: 10
           Selectable: true
           Size (Pixels): 2
-          Size (m): 0.04
+          Size (m): 0.03
           Style: Points
           Use Fixed Frame: true
+          Use rainbow: true
         - Class: rviz/PointCloud2
-          Name: UAV2 Cloud (Cyan)
+          Name: uav2 cloud
           Enabled: true
-          Topic: /uav2/cloud_registered_peer_filtered
-          Alpha: 0.35
-          Color: 0; 190; 255
-          Color Transformer: FlatColor
+          Topic: /uav2/stage3/cloud_registered_filtered
+          Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 3
+            Min Value: -1
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Color: 255; 255; 255
+          Color Transformer: AxisColor
           Decay Time: 1
+          Invert Rainbow: false
+          Max Color: 255; 80; 80
+          Min Color: 80; 120; 255
           Position Transformer: XYZ
           Queue Size: 10
           Selectable: true
           Size (Pixels): 2
-          Size (m): 0.04
+          Size (m): 0.03
           Style: Points
           Use Fixed Frame: true
+          Use rainbow: true
         - Class: rviz/PointCloud2
-          Name: UAV3 Cloud (Green)
+          Name: uav3 cloud
           Enabled: true
-          Topic: /uav3/cloud_registered_peer_filtered
-          Alpha: 0.35
-          Color: 80; 255; 60
-          Color Transformer: FlatColor
+          Topic: /uav3/stage3/cloud_registered_filtered
+          Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 3
+            Min Value: -1
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Color: 255; 255; 255
+          Color Transformer: AxisColor
           Decay Time: 1
+          Invert Rainbow: false
+          Max Color: 255; 80; 80
+          Min Color: 80; 120; 255
           Position Transformer: XYZ
           Queue Size: 10
           Selectable: true
           Size (Pixels): 2
-          Size (m): 0.04
+          Size (m): 0.03
           Style: Points
           Use Fixed Frame: true
+          Use rainbow: true
     - Class: rviz/Group
-      Name: Independent EGO Trajectories
+      Name: EGO Local Planning
       Enabled: true
       Displays:
         - Class: rviz/Marker
-          Name: UAV1 EGO Trajectory (Orange)
+          Name: uav1 local trajectory
           Enabled: true
           Marker Topic: /uav1/drone_0_ego_planner_node/optimal_list
           Queue Size: 100
         - Class: rviz/Marker
-          Name: UAV2 EGO Trajectory (Cyan)
+          Name: uav2 local trajectory
           Enabled: true
           Marker Topic: /uav2/drone_1_ego_planner_node/optimal_list
           Queue Size: 100
         - Class: rviz/Marker
-          Name: UAV3 EGO Trajectory (Green)
+          Name: uav3 local trajectory
           Enabled: true
           Marker Topic: /uav3/drone_2_ego_planner_node/optimal_list
           Queue Size: 100
         - Class: rviz/Marker
-          Name: UAV1 EGO Goal
+          Name: uav1 local goal
           Enabled: true
           Marker Topic: /uav1/drone_0_ego_planner_node/goal_point
           Queue Size: 20
         - Class: rviz/Marker
-          Name: UAV2 EGO Goal
+          Name: uav2 local goal
           Enabled: true
           Marker Topic: /uav2/drone_1_ego_planner_node/goal_point
           Queue Size: 20
         - Class: rviz/Marker
-          Name: UAV3 EGO Goal
+          Name: uav3 local goal
           Enabled: true
           Marker Topic: /uav3/drone_2_ego_planner_node/goal_point
           Queue Size: 20
     - Class: rviz/Group
-      Name: Actual Flight Paths
+      Name: Actual Flight History
       Enabled: true
       Displays:
         - Class: rviz/Path
-          Name: UAV1 Actual Path
+          Name: uav1 history
           Enabled: true
           Topic: /uav1/swarm/actual_path
           Color: 255; 140; 0
@@ -165,7 +197,7 @@ Visualization Manager:
           Line Style: Lines
           Line Width: 0.08
         - Class: rviz/Path
-          Name: UAV2 Actual Path
+          Name: uav2 history
           Enabled: true
           Topic: /uav2/swarm/actual_path
           Color: 0; 190; 255
@@ -174,7 +206,7 @@ Visualization Manager:
           Line Style: Lines
           Line Width: 0.08
         - Class: rviz/Path
-          Name: UAV3 Actual Path
+          Name: uav3 history
           Enabled: true
           Topic: /uav3/swarm/actual_path
           Color: 80; 255; 60
@@ -183,93 +215,27 @@ Visualization Manager:
           Line Style: Lines
           Line Width: 0.08
     - Class: rviz/Group
-      Name: Mission Targets and Route
+      Name: Main Waypoints
       Enabled: true
       Displays:
-        - Class: rviz/Pose
-          Name: UAV1 Current Local Target
-          Enabled: true
-          Topic: /uav1/tower_mission/current_target
-          Color: 255; 140; 0
-          Shape: Arrow
-          Shaft Length: 0.8
-          Shaft Radius: 0.05
-          Head Length: 0.25
-          Head Radius: 0.1
-        - Class: rviz/Pose
-          Name: UAV2 Current Local Target
-          Enabled: true
-          Topic: /uav2/tower_mission/current_target
-          Color: 0; 190; 255
-          Shape: Arrow
-          Shaft Length: 0.8
-          Shaft Radius: 0.05
-          Head Length: 0.25
-          Head Radius: 0.1
-        - Class: rviz/Pose
-          Name: UAV3 Current Local Target
-          Enabled: true
-          Topic: /uav3/tower_mission/current_target
-          Color: 80; 255; 60
-          Shape: Arrow
-          Shaft Length: 0.8
-          Shaft Radius: 0.05
-          Head Length: 0.25
-          Head Radius: 0.1
-        - Class: rviz/Path
-          Name: UAV1 Mission Route
-          Enabled: true
-          Topic: /uav1/tower_mission/mission_route
-          Color: 255; 170; 80
-          Alpha: 0.45
-          Buffer Length: 1
-          Line Style: Lines
-          Line Width: 0.04
-        - Class: rviz/Path
-          Name: UAV2 Mission Route
-          Enabled: true
-          Topic: /uav2/tower_mission/mission_route
-          Color: 80; 210; 255
-          Alpha: 0.45
-          Buffer Length: 1
-          Line Style: Lines
-          Line Width: 0.04
-        - Class: rviz/Path
-          Name: UAV3 Mission Route
-          Enabled: true
-          Topic: /uav3/tower_mission/mission_route
-          Color: 120; 255; 100
-          Alpha: 0.45
-          Buffer Length: 1
-          Line Style: Lines
-          Line Width: 0.04
         - Class: rviz/MarkerArray
-          Name: WP1-WP8 and ENTRY-EXIT Gates
+          Name: WP1-WP8
           Enabled: true
           Marker Topic: /swarm/rviz/mission_markers
           Queue Size: 10
-    - Class: rviz/Group
-      Name: Mission Diagnostics
+    - Class: rviz/TF
+      Name: TF
       Enabled: true
-      Displays:
-        - Class: rviz/MarkerArray
-          Name: UAV State Sector Safety Text
-          Enabled: true
-          Marker Topic: /swarm/rviz/status_markers
-          Queue Size: 10
-        - Class: rviz/TF
-          Name: Independent TF Trees
-          Enabled: true
-          Frame Timeout: 15
-          Marker Alpha: 0.75
-          Marker Scale: 0.45
-          Show Arrows: true
-          Show Axes: true
-          Show Names: true
-          Update Interval: 0
+      Frame Timeout: 15
+      Marker Alpha: 0.75
+      Marker Scale: 0.45
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Update Interval: 0
   Enabled: true
   Global Options:
-    Background Color: 28; 28; 32
+    Background Color: 48; 48; 48
     Default Light: true
     Fixed Frame: world
     Frame Rate: 30

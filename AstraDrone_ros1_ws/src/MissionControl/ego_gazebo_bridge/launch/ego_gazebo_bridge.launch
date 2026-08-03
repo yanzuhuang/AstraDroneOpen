@@ -31,6 +31,8 @@
   <arg name="ego_cloud_topic" default="$(arg cloud_topic)"/>
   <arg name="filter_ground_cloud" default="false"/>
   <arg name="filtered_cloud_topic" default="/stage2/cloud_registered_filtered"/>
+  <arg name="cloud_filter_diagnostic_topic"
+       default="stage5/cloud_filter_diagnostics"/>
   <arg name="minimum_obstacle_z" default="0.2"/>
   <arg name="bridge_config_file"
        default="$(find ego_gazebo_bridge)/config/ego_gazebo_bridge.yaml"/>
@@ -144,6 +146,8 @@
     <param name="output_topic" value="$(arg filtered_cloud_topic)"/>
     <param name="frame_id" value="$(arg planning_frame)"/>
     <param name="minimum_z" value="$(arg minimum_obstacle_z)"/>
+    <param name="diagnostic_topic"
+           value="$(arg cloud_filter_diagnostic_topic)"/>
   </node>
 
   <node pkg="ego_planner" type="traj_server" name="traj_server" output="screen">

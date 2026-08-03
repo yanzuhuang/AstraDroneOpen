@@ -4,6 +4,7 @@ project(ego_gazebo_bridge)
 add_compile_options(-std=c++14 -Wall -Wextra -Wpedantic)
 
 find_package(catkin REQUIRED COMPONENTS
+  diagnostic_msgs
   geometry_msgs
   mavros_msgs
   nav_msgs
@@ -21,6 +22,7 @@ catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ego_bridge_command_utils ego_bridge_control_authority ego_bridge_cloud_filter
   CATKIN_DEPENDS
+    diagnostic_msgs
     geometry_msgs
     mavros_msgs
     nav_msgs

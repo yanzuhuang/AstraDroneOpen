@@ -202,6 +202,32 @@ int chooseBestCandidate(const Sector& sector,
                         double replacement_margin,
                         bool prefer_clear_straight_corridor = false);
 
+// Stage-5 formal orbit selector.  Radius is a hard fallback tier rather than
+// a soft score term: nominal radius is exhausted before nominal+radius_step,
+// which is exhausted before nominal+2*radius_step.  Scoring and lock
+// hysteresis only compare candidates inside the first non-empty safe tier.
+int chooseBestCandidateByRadiusTier(
+    const Sector& sector,
+    const CandidatePoint* locked_target,
+    double replacement_margin,
+    bool prefer_clear_straight_corridor = false,
+    double radius_step = 2.0);
+
+// Map a polar target into the current directed lap and enforce that a newly
+// selected same-sector endpoint never falls behind already reached progress.
+// closing_lap maps the start direction to 2*pi instead of zero.
+double directedOrbitTargetProgress(double target_angle,
+                                   double orbit_start_angle,
+                                   OrbitDirection direction,
+                                   bool closing_lap = false);
+
+bool orbitTargetAtOrAhead(double target_angle,
+                          double orbit_start_angle,
+                          OrbitDirection direction,
+                          double minimum_progress,
+                          bool closing_lap = false,
+                          double epsilon = 1.0e-9);
+
 std::vector<CandidatePoint> buildEntryGateCandidates(
     const RouteConfig& route,
     int entry_sector_user,

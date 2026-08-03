@@ -605,6 +605,93 @@ TEST(Stage3Planner, Stage5PrefersClearStraightCorridorWithinSameSector) {
   EXPECT_EQ(chooseBestCandidate(sector, nullptr, 0.0, true), 0);
 }
 
+TEST(Stage3Planner, Stage5OrbitHardTierExhaustsInnerRadiusBeforeOuterScore) {
+  Sector sector = makeSector();
+  CandidatePoint inner_adjusted = candidate(
+      8.0 * std::cos(5.0 * kPi / 180.0),
+      8.0 * std::sin(5.0 * kPi / 180.0));
+  inner_adjusted.id = "inner_adjusted";
+  inner_adjusted.accepted = true;
+  inner_adjusted.score = -1000.0;
+  CandidatePoint middle_nominal = candidate(10.0, 0.0);
+  middle_nominal.id = "middle_nominal";
+  middle_nominal.accepted = true;
+  middle_nominal.score = 1000.0;
+  CandidatePoint outer_nominal = candidate(12.0, 0.0);
+  outer_nominal.id = "outer_nominal";
+  outer_nominal.accepted = true;
+  outer_nominal.score = 2000.0;
+  sector.candidates = {outer_nominal, middle_nominal, inner_adjusted};
+
+  EXPECT_EQ(chooseBestCandidateByRadiusTier(
+                sector, nullptr, 0.0, true, 2.0),
+            2);
+}
+
+TEST(Stage3Planner, Stage5OrbitHardTierFallsBackOneRadiusAtATime) {
+  Sector sector = makeSector();
+  CandidatePoint inner = candidate(8.0, 0.0);
+  inner.id = "inner_rejected";
+  inner.accepted = false;
+  inner.rejection_reason = "OCCUPANCY_OR_CLEARANCE";
+  CandidatePoint middle = candidate(10.0, 0.0);
+  middle.id = "middle";
+  middle.accepted = true;
+  middle.score = -100.0;
+  CandidatePoint outer = candidate(12.0, 0.0);
+  outer.id = "outer";
+  outer.accepted = true;
+  outer.score = 100.0;
+  sector.candidates = {inner, outer, middle};
+
+  EXPECT_EQ(chooseBestCandidateByRadiusTier(
+                sector, nullptr, 0.0, true, 2.0),
+            2);
+  sector.candidates[2].accepted = false;
+  sector.candidates[2].rejection_reason = "KNOWN_OBSTACLE_CLEARANCE";
+  EXPECT_EQ(chooseBestCandidateByRadiusTier(
+                sector, nullptr, 0.0, true, 2.0),
+            1);
+}
+
+TEST(Stage3Planner, Stage5OrbitClearCorridorPreferenceCannotSkipRadiusTier) {
+  Sector sector = makeSector();
+  CandidatePoint inner = candidate(
+      8.0 * std::cos(5.0 * kPi / 180.0),
+      8.0 * std::sin(5.0 * kPi / 180.0));
+  inner.id = "inner_soft_corridor";
+  inner.accepted = true;
+  inner.straight_corridor_blocked = true;
+  inner.score = -100.0;
+  CandidatePoint outer = candidate(10.0, 0.0);
+  outer.id = "outer_clear";
+  outer.accepted = true;
+  outer.straight_corridor_blocked = false;
+  outer.score = 100.0;
+  sector.candidates = {outer, inner};
+
+  EXPECT_EQ(chooseBestCandidateByRadiusTier(
+                sector, nullptr, 0.0, true, 2.0),
+            1);
+}
+
+TEST(Stage3Planner, Stage5OrbitTargetProgressIsMonotonicAcrossWrap) {
+  const double start = 337.5 * kPi / 180.0;
+  EXPECT_NEAR(directedOrbitTargetProgress(
+                  22.5 * kPi / 180.0, start,
+                  OrbitDirection::kCounterClockwise),
+              45.0 * kPi / 180.0, 1.0e-9);
+  EXPECT_TRUE(orbitTargetAtOrAhead(
+      22.5 * kPi / 180.0, start,
+      OrbitDirection::kCounterClockwise, 40.0 * kPi / 180.0));
+  EXPECT_FALSE(orbitTargetAtOrAhead(
+      10.0 * kPi / 180.0, start,
+      OrbitDirection::kCounterClockwise, 40.0 * kPi / 180.0));
+  EXPECT_NEAR(directedOrbitTargetProgress(
+                  start, start, OrbitDirection::kCounterClockwise, true),
+              2.0 * kPi, 1.0e-9);
+}
+
 TEST(Stage3Planner, NearestSectorBecomesFirstWithoutChangingOrbitOrder) {
   RouteConfig route;
   route.center_x = 0.0;

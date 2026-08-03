@@ -1,0 +1,33 @@
+# Geometry is in the MID360 measurement frame.  It is derived from:
+# - iris.stl bounds: x [-0.1563, 0.1431], y [-0.2371, 0.2406],
+#   z [-0.0670, 0.0466] in base_link;
+# - rotor centers/radii in iris_without_GPS_N.sdf;
+# - base_link -> MID360 translation [0, 0, 0.08] m;
+# - FAST-LIO mid360.yaml LiDAR -> IMU extrinsic below.
+# Padding is 1.2--2.1 cm on the mesh/propeller outlines.  There is no radial
+# near-field sphere: points close to the aircraft but outside these structural
+# volumes remain available to EGO.
+self_exclusion:
+  lidar_to_imu_translation: [-0.011, -0.02329, 0.04412]
+  lidar_to_imu_rotation: [1.0, 0.0, 0.0,
+                          0.0, 1.0, 0.0,
+                          0.0, 0.0, 1.0]
+
+  boxes:
+    # Fuselage, four arms, MID360 support and forward camera bracket.
+    x:      [-0.0066,  0.065, -0.065,  0.065, -0.065, 0.0,  0.10]
+    y:      [ 0.0017, -0.110,  0.100,  0.110, -0.100, 0.0,  0.00]
+    z:      [-0.0900, -0.057, -0.057, -0.057, -0.057, -0.035, -0.050]
+    size_x: [ 0.3400,  0.280,  0.270,  0.280,  0.270, 0.10,  0.16]
+    size_y: [ 0.5200,  0.070,  0.070,  0.070,  0.070, 0.10,  0.10]
+    size_z: [ 0.1550,  0.070,  0.070,  0.070,  0.070, 0.11,  0.10]
+    yaw:    [ 0.0000, -1.037,  2.147,  1.037, -2.147, 0.0, 0.0]
+
+  cylinders:
+    # Four 0.128 m rotors padded to 0.140 m, plus MID360 housing/support.
+    x:      [ 0.13, -0.13,  0.13, -0.13, 0.0]
+    y:      [-0.22,  0.20,  0.22, -0.20, 0.0]
+    z:      [ 0.00,  0.00,  0.00,  0.00, 0.0]
+    radius: [ 0.14,  0.14,  0.14,  0.14, 0.07]
+    z_min:  [-0.085, -0.085, -0.085, -0.085, -0.04]
+    z_max:  [-0.025, -0.025, -0.025, -0.025,  0.08]
