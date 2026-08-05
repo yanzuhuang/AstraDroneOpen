@@ -97,7 +97,7 @@ class SelfCloudFilterNode {
     synchronizer_->registerCallback(
         boost::bind(&SelfCloudFilterNode::cloudCallback, this, _1, _2));
 
-    ROS_WARN("[STAGE5_SELF_FILTER] enabled with %zu boxes and %zu cylinders; "
+    ROS_WARN("[SELF_FILTER] enabled with %zu boxes and %zu cylinders; "
              "input=%s output=%s odom=%s",
              configuration_.boxes.size(), configuration_.cylinders.size(),
              input_topic.c_str(), output_topic.c_str(), odom_topic.c_str());
@@ -204,7 +204,7 @@ class SelfCloudFilterNode {
     have_latest_pose_ = true;
     if (cloud->header.frame_id != odometry->header.frame_id) {
       ROS_ERROR_THROTTLE(1.0,
-                         "[STAGE5_SELF_FILTER] cloud frame '%s' != odom frame '%s'",
+                         "[SELF_FILTER] cloud frame '%s' != odom frame '%s'",
                          cloud->header.frame_id.c_str(),
                          odometry->header.frame_id.c_str());
       publishDiagnostic(
@@ -217,7 +217,7 @@ class SelfCloudFilterNode {
     std::string reason;
     if (!filterSelfCloud(*cloud, odometry->pose.pose, configuration_, &filtered,
                          &statistics, &reason)) {
-      ROS_ERROR_THROTTLE(1.0, "[STAGE5_SELF_FILTER] %s", reason.c_str());
+      ROS_ERROR_THROTTLE(1.0, "[SELF_FILTER] %s", reason.c_str());
       publishDiagnostic(cloud->header, "self_filter", {},
                         diagnostic_msgs::DiagnosticStatus::ERROR, reason);
       return;
@@ -240,7 +240,7 @@ class SelfCloudFilterNode {
                   std::abs((cloud->header.stamp - odometry->header.stamp).toSec()))});
     ROS_INFO_THROTTLE(
         1.0,
-        "[STAGE5_SELF_FILTER] input=%zu self_removed=%zu output=%zu "
+        "[SELF_FILTER] input=%zu self_removed=%zu output=%zu "
         "nearest_before=%.3f nearest_after=%.3f",
         statistics.input_points, statistics.self_removed_points,
         statistics.output_points,
@@ -312,8 +312,8 @@ int main(int argc, char** argv) {
     astra_swarm_perception::SelfCloudFilterNode node;
     ros::spin();
   } catch (const std::exception& error) {
-    std::cerr << "[STAGE5_SELF_FILTER] " << error.what() << std::endl;
-    ROS_FATAL("[STAGE5_SELF_FILTER] %s", error.what());
+    std::cerr << "[SELF_FILTER] " << error.what() << std::endl;
+    ROS_FATAL("[SELF_FILTER] %s", error.what());
     return 1;
   }
   return 0;

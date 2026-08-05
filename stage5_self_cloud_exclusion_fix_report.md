@@ -98,7 +98,7 @@ R_LI = I
 - `AstraDrone_ros1_ws/src/Swarm/astra_swarm_perception/src/self_cloud_filter_node.cpp`
 - `AstraDrone_ros1_ws/src/Swarm/astra_swarm_perception/config/iris_mid360_self_exclusion.yaml`
 - `AstraDrone_ros1_ws/src/Swarm/astra_swarm_perception/test/self_cloud_filter_test.cpp`
-- `scripts/run_sh/stage5_self_filter_record_bag.sh`
+- `scripts/run_sh/three_uav_self_filter_record_bag.sh`
 - 本报告；
 - 两份只增不删的短时证据 bag，位于 `test_evidence/stage5_self_cloud_exclusion_fix_20260803/`。
 

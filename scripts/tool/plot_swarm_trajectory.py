@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plot two recorded tower-inspection trajectories in one world/ENU frame.
 
-This is deliberately a thin dual-vehicle layer over plot_stage3_trajectory.py:
+This is deliberately a thin dual-vehicle layer over plot_inspection_trajectory.py:
 the proven single-vehicle CSV reader, phase classifier, and equal-metric 3-D
 projection are reused instead of maintaining a second plotting implementation.
 """
@@ -24,10 +24,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-from plot_stage3_trajectory import equal_metric_limits, read_csv
+from plot_inspection_trajectory import equal_metric_limits, read_csv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_ARTIFACTS_ROOT = REPO_ROOT / "runtime_artifacts"
 DEFAULT_SWARM_LAUNCH = (
     REPO_ROOT
     / "AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/launch"
@@ -48,6 +49,19 @@ COLORS = {"uav1": "#1565c0", "uav2": "#e76f00"}
 
 class DataContractError(RuntimeError):
     """Raised when a truthful common-frame plot cannot be produced."""
+
+
+def require_runtime_artifact_path(path):
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(RUNTIME_ARTIFACTS_ROOT)
+    except ValueError:
+        raise DataContractError(
+            "Output path must be under {}: {}".format(
+                RUNTIME_ARTIFACTS_ROOT, resolved
+            )
+        )
+    return resolved
 
 
 @dataclass
@@ -682,8 +696,10 @@ def plot(uav1, uav2, tower_xy, output, latest_output):
 def default_output(uav1_path, uav2_path):
     newest_mtime = max(uav1_path.stat().st_mtime, uav2_path.stat().st_mtime)
     stamp = datetime.fromtimestamp(newest_mtime).strftime("%Y%m%d_%H%M%S")
-    return REPO_ROOT / "trc_picture" / (
-        "swarm_actual_trajectory_{}.png".format(stamp)
+    return (
+        RUNTIME_ARTIFACTS_ROOT
+        / "swarm_trajectory_{}".format(stamp)
+        / "swarm_actual_trajectory_{}.png".format(stamp)
     )
 
 
@@ -739,12 +755,12 @@ def main():
         )
         print("successfully unified to one public coordinate frame: YES")
 
-        output = (
-            args.output.resolve()
+        output = require_runtime_artifact_path(
+            args.output
             if args.output
             else default_output(
                 uav1.contract.csv_path, uav2.contract.csv_path
-            ).resolve()
+            )
         )
         latest = output.parent / "latest_swarm_trajectory.png"
         plot(uav1, uav2, tower_xy, output, latest)

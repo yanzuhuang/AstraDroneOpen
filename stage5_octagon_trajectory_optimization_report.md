@@ -20,15 +20,15 @@
 
 ## 2. 修改文件
 
-- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/include/astra_tower_mission/stage3_planner.h`
+- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/include/astra_tower_mission/inspection_candidate_planner.h`
   - 声明整圈硬 Tier 选择器和有向累计角辅助函数。
-- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/src/stage3_planner.cpp`
+- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/src/inspection_candidate_planner.cpp`
   - 实现逐半径 Tier 穷尽；实现跨 0° 的 CW/CCW 有向目标进度和闭圈锚点判定。
-- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/src/stage3_ego_mission_node.cpp`
+- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/src/sector_inspection_mission_node.cpp`
   - 记录当前和历史最远有向进度；过滤后方候选；低空正式绕塔使用硬 Tier；输出低 Tier 完整拒绝构成；恢复只允许配置方向且恢复序列必须单调前进。
-- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/test/stage3_planner_test.cpp`
+- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/test/inspection_candidate_planner_test.cpp`
   - 增加内层胜过高分外层、逐层回退、软走廊偏好不得越 Tier、跨 0° 单调进度四项回归。
-- `scripts/tool/analyze_stage5_octagon.py`
+- `scripts/tool/analyze_three_uav_orbit.py`
   - 用统一正式窗口和公共 world 坐标计算优化前后指标，生成同尺度对比图、三机合并诊断图和三张单机诊断图。
 
 没有修改 `worksite.world`、配置中的安全阈值、EGO/EGO-Swarm vendor 源码或外部 PX4。
@@ -62,14 +62,14 @@
 ## 5. 测试与短时检查
 
 - 白名单构建 `astra_tower_mission;astra_swarm_manager;astra_swarm_bringup`：通过。
-- `stage3_planner_test`：63/63，通过；本报告完成前再次直接运行确认。
+- `inspection_candidate_planner_test`：63/63，通过；本报告完成前再次直接运行确认。
 - `ego_task_utils_test` + `tower_route_test`：10/10 + 8/8，通过。
 - `astra_swarm_manager`：43/43，通过。
-- `stage3_no_control_integration.test`：1/1，通过。
-- `bash -n scripts/run_sh/stage5_three_uav.sh`：通过。
+- `sector_inspection_no_control.test`：1/1，通过。
+- `bash -n scripts/run_sh/three_uav_inspection.sh`：通过。
 - 分析器 `py_compile`、本轮文件 `git diff --check`：通过。
 
-第一次在只读 `~/.ros` 和受限本地 ROS 网络环境调用短时集成测试时产生了一个保留的 `MISSING-rostest-test_stage3_no_control_integration.xml`；随后在 `/tmp` 可写 ROS 环境运行同一测试为 1/1。该标记按“不清理证据”要求保留，不是测试逻辑失败。
+第一次在只读 `~/.ros` 和受限本地 ROS 网络环境调用短时集成测试时产生了一个保留的 `MISSING-rostest-test_sector_inspection_no_control.xml`；随后在 `/tmp` 可写 ROS 环境运行同一测试为 1/1。该标记按“不清理证据”要求保留，不是测试逻辑失败。
 
 ## 6. 完整控制验证和保留证据
 

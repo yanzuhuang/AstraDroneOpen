@@ -55,7 +55,7 @@
 | FAST-LIO | `roslaunch fast_lio mapping_mid360.launch rviz:=false` | 输入 `/livox/lidar`、`/livox/imu` |
 | EGO 集成层 | `roslaunch ego_gazebo_bridge ego_gazebo_bridge.launch` | 启动 EGO、`traj_server`、`waypoint_generator`、bridge；默认不控制无人机 |
 | EGO规划栈通用编排 | `scripts/run_sh/ego_planner_stack.sh` | 依次启动仿真、FAST-LIO、规划层和 RViz；默认 dry-run |
-| 阶段1固定高度绕塔 | `scripts/run_sh/stage1_tower.sh` | 默认只做 RViz preview；只有显式 `--control` 才启动 PX4/Gazebo、FAST-LIO 和任务控制 |
+| 阶段1固定高度绕塔 | `scripts/run_sh/fixed_orbit_inspection.sh` | 默认只做 RViz preview；只有显式 `--control` 才启动 PX4/Gazebo、FAST-LIO 和任务控制 |
 | 既有基础飞行/多航点 | `roslaunch offboard autoarming_control.launch` | 读取 `relative_waypoint_mission.yaml`，执行起飞、悬停、多航点、返航和降落 |
 | 既有连续轨迹 | `roslaunch offboard continuous_trajectory.launch` | 圆、方形、8 字、椭圆参考轨迹 |
 
@@ -508,9 +508,9 @@ flowchart TD
 ### 4. 涉及或预计修改的文件
 
 - 新包：`AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/`，包含路线/限幅库、任务节点、YAML、launch、RViz和gtest。
-- 一键入口：`scripts/run_sh/stage1_tower.sh`，默认preview，显式 `--control` 才自动飞行。
+- 一键入口：`scripts/run_sh/fixed_orbit_inspection.sh`，默认preview，显式 `--control` 才自动飞行。
 - 复用接口：`offboard/CMakeLists.txt` 导出现有 `landing_profile.h`；没有修改大型 `autoarming_control.cpp`。
-- 详细新增文件、参数和操作见仓库根目录 `ego-stage1学习.md`。
+- 详细新增文件、参数和操作见仓库根目录 `fixed_orbit_inspection学习.md`。
 - 没有修改 `forest.world`、EGO核心、FAST-LIO源码或外部PX4。
 
 ### 5. 主要节点、Topic、消息和 TF
@@ -545,7 +545,7 @@ flowchart TD
 
 ### 9. 本阶段关键决策点
 
-**阶段1已落实并验证**：独立任务管理器、`map`绝对塔坐标、home仅返航/降落、固定高度8点加显式闭环、默认逆时针、yaw朝塔、目标z边界、唯一控制发布者、全正常流程OFFBOARD、超时和明确终态。阶段1采用 `radio_tower_0`、10 m、4 m、0.3 m/s、0.5 m/s²和至少2 m配置安全余量；阶段2成果另见下一节和 `ego-stage2学习.md`。
+**阶段1已落实并验证**：独立任务管理器、`map`绝对塔坐标、home仅返航/降落、固定高度8点加显式闭环、默认逆时针、yaw朝塔、目标z边界、唯一控制发布者、全正常流程OFFBOARD、超时和明确终态。阶段1采用 `radio_tower_0`、10 m、4 m、0.3 m/s、0.5 m/s²和至少2 m配置安全余量；阶段2成果另见下一节和 `ego_waypoint_inspection学习.md`。
 
 ## 阶段 2：接入 EGO-Planner
 
@@ -609,7 +609,7 @@ flowchart TD
 
 ### 9. 本阶段关键决策点
 
-**[阶段2已验证]**：独立任务管理器逐目标发布；FAST-LIO → 过滤点云 → EGO → traj_server → raw-local `PositionTarget` 链路；`FRAME_LOCAL_NED`/ROS ENU、`type_mask=0`、p/v/a/yaw/yaw_rate、限幅、单位 `map -> camera_init` 仿真契约、唯一发布者、跟踪误差和锁存 HOLD 安全终态。dry-run、故障注入、单目标、双目标和8个唯一点加首点闭环的低速绕塔按顺序完成。详细证据见 `ego-stage2学习.md`。仍未解决通用目标 z、朝塔 yaw、正式 `body/base_link/sensor` 外参、OFFBOARD 正常降落和阶段3静态障碍验收。
+**[阶段2已验证]**：独立任务管理器逐目标发布；FAST-LIO → 过滤点云 → EGO → traj_server → raw-local `PositionTarget` 链路；`FRAME_LOCAL_NED`/ROS ENU、`type_mask=0`、p/v/a/yaw/yaw_rate、限幅、单位 `map -> camera_init` 仿真契约、唯一发布者、跟踪误差和锁存 HOLD 安全终态。dry-run、故障注入、单目标、双目标和8个唯一点加首点闭环的低速绕塔按顺序完成。详细证据见 `ego_waypoint_inspection学习.md`。仍未解决通用目标 z、朝塔 yaw、正式 `body/base_link/sensor` 外参、OFFBOARD 正常降落和阶段3静态障碍验收。
 
 ## 阶段 3：静态障碍物与重新规划
 
@@ -1039,7 +1039,7 @@ flowchart TD
 3. preview默认无控制能力；control模式有完整preflight、3 s setpoint预发送、OFFBOARD/解锁、起飞、悬停、N点+闭环、返航、OFFBOARD下降、ON_GROUND确认、disarm和DONE/ERROR。
 4. 五类MAVROS控制出口在解锁前和飞行中检查外部publisher；阶段1所有控制Topic图上唯一发布者均为 `/tower_mission`。
 5. 单元测试、无解锁RViz、悬停、1点、4点、首次8点和第二次8点按顺序通过；两次完整任务都返航、受控降落，最终 `armed=false`、`ON_GROUND`。
-6. 新增 `ego-stage1学习.md`，记录参数、数据流、真实启动命令、误差、失败案例、重编译/重启区别和安全清理方法。
+6. 新增 `fixed_orbit_inspection学习.md`，记录参数、数据流、真实启动命令、误差、失败案例、重编译/重启区别和安全清理方法。
 
 ## G.2 阶段1结束时仍未验证或不属于阶段1（历史记录）
 
@@ -1058,7 +1058,7 @@ flowchart TD
 4. dry-run 实测 odom/点云约10 Hz、PositionCommand 100 Hz，MAVROS 控制 Topic 零发布者。
 5. 控制权冲突在 raw publisher 创建前阻断；指令断流进入锁存 HOLD 和有限时间降落，不再无限自动恢复。
 6. 单目标、双目标和8个唯一点加首点闭环的低速绕塔依次成功；最终闭环653.900 s，任务最大跟踪误差0.295 m，最终解锁并接地。
-7. 新增 `ego-stage2学习.md`，记录 raw/type mask/ENU 语义、TF、时间戳容差、轨迹字段、测试和仿真证据。
+7. 新增 `ego_waypoint_inspection学习.md`，记录 raw/type mask/ENU 语义、TF、时间戳容差、轨迹字段、测试和仿真证据。
 
 ## G.4 仍未验证或不属于阶段2
 

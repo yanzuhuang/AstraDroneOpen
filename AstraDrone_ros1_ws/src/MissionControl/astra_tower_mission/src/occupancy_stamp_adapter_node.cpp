@@ -17,7 +17,7 @@ class OccupancyStampAdapter {
     publisher_ = node_.advertise<sensor_msgs::PointCloud2>(output_topic_, 10);
     subscriber_ = node_.subscribe(input_topic_, 10,
                                   &OccupancyStampAdapter::callback, this);
-    ROS_INFO("[STAGE3_MAP] %s -> %s (zero stamps use receipt sim time)",
+    ROS_INFO("[OCCUPANCY_STAMP_ADAPTER] %s -> %s (zero stamps use receipt sim time)",
              input_topic_.c_str(), output_topic_.c_str());
   }
 
@@ -25,7 +25,7 @@ class OccupancyStampAdapter {
   void callback(const sensor_msgs::PointCloud2::ConstPtr& input) {
     if (input->header.frame_id != planning_frame_) {
       ROS_WARN_THROTTLE(5.0,
-                        "[STAGE3_MAP] reject occupancy frame '%s', expected '%s'",
+                        "[OCCUPANCY_STAMP_ADAPTER] reject occupancy frame '%s', expected '%s'",
                         input->header.frame_id.c_str(), planning_frame_.c_str());
       return;
     }
@@ -34,7 +34,7 @@ class OccupancyStampAdapter {
       const ros::Time receipt = ros::Time::now();
       if (receipt.isZero()) {
         ROS_WARN_THROTTLE(5.0,
-                          "[STAGE3_MAP] simulation time is zero; occupancy withheld");
+                          "[OCCUPANCY_STAMP_ADAPTER] simulation time is zero; occupancy withheld");
         return;
       }
       output.header.stamp = receipt;

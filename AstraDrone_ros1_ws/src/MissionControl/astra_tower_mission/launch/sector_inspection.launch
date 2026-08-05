@@ -1,0 +1,117 @@
+<launch>
+  <arg name="enable_control" default="false"/>
+  <arg name="rviz" default="false"/>
+  <arg name="planner_drone_id" default="0"/>
+  <arg name="report_file"
+       default="$(find astra_tower_mission)/../../../../runtime_artifacts/direct_sector_inspection/mission.csv"/>
+  <env name="ROS_LOG_DIR"
+       value="$(optenv ROS_LOG_DIR runtime_artifacts/direct_sector_inspection/ros_logs)"/>
+  <arg name="sector_limit" default="8"/>
+  <arg name="planned_cycles" default="1"/>
+  <arg name="inspection_top_height" default="34.0"/>
+  <arg name="layer_offsets" default="[0.0, -4.0]"/>
+  <arg name="takeoff_height" default="4.0"/>
+  <arg name="staging_height" default="$(arg takeoff_height)"/>
+  <arg name="mission_transit_height" default="$(arg takeoff_height)"/>
+  <arg name="mission_minimum_height" default="2.0"/>
+  <arg name="low_altitude_enabled" default="false"/>
+  <arg name="low_altitude_floor_height" default="1.6"/>
+  <arg name="low_altitude_ceiling_height" default="3.0"/>
+  <arg name="entry_sector" default="7"/>
+  <arg name="task_config" default="$(find astra_tower_mission)/config/sector_inspection.yaml"/>
+  <arg name="low_altitude_config"
+       default="$(find astra_tower_mission)/config/low_altitude_inspection.yaml"/>
+  <arg name="low_altitude_ego_config"
+       default="$(find astra_tower_mission)/config/low_altitude_ego.yaml"/>
+  <arg name="bridge_config" default="$(find ego_gazebo_bridge)/config/sector_inspection.yaml"/>
+  <arg name="filtered_cloud_topic" default="/stage3/cloud_registered_filtered"/>
+  <!-- EGO-Swarm names the planner node by drone_id. GridMap publishes on
+       that node's private handle, so the migrated occupancy topic includes
+       the planner node name even in the single-drone regression. -->
+  <arg name="occupancy_topic"
+       default="/drone_$(arg planner_drone_id)_ego_planner_node/grid_map/occupancy_inflate"/>
+  <arg name="stamped_occupancy_topic" default="/stage3/occupancy_inflate"/>
+
+  <include file="$(find ego_gazebo_bridge)/launch/ego_gazebo_bridge.launch">
+    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="drone_id" value="$(arg planner_drone_id)"/>
+    <arg name="auto_track_on_command" value="false"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+    <arg name="bridge_config_file" value="$(arg bridge_config)"/>
+    <arg name="cloud_topic" value="/cloud_registered"/>
+    <arg name="bridge_cloud_topic" value="$(arg filtered_cloud_topic)"/>
+    <arg name="ego_cloud_topic" value="$(arg filtered_cloud_topic)"/>
+    <arg name="filter_ground_cloud" value="true"/>
+    <arg name="filtered_cloud_topic" value="$(arg filtered_cloud_topic)"/>
+    <arg name="minimum_obstacle_z" value="0.20"/>
+    <arg name="map_size_x" value="90.0"/>
+    <arg name="map_size_y" value="120.0"/>
+    <arg name="map_size_z" value="46.0"/>
+    <arg name="map_resolution" value="0.20"/>
+    <arg name="ground_height" value="-0.50"/>
+    <arg name="virtual_ceil_height" value="45.0"/>
+    <arg name="override_takeoff_height" value="true"/>
+    <arg name="takeoff_height" value="$(arg takeoff_height)"/>
+    <arg name="return_height" value="$(arg takeoff_height)"/>
+    <arg name="max_vel" value="0.30"/>
+    <arg name="max_acc" value="0.50"/>
+    <arg name="use_goal_height" value="true"/>
+    <arg name="obstacles_inflation" value="0.40"/>
+  </include>
+
+  <!-- Load only planner-owned low-altitude overrides into EGO's private
+       namespace.  Mission YAML contains absolute task topics and must never
+       overwrite migrated namespaced planner interfaces. -->
+  <rosparam if="$(arg low_altitude_enabled)" command="load"
+            file="$(arg low_altitude_ego_config)"
+            ns="/drone_$(arg planner_drone_id)_ego_planner_node"/>
+  <param if="$(arg low_altitude_enabled)"
+         name="/drone_$(arg planner_drone_id)_ego_planner_node/grid_map/ground_height"
+         value="$(arg low_altitude_floor_height)"/>
+  <param if="$(arg low_altitude_enabled)"
+         name="/drone_$(arg planner_drone_id)_ego_planner_node/grid_map/virtual_ceil_height"
+         value="$(arg low_altitude_ceiling_height)"/>
+  <param name="/drone_$(arg planner_drone_id)_ego_planner_node/fsm/manual_target_height"
+         value="$(arg inspection_top_height)"/>
+
+  <!-- EGO's PointCloud2 visualization has a zero header stamp. Keep the
+       vendor untouched; stamp only at receipt time before sector-inspection freshness
+       checks consume the map. -->
+  <node pkg="astra_tower_mission" type="occupancy_stamp_adapter_node"
+        name="occupancy_stamp_adapter" output="screen" required="true">
+    <param name="input_topic" value="$(arg occupancy_topic)"/>
+    <param name="output_topic" value="$(arg stamped_occupancy_topic)"/>
+    <param name="planning_frame" value="camera_init"/>
+  </node>
+
+  <node pkg="astra_tower_mission" type="sector_inspection_mission_node"
+        name="tower_mission" output="screen" required="true">
+    <rosparam unless="$(arg low_altitude_enabled)" command="load"
+              file="$(arg task_config)"/>
+    <rosparam if="$(arg low_altitude_enabled)" command="load"
+              file="$(arg low_altitude_config)"/>
+    <param name="enable_control" value="$(arg enable_control)"/>
+    <param name="report_file" value="$(arg report_file)"/>
+    <param name="mission/sector_limit" value="$(arg sector_limit)"/>
+    <param name="mission/planned_cycles" value="$(arg planned_cycles)"/>
+    <param name="mission/inspection_top_height"
+           value="$(arg inspection_top_height)"/>
+    <rosparam param="mission/layer_offsets"
+              subst_value="true">$(arg layer_offsets)</rosparam>
+    <param name="mission/transit_height" value="$(arg mission_transit_height)"/>
+    <param name="mission/minimum_height"
+           value="$(arg mission_minimum_height)"/>
+    <param name="fsm/manual_target_height"
+           value="$(arg inspection_top_height)"/>
+    <param name="staging/height" value="$(arg staging_height)"/>
+    <param name="low_altitude/enabled"
+           value="$(arg low_altitude_enabled)"/>
+    <param name="low_altitude/entry_height"
+           value="$(arg inspection_top_height)"/>
+    <rosparam if="$(arg low_altitude_enabled)"
+              param="candidate/height_offsets_m">[0.0]</rosparam>
+    <param name="entry_gate/entry_sector" value="$(arg entry_sector)"/>
+    <param name="topics/cloud" value="$(arg filtered_cloud_topic)"/>
+    <param name="topics/occupancy_inflate" value="$(arg stamped_occupancy_topic)"/>
+  </node>
+</launch>

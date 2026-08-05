@@ -51,7 +51,7 @@ AstraDrone_ros1_ws/.catkin_workspace
 *.db3
 *.mcap
 
-# 本地仿真运行产物：正式实验摘要、CSV、JSON 和图表仍按需归档到 test_evidence/
+# 本地仿真运行产物；仅在项目负责人明确要求时，才将少量最终结果整理到正式文档目录。
 /runtime_artifacts/
 /temp_worlds/
 **/ros_logs/

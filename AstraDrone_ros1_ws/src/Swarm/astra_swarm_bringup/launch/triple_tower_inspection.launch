@@ -19,7 +19,7 @@
   <arg name="start_rviz" default="true"/>
   <arg name="use_sim_time" default="true"/>
   <arg name="task_config"
-       default="$(find astra_tower_mission)/config/stage3_low_altitude.yaml"/>
+       default="$(find astra_tower_mission)/config/low_altitude_inspection.yaml"/>
   <arg name="takeoff_interval_sec" default="0.0"/>
   <arg name="target_phase_deg" default="67.5"/>
   <arg name="normal_phase_min_deg" default="57.5"/>
@@ -82,15 +82,20 @@
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
   <arg name="prefer_clear_straight_corridor" default="true"/>
-  <arg name="uav1_report_file" default="/tmp/astra_swarm_uav1.csv"/>
-  <arg name="uav2_report_file" default="/tmp/astra_swarm_uav2.csv"/>
-  <arg name="uav3_report_file" default="/tmp/astra_swarm_uav3.csv"/>
+  <arg name="uav1_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/uav1.csv"/>
+  <arg name="uav2_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/uav2.csv"/>
+  <arg name="uav3_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/uav3.csv"/>
   <arg name="evidence_csv_file"
-       default="/tmp/astra_swarm_three_uav_evidence.csv"/>
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/swarm.csv"/>
   <arg name="evidence_summary_file"
-       default="/tmp/astra_swarm_three_uav_summary.json"/>
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/summary.json"/>
   <arg name="evidence_candidate_file"
-       default="/tmp/astra_swarm_three_uav_candidates.jsonl"/>
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/candidates.jsonl"/>
+  <env name="ROS_LOG_DIR"
+       value="$(optenv ROS_LOG_DIR runtime_artifacts/direct_triple_tower/ros_logs)"/>
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
 
   <include if="$(arg start_sim)"
@@ -122,7 +127,7 @@
          value="$(arg uav2_coordination_enabled)"/>
     <arg name="swarm_services_enabled" value="$(arg swarm_services_enabled)"/>
     <arg name="swarm_manager_config"
-         value="$(find astra_swarm_manager)/config/stage5_three_uav_formation.yaml"/>
+         value="$(find astra_swarm_manager)/config/three_uav_inspection_formation.yaml"/>
     <arg name="start_sim" value="false"/>
     <arg name="gui" value="$(arg gui)"/>
     <arg name="use_sim_time" value="$(arg use_sim_time)"/>

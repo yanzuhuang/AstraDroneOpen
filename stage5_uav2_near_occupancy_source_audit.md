@@ -29,8 +29,8 @@ mask、降低膨胀或降低当前位置安全半径。
 
 新增只录制脚本：
 
-- `scripts/run_sh/stage5_uav2_near_occupancy_record_bag.sh`
-- `scripts/tool/analyze_stage5_uav2_near_occupancy.py`
+- `scripts/run_sh/uav2_occupancy_record_bag.sh`
+- `scripts/tool/analyze_uav2_near_occupancy.py`
 
 脚本拒绝覆盖已有路径，不发布控制、任务、解锁或 MAVROS setpoint。它录制 `/tf`、
 `/tf_static`、Gazebo model/link states、Livox、FAST-LIO world/body、适配 cloud、

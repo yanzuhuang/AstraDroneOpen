@@ -27,7 +27,7 @@
   <arg name="orbit_permission_enabled" default="false"/>
   <arg name="orbit_speed_scale_enabled" default="false"/>
   <arg name="task_config"
-       default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
+       default="$(find astra_tower_mission)/config/sector_inspection.yaml"/>
   <arg name="low_altitude_ego_config"
        default="$(find astra_swarm_bringup)/config/swarm_low_altitude_ego.yaml"/>
   <arg name="map_size_z" default="46.0"/>
@@ -171,7 +171,7 @@
            value="$(arg low_altitude_ceiling_height)"/>
 
     <node if="$(arg mission_enabled)"
-          pkg="astra_tower_mission" type="stage3_ego_mission_node"
+          pkg="astra_tower_mission" type="sector_inspection_mission_node"
           name="tower_mission" output="screen" required="true">
       <rosparam command="load"
                 file="$(arg task_config)"/>

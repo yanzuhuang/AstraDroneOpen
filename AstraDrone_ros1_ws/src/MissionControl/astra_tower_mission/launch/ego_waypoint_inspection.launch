@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="enable_control" default="false"/>
+  <arg name="scenario" default="dry_run"/>
+  <arg name="waypoint_count" default="8"/>
+  <arg name="rviz" default="false"/>
+  <arg name="report_file"
+       default="$(find astra_tower_mission)/../../../../runtime_artifacts/direct_ego_waypoint_inspection/mission.csv"/>
+  <env name="ROS_LOG_DIR"
+       value="$(optenv ROS_LOG_DIR runtime_artifacts/direct_ego_waypoint_inspection/ros_logs)"/>
+  <arg name="task_config"
+       default="$(find astra_tower_mission)/config/ego_waypoint_inspection.yaml"/>
+  <arg name="bridge_config"
+       default="$(find ego_gazebo_bridge)/config/ego_waypoint_inspection.yaml"/>
+
+  <include file="$(find ego_gazebo_bridge)/launch/ego_gazebo_bridge.launch">
+    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="auto_track_on_command" value="true"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+    <arg name="bridge_config_file" value="$(arg bridge_config)"/>
+    <arg name="filter_ground_cloud" value="true"/>
+    <arg name="ego_cloud_topic" value="/stage2/cloud_registered_filtered"/>
+    <arg name="filtered_cloud_topic" value="/stage2/cloud_registered_filtered"/>
+    <arg name="minimum_obstacle_z" value="0.20"/>
+    <arg name="map_size_x" value="80.0"/>
+    <arg name="map_size_y" value="110.0"/>
+    <!-- ground=-0.5, size=33.0 gives map coverage through 32.5 m. -->
+    <arg name="map_size_z" value="33.0"/>
+    <arg name="map_resolution" value="0.20"/>
+    <arg name="ground_height" value="-0.50"/>
+    <arg name="virtual_ceil_height" value="32.0"/>
+    <arg name="max_vel" value="0.30"/>
+    <arg name="max_acc" value="0.50"/>
+    <!-- Fallback remains valid, while this mission explicitly consumes each goal z. -->
+    <arg name="manual_target_height" value="4.0"/>
+    <arg name="use_goal_height" value="true"/>
+    <arg name="obstacles_inflation" value="0.40"/>
+  </include>
+
+  <node pkg="astra_tower_mission" type="ego_waypoint_mission_node"
+        name="tower_mission" output="screen" required="true">
+    <rosparam command="load" file="$(arg task_config)"/>
+    <param name="enable_control" value="$(arg enable_control)"/>
+    <param name="scenario" value="$(arg scenario)"/>
+    <param name="mission/waypoint_count" value="$(arg waypoint_count)"/>
+    <param name="report_file" value="$(arg report_file)"/>
+  </node>
+</launch>

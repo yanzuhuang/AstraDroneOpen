@@ -1,6 +1,6 @@
 /**
  * @file tower_mission_node.cpp
- * @brief Stage 1 fixed-height tower mission and PX4 OFFBOARD executor.
+ * @brief Fixed-height orbit inspection and PX4 OFFBOARD executor.
  *
  * The node intentionally has no Gazebo API dependency. Tower coordinates and
  * every ROS interface are provided by parameters. In preview mode it does not
@@ -36,6 +36,7 @@
 #include <string>
 #include <vector>
 
+#include "astra_tower_mission/ego_task_utils.h"
 #include "astra_tower_mission/motion_limiter.h"
 #include "astra_tower_mission/tower_route.h"
 #include "offboard/landing_profile.h"
@@ -580,6 +581,13 @@ class TowerMissionNode {
 
   void openReport() {
     if (config_.report_file.empty()) {
+      return;
+    }
+    config_.report_file = timestampedRuntimeArtifactFile(
+        config_.report_file, "fixed_orbit_inspection");
+    if (!ensureArtifactParentDirectory(config_.report_file)) {
+      ROS_ERROR("[RECORD] Cannot create report directory for: %s",
+                config_.report_file.c_str());
       return;
     }
     report_.open(config_.report_file, std::ios::out | std::ios::trunc);

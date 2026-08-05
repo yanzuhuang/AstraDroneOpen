@@ -5,7 +5,7 @@
 接入前基线 commit：`64bd99cc21feb7f90b26335ace40112557aa6a82`  
 世界：`simulation/astra_gazebo_worlds/worksite.world`  
 仿真链：PX4 SITL、Gazebo Classic、MAVROS、FAST-LIO MID360、EGO-Planner、
-`ego_gazebo_bridge`、`stage3_ego_mission_node`
+`ego_gazebo_bridge`、`sector_inspection_mission_node`
 
 ## 结论
 
@@ -42,7 +42,8 @@ catkin_test_results build/test_results
 入口：
 
 ```bash
-scripts/run_sh/stage3_ego.sh --report /tmp/astra_stage1_baseline_dryrun.csv
+scripts/run_sh/sector_inspection.sh \
+  --report runtime_artifacts/sector_inspection_dry_run_<时间戳>/control.csv
 ```
 
 实测 topic/frame：
@@ -94,7 +95,8 @@ dry-run 的首次 command 在相对高度低于 0.3 m 时被 bridge 高度包络
 入口：
 
 ```bash
-scripts/run_sh/stage3_ego.sh --control --report /tmp/astra_stage1_26_22_control.csv
+scripts/run_sh/sector_inspection.sh --control \
+  --report runtime_artifacts/sector_inspection_control_<时间戳>/control.csv
 ```
 
 任务节点在控制模式中仍不创建 MAVROS publisher；唯一控制出口为
@@ -147,4 +149,3 @@ bag 中的关键 topic 均有数据：`/Odometry`、`/mavros/local_position/pose
   几何结果，不等同于阶段 3 专门静态障碍最小净空验收。
 - 本阶段没有修改 EGO vendor 核心、PX4、FAST-LIO 或 worksite world。
 - `/tmp` bag、CSV 和临时 26→22 YAML 不属于仓库提交。
-

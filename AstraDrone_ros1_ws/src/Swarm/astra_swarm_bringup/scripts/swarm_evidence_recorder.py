@@ -6,6 +6,7 @@ import json
 import math
 import threading
 import time
+from pathlib import Path
 
 import rospy
 from astra_custom_msgs.msg import InspectionCandidateArray, PlannerStatus
@@ -17,15 +18,34 @@ from std_msgs.msg import Bool, Float64, String
 from traj_utils.msg import MultiBsplines
 
 
+REPO_ROOT = Path(__file__).resolve().parents[5]
+RUNTIME_ARTIFACTS_ROOT = REPO_ROOT / "runtime_artifacts"
+
+
+def runtime_output_param(name, default):
+    path = Path(rospy.get_param(name, str(default))).resolve()
+    try:
+        path.relative_to(RUNTIME_ARTIFACTS_ROOT)
+    except ValueError:
+        raise rospy.ROSInitException(
+            "{} must be under {}: {}".format(
+                name, RUNTIME_ARTIFACTS_ROOT, path
+            )
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 class EvidenceRecorder:
     def __init__(self):
         self.ids = [int(v) for v in rospy.get_param("~uav_ids", [1, 2, 3])]
-        self.csv_path = rospy.get_param(
-            "~csv_file", "/tmp/astra_swarm_evidence.csv")
-        self.summary_path = rospy.get_param(
-            "~summary_file", "/tmp/astra_swarm_evidence.json")
-        self.candidate_path = rospy.get_param(
-            "~candidate_file", "/tmp/astra_swarm_candidates.jsonl")
+        direct_artifact_dir = RUNTIME_ARTIFACTS_ROOT / "direct_triple_tower"
+        self.csv_path = runtime_output_param(
+            "~csv_file", direct_artifact_dir / "swarm.csv")
+        self.summary_path = runtime_output_param(
+            "~summary_file", direct_artifact_dir / "summary.json")
+        self.candidate_path = runtime_output_param(
+            "~candidate_file", direct_artifact_dir / "candidates.jsonl")
         self.candidate_file_lock = threading.Lock()
         self.tower_center = [
             float(v) for v in rospy.get_param(

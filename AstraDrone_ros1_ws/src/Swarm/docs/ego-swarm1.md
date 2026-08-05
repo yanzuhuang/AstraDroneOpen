@@ -31,7 +31,7 @@ Swarm/
 
 对现有单机代码只有两项默认关闭的最小扩展：
 
-1. `stage3_ego_mission_node` 增加切层和落地许可等待；
+1. `sector_inspection_mission_node` 增加切层和落地许可等待；
 2. `ego_mavros_bridge` 增加起飞许可门，以及规划话题 launch 参数。
 
 单机 launch 不设置这些开关时，行为与原来相同。
@@ -92,13 +92,13 @@ AstraDrone_ros1_ws/src/Swarm/scripts/run_dual_tower.sh --stop
 
 ```bash
 # 单机 dry-run
-scripts/run_sh/stage3_ego.sh
+scripts/run_sh/sector_inspection.sh
 
 # 单机完整8扇区控制任务
-scripts/run_sh/stage3_ego.sh --control --sector-limit 8
+scripts/run_sh/sector_inspection.sh --control --sector-limit 8
 
 # 停止单机 tmux 编排
-scripts/run_sh/stage3_ego.sh --stop
+scripts/run_sh/sector_inspection.sh --stop
 ```
 
 ## 4. PX4、端口、命名空间与坐标

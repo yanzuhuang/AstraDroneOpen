@@ -99,11 +99,18 @@ if "$stop"; then
 fi
 
 if [[ -z "$results_dir" ]]; then
-  results_dir="/tmp/astra_swarm_evidence/${profile}_$(date +%Y%m%d_%H%M%S)"
+  results_dir="$repo_root/runtime_artifacts/dual_tower_${profile}_$(date +%Y%m%d_%H%M%S)"
+fi
+results_dir="$(readlink -m "$results_dir")"
+if [[ "$results_dir" != "$repo_root"/runtime_artifacts/* ]]; then
+  echo "results directory must be under $repo_root/runtime_artifacts/: $results_dir" >&2
+  exit 2
 fi
 mkdir -p "$results_dir"
+export ROS_LOG_DIR="$results_dir/ros_logs"
+mkdir -p "$ROS_LOG_DIR"
 
-task_config="$repo_root/AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/stage3_ego.yaml"
+task_config="$repo_root/AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/sector_inspection.yaml"
 low_altitude=false
 uav1_top=34.0
 uav1_final=30.0
@@ -119,7 +126,7 @@ max_vel=0.30
 max_acc=0.50
 planning_horizon=7.5
 if [[ "$profile" == "low" ]]; then
-  task_config="$repo_root/AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/stage3_low_altitude.yaml"
+  task_config="$repo_root/AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/low_altitude_inspection.yaml"
   low_altitude=true
   uav1_top=13.0
   uav1_final=9.0

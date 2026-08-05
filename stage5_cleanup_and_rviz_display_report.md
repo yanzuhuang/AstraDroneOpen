@@ -49,7 +49,7 @@
 
 单机低空避障基准是：
 
-- 启动：`astra_tower_mission/launch/stage3_low_altitude.launch`；
+- 启动：`astra_tower_mission/launch/low_altitude_inspection.launch`；
 - 中间 include：`ego_gazebo_bridge/launch/ego_gazebo_bridge.launch`；
 - 实际 RViz 配置：`ego_gazebo_bridge/rviz/ego_gazebo_bridge.rviz`。
 

@@ -20,7 +20,7 @@
   <arg name="use_sim_time" default="true"/>
   <arg name="rviz" default="false"/>
   <arg name="task_config"
-       default="$(find astra_tower_mission)/config/stage3_ego.yaml"/>
+       default="$(find astra_tower_mission)/config/sector_inspection.yaml"/>
   <arg name="low_altitude_enabled" default="false"/>
   <arg name="orbit_permission_enabled"
        default="$(arg low_altitude_enabled)"/>
@@ -97,8 +97,12 @@
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
   <arg name="prefer_clear_straight_corridor" default="false"/>
-  <arg name="uav1_report_file" default="/tmp/astra_swarm_uav1.csv"/>
-  <arg name="uav2_report_file" default="/tmp/astra_swarm_uav2.csv"/>
+  <arg name="uav1_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_dual_tower/uav1.csv"/>
+  <arg name="uav2_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_dual_tower/uav2.csv"/>
+  <env name="ROS_LOG_DIR"
+       value="$(optenv ROS_LOG_DIR runtime_artifacts/direct_dual_tower/ros_logs)"/>
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
 
   <include if="$(arg start_sim)"

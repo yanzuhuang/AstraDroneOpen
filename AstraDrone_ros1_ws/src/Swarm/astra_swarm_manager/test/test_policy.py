@@ -57,7 +57,7 @@ class PolicyTest(unittest.TestCase):
         self.assertTrue(orbit_release_allowed(
             waiting, [], center, 120.0, 15.0))
 
-    def test_stage5_gate_angles_and_equal_height_geometry(self):
+    def test_three_uav_gate_angles_and_equal_height_geometry(self):
         self.assertEqual(normalize_degrees(315.0 + 22.5), 337.5)
         self.assertEqual(normalize_degrees(315.0 - 22.5), 292.5)
         self.assertTrue(mission_geometry_clear(

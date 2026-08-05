@@ -29,7 +29,7 @@ HEAD：`f68f07137db57698c15f39d093f812ff9851da15`
 
 ## 3. 录制与封存
 
-复用并补齐了 `scripts/run_sh/stage5_uav2_near_occupancy_record_bag.sh`；新增记录但不发布任何控制的 topic 是 `/uav2/move_base_simple/goal`、`/uav2/mavros/imu/data`、`/uav2/mavros/imu/data_raw`、`/uav2/tower_mission/candidate_id` 和 `/uav2/swarm/orbit_speed_scale`。原有集合已经包含 `/clock`、`/tf`、`/tf_static`、Gazebo model/link states、Livox raw/IMU、FAST-LIO body/world、所有 peer/self/ground 阶段云、EGO 输入、膨胀 occupancy、FAST-LIO/MAVROS odometry、planner/goal/B-spline/bridge/status。
+复用并补齐了 `scripts/run_sh/uav2_occupancy_record_bag.sh`；新增记录但不发布任何控制的 topic 是 `/uav2/move_base_simple/goal`、`/uav2/mavros/imu/data`、`/uav2/mavros/imu/data_raw`、`/uav2/tower_mission/candidate_id` 和 `/uav2/swarm/orbit_speed_scale`。原有集合已经包含 `/clock`、`/tf`、`/tf_static`、Gazebo model/link states、Livox raw/IMU、FAST-LIO body/world、所有 peer/self/ground 阶段云、EGO 输入、膨胀 occupancy、FAST-LIO/MAVROS odometry、planner/goal/B-spline/bridge/status。
 
 两个 bag 均为索引完成的 ROS bag（不是 `.active`）且没有覆盖历史证据：
 

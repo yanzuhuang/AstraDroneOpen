@@ -219,8 +219,8 @@ RViz marker frame 由已有
 | --- | --- | --- |
 | bridge 转发普通 planning goal | `ego_mavros_bridge.cpp:850-854` | 发布前显式设为 `now` |
 | bridge 发布返航 planning goal | `ego_mavros_bridge.cpp:1935-1953` | 发布前显式设为 `now` |
-| Stage 2 目标 | `stage2_ego_mission_node.cpp:558-563` | 每次发布用调用时的 `now` |
-| Stage 3 目标 | `stage3_ego_mission_node.cpp:1171-1177、2945-2954` | `makeGoal()` 使用 `ros::Time::now()` |
+| Stage 2 目标 | `ego_waypoint_mission_node.cpp:558-563` | 每次发布用调用时的 `now` |
+| Stage 3 目标 | `sector_inspection_mission_node.cpp:1171-1177、2945-2954` | `makeGoal()` 使用 `ros::Time::now()` |
 
 因此任务层源码无需为本轮额外修改。bridge cancel 在
 `ego_mavros_bridge.cpp:896-919` 先使旧目标/控制失效，再发布 planning cancel；

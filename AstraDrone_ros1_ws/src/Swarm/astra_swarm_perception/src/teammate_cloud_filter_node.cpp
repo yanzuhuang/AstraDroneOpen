@@ -221,7 +221,7 @@ class TeammateCloudFilter {
                       static_cast<std::size_t>(message->width) * message->height,
                       peer_removed, nonfinite_removed, kept);
     ROS_INFO_THROTTLE(1.0,
-                      "[STAGE5_PEER_FILTER] input=%u peer_removed=%zu "
+                      "[PEER_FILTER] input=%u peer_removed=%zu "
                       "nonfinite_removed=%zu static_added=%zu output=%zu",
                       message->width * message->height, peer_removed,
                       nonfinite_removed, static_points_.size(), kept);

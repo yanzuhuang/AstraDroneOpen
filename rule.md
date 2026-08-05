@@ -14,6 +14,24 @@
 - 只改变某次仿真的数值时，必须确认没有改变本文件定义的语义。
 - `build/`、`devel/`、日志和生成文件不是规则来源。
 
+### 1.1 飞行试验数据与运行产物
+
+所有飞行试验产生的 rosbag、ROS 日志、CSV、JSON、轨迹图、截图、视频、临时报告、调试输出和验证结果，必须写入仓库根目录的 `runtime_artifacts/`。推荐每次试验使用独立的时间戳目录，例如 `runtime_artifacts/<任务名称>_<时间戳>/`。
+
+- 禁止将运行数据写入源码、配置、world、launch、文档或其他项目目录。
+- 禁止重新创建、使用或向 `test_evidence/` 与 `trc_picture/` 写入任何数据。
+- `runtime_artifacts/` 中的文件不得加入 Git 版本管理。
+- 只有项目负责人明确要求长期归档时，才允许从 `runtime_artifacts/` 挑选少量最终结果整理到正式文档目录；归档不得重新使用 `test_evidence/` 或 `trc_picture/`。
+
+### 1.2 文件、目录与运行结果命名
+
+禁止新建或继续使用带有 `stageX`、`stage1`、`stage2`、`stage3`、`stage4`、`stage5` 等开发阶段标识的文件名、脚本名、目录名或运行结果目录名。名称必须描述实际功能，例如 `three_uav_inspection`、`sector_inspection`、`trajectory_analysis`。
+
+- 运行目录必须采用 `runtime_artifacts/<任务名称>_<时间戳>/` 格式。
+- 所有新建文件和目录都必须使用清晰、稳定的功能名称，不得以开发阶段代替功能含义。
+- `runtime_artifacts/` 始终不加入 Git 版本管理。
+- 历史报告中为准确说明过去阶段而保留的阶段文字不构成新命名，也不得用作新的输出路径或活动文件名。
+
 ## 2. 坐标、塔心与角度
 
 任务几何使用规划坐标系中的 `map` 绝对位置；FAST-LIO/EGO 适配层负责把输入转换到任务规划 frame，不能在任务节点中假设 Gazebo API。

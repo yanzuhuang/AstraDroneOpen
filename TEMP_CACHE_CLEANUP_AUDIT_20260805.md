@@ -15,7 +15,7 @@
 1. 当前 HEAD 中共跟踪 **282 个**疑似运行产物，其中 **267 个为 `.log`**；工作树中未发现被 Git 跟踪的 rosbag、`build/`、`devel/`、`artifacts/` 或 `temp_worlds/`。
 2. 这批文件在当前工作树约占 **155 MiB**。它们绝大多数是 Stage 5 三机验证期间生成的 ROS 原始日志，而不是绕塔源码、launch、参数、世界文件或 RViz 配置。
 3. 其中 **263 个文件**首次随提交 `c8cfadf`（2026-08-03，`清除虚拟障碍物，三机绕塔正常`）被加入版本管理。这解释了之后每次运行为什么会在“源代码管理”中出现大量运行相关变化。
-4. [scripts/run_sh/stage5_three_uav.sh](scripts/run_sh/stage5_three_uav.sh) 默认将每次运行结果写入 `test_evidence/stage5_<mode>_<时间戳>/`，并设置 `ROS_LOG_DIR=<结果目录>/ros_logs`。因此新运行会产生新的未跟踪目录；若复用已跟踪结果目录，还会修改已跟踪的 `roslaunch.log`、`master.log`、`rosout.log` 等文件。
+4. [scripts/run_sh/three_uav_inspection.sh](scripts/run_sh/three_uav_inspection.sh) 默认将每次运行结果写入 `test_evidence/stage5_<mode>_<时间戳>/`，并设置 `ROS_LOG_DIR=<结果目录>/ros_logs`。因此新运行会产生新的未跟踪目录；若复用已跟踪结果目录，还会修改已跟踪的 `roslaunch.log`、`master.log`、`rosout.log` 等文件。
 
 ## 3. 当前工作区中可见的运行产物
 
@@ -45,7 +45,7 @@
 
 但少数离线分析脚本直接读取它们：
 
-- `scripts/tool/analyze_stage5_octagon.py` 读取目标目录的 `roslaunch.log`；
+- `scripts/tool/analyze_three_uav_orbit.py` 读取目标目录的 `roslaunch.log`；
 - `test_evidence/stage5_uav2_trajectory_root_cause_audit_20260803/analyze_audit.py` 从 `ros_logs/*/rosout.log` 读取失败与成功样本；
 - `stage5_cleanup_and_rviz_display_report.md` 将 `stage5_false_obstacle_fix_20260803` 表述为完整保留的专项证据组。
 

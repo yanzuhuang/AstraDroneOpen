@@ -63,9 +63,9 @@ README 中的 ROS2、完整实机、探索和蜂群描述超前于当前代码�
 - bridge 默认 dry-run，dry-run 不创建或发布任何 MAVROS 控制 Topic；
 - 2026-07-20 当前源码目标构建通过；`offboard` 7/7、bridge 9/9 单测通过，其中包含五类 MAVROS 控制出口冲突检查；隔离 dry-run 验证了全 preflight 健康和 raw-local 冲突阻断。
 - 2026-07-21 阶段1新增独立 `astra_tower_mission`：固定高度N点加闭环、朝塔yaw、限速/限加速度、到达保持、超时、进度/CSV、返航和OFFBOARD受控降落；preview不创建控制publisher。最终目标包回归为新包6/6、offboard 7/7、bridge 9/9，共22/22。
-- 阶段1按悬停→1点→4点→8点→第二次8点完成 `forest.world`/`radio_tower_0` 实测；两次完整任务均518 s，最终 `SUCCESS`、`armed=false`、`ON_GROUND`，控制图上唯一发布者为 `/tower_mission`。详细误差见 `ego-stage1学习.md`。
+- 阶段1按悬停→1点→4点→8点→第二次8点完成 `forest.world`/`radio_tower_0` 实测；两次完整任务均518 s，最终 `SUCCESS`、`armed=false`、`ON_GROUND`，控制图上唯一发布者为 `/tower_mission`。详细误差见 `fixed_orbit_inspection学习.md`。
 - 2026-07-21 阶段2实现 FAST-LIO→过滤点云→EGO→traj_server→raw-local `PositionTarget` 闭环；`type_mask=0` 保留p/v/a/yaw/yaw_rate，raw唯一发布者为 `/ego_mavros_bridge`。任务逐目标等待新trajectory id和实际odom到达；HOLD锁存并有限时间降落。
-- 阶段2按dry-run→控制冲突/指令断流故障注入→单目标→双目标→8个唯一点加首点闭环的低速绕塔完成验证。最终闭环653.900 s，任务最大跟踪误差0.295 m，最终`SUCCESS`、`armed=false`、`ON_GROUND`。详细证据见 `ego-stage2学习.md`。
+- 阶段2按dry-run→控制冲突/指令断流故障注入→单目标→双目标→8个唯一点加首点闭环的低速绕塔完成验证。最终闭环653.900 s，任务最大跟踪误差0.295 m，最终`SUCCESS`、`armed=false`、`ON_GROUND`。详细证据见 `ego_waypoint_inspection学习.md`。
 - 2026-07-22 当前未提交增量将主仿真和阶段1/2默认world改为 `worksite.world`；两阶段统一为 `radio_tower=(-10.0551,19.7104)`、10 m半径、8 m单层。阶段2任务层发布闭合全局参考，EGO逐段生成局部避障/重规划轨迹；圆周段朝塔，进场/返航沿水平速度前向。三包构建、39个本轮目标单测、launch参数展开和阶段1无控制preview通过；未启动 `--control` 或飞行。
 
 仍未完成运行验收：
@@ -126,8 +126,8 @@ bridge 在 EGO 控制启用前监控的 MAVROS 控制类别包括 position、raw
 | FAST-LIO MID360 | `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/launch/mapping_mid360.launch` |
 | 基础多航点 | `offboard/launch/autoarming_control.launch` + `offboard/config/relative_waypoint_mission.yaml` |
 | 连续轨迹 | `offboard/launch/continuous_trajectory.launch` |
-| 阶段1预览/控制 | `scripts/run_sh/stage1_tower.sh`；默认preview，`--control`才允许自动飞行 |
-| 阶段2EGO接入 | `scripts/run_sh/stage2_ego.sh`；默认dry-run，控制必须显式`--control --scenario single|dual|tower` |
+| 阶段1预览/控制 | `scripts/run_sh/fixed_orbit_inspection.sh`；默认preview，`--control`才允许自动飞行 |
+| 阶段2EGO接入 | `scripts/run_sh/ego_waypoint_inspection.sh`；默认dry-run，控制必须显式`--control --scenario single|dual|tower` |
 | EGO/PX4 通用集成 | `ego_gazebo_bridge/launch/ego_gazebo_bridge.launch` + `config/ego_gazebo_bridge.yaml` |
 | EGO规划栈通用编排 | `scripts/run_sh/ego_planner_stack.sh`；默认 dry-run，`--control` 才允许自动控制 |
 
@@ -205,8 +205,8 @@ catkin_test_results build/test_results
 
 - `CODE_AUDIT_REPORT.md`：`498c7c6` 基线的完整代码、构建、依赖和风险审计；它是历史快照，当前结论须与源码复核。
 - `ego_planner_工程落地学习.md`：详细数据流、基础知识、决策门、阶段1至阶段9路线、验收标准和本轮前置优化记录。
-- `ego-stage1学习.md`：阶段1实现、参数、Topic/TF、真实分级仿真证据和新手重启/排障手册。
-- `ego-stage2学习.md`：阶段2 raw/type mask/ENU语义、TF契约、逐目标任务、安全监控、分级飞行与CSV证据。
+- `fixed_orbit_inspection学习.md`：阶段1实现、参数、Topic/TF、真实分级仿真证据和新手重启/排障手册。
+- `ego_waypoint_inspection学习.md`：阶段2 raw/type mask/ENU语义、TF契约、逐目标任务、安全监控、分级飞行与CSV证据。
 - `legacy_ego_integration.md`：旧0–6路线的EGO/PX4/FAST-LIO集成历史记录，不代表当前阶段编号。
 - `offboard/include/offboard/trajectory_reference.h`、`landing_profile.h`：连续轨迹与 OFFBOARD 软降落数学。
 - `ego_gazebo_bridge/config/ego_gazebo_bridge.yaml`：EGO bridge 通用安全、Topic、frame 和任务包络参数；原旧路线名称 `stage6_gazebo.yaml` 已停用，避免与当前阶段编号混淆。

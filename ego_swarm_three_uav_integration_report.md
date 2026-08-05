@@ -158,8 +158,8 @@ make命令返回1；实际存在的四组目标均已执行，随后 `catkin_tes
 
 核心修改位于：
 
-- `astra_tower_mission/config/stage3_low_altitude.yaml`
-- `astra_tower_mission/src/stage3_ego_mission_node.cpp`
+- `astra_tower_mission/config/low_altitude_inspection.yaml`
+- `astra_tower_mission/src/sector_inspection_mission_node.cpp`
 - `astra_swarm_manager/src/astra_swarm_manager/policy.py`
 - `astra_swarm_manager/scripts/swarm_manager_node.py`
 - `astra_swarm_bringup/launch/uav_tower_stack.launch`
@@ -196,13 +196,13 @@ occupied-map clearance>=1.0 m
 
 | 位置 | 规则 |
 |---|---|
-| `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/stage3_low_altitude.yaml:146-152` | 共用角偏移 `[0,-5,+5,-10,+10,-12,+12] deg`、半径偏移 `[0,+2,+4] m`、低空高度偏移 `[0]`；`minimum_clearance=1.0 m` 仅用于原始点云/粗几何，`map_additional_clearance=0.5 m` 用于已膨胀占据图。 |
-| `.../stage3_ego_mission_node.cpp:1627-1665` | `mappedTaskClearance()` 按地图是否已膨胀选择 0.5 m 或 `minimum_clearance + cloud_inflation`；EGO `dist0` 不作为任务硬门限。 |
-| `.../stage3_ego_mission_node.cpp:1670-1782` | 端点、塔体 keep-out、粗几何和地图走廊分层检查；已膨胀地图统一使用 0.5 m 附加净空。 |
-| `.../stage3_ego_mission_node.cpp:1784-1915` | 第一巡塔点与 PRE_ENTRY/ENTRY 组合共同枚举；每个组合再绑定同一普通扇区候选网格，评分后才交给 EGO。 |
-| `.../stage3_ego_mission_node.cpp:2557-2660` | 初始扇区先评估全部候选再 `chooseBestCandidate()`；规划失败不会跳过同扇区候选，只有当前候选重试耗尽后才换候选/扇区。 |
-| `.../stage3_ego_mission_node.cpp:2897` | 静态同扇区绕行也只使用 `[0,+2,+4] m` 半径偏移，不再另设向内半径规则。 |
-| `AstraDrone_ros1_ws/src/Swarm/astra_swarm_manager/config/stage5_three_uav_formation.yaml:27-28` | `map_additional_clearance=0.5 m`；`optimizer_swarm_clearance=1.5 m` 保持不变。 |
+| `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/low_altitude_inspection.yaml:146-152` | 共用角偏移 `[0,-5,+5,-10,+10,-12,+12] deg`、半径偏移 `[0,+2,+4] m`、低空高度偏移 `[0]`；`minimum_clearance=1.0 m` 仅用于原始点云/粗几何，`map_additional_clearance=0.5 m` 用于已膨胀占据图。 |
+| `.../sector_inspection_mission_node.cpp:1627-1665` | `mappedTaskClearance()` 按地图是否已膨胀选择 0.5 m 或 `minimum_clearance + cloud_inflation`；EGO `dist0` 不作为任务硬门限。 |
+| `.../sector_inspection_mission_node.cpp:1670-1782` | 端点、塔体 keep-out、粗几何和地图走廊分层检查；已膨胀地图统一使用 0.5 m 附加净空。 |
+| `.../sector_inspection_mission_node.cpp:1784-1915` | 第一巡塔点与 PRE_ENTRY/ENTRY 组合共同枚举；每个组合再绑定同一普通扇区候选网格，评分后才交给 EGO。 |
+| `.../sector_inspection_mission_node.cpp:2557-2660` | 初始扇区先评估全部候选再 `chooseBestCandidate()`；规划失败不会跳过同扇区候选，只有当前候选重试耗尽后才换候选/扇区。 |
+| `.../sector_inspection_mission_node.cpp:2897` | 静态同扇区绕行也只使用 `[0,+2,+4] m` 半径偏移，不再另设向内半径规则。 |
+| `AstraDrone_ros1_ws/src/Swarm/astra_swarm_manager/config/three_uav_inspection_formation.yaml:27-28` | `map_additional_clearance=0.5 m`；`optimizer_swarm_clearance=1.5 m` 保持不变。 |
 | `.../astra_swarm_manager/policy.py:149-246` | 联合选择硬门限改为已膨胀地图 0.5 m；角度窗口 12°；机间最小三维距离 3.0 m 和 swarm clearance 1.5 m 保持不变。 |
 
 因此 UAV1 在 285°、12.5 m 的实测地图距离 0.945260 m 现在可以进入候选评分/EGO 验证，
@@ -256,7 +256,7 @@ MAVROS 均 connected 且 local pose 存在，但三机 Livox/FAST-LIO 无输出�
 
 ### 最小修复
 
-1. `stage3_ego_mission_node.cpp`：联合选择器锁定的第一巡塔点现在按实际坐标覆盖普通扇区
+1. `sector_inspection_mission_node.cpp`：联合选择器锁定的第一巡塔点现在按实际坐标覆盖普通扇区
    名义点，而不再只在半径不同才覆盖。这样角度偏移相同半径候选也不会被旧名义点替换；
    14.5/16.5 m 只用于第一巡塔点，后续扇区仍回归12.5 m。
 2. `swarm_safety_node.py`：不改超时阈值和 fail-closed 行为，仅把聚合的
@@ -359,7 +359,7 @@ UAV3 此后在第5扇区得到第二个明确失败：
 
 本轮源码修改仅为：
 
-- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/src/stage3_ego_mission_node.cpp`
+- `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/src/sector_inspection_mission_node.cpp`
 - `AstraDrone_ros1_ws/src/Swarm/astra_swarm_safety/scripts/swarm_safety_node.py`
 - `ego_swarm_three_uav_integration_report.md`
 - `test_evidence/stage5_full_orbit_20260802/{README.md,summary.json}`
@@ -442,16 +442,16 @@ staging记到22.5°扇区，释放后直接请求67.5°，形成约17.75 m/90°�
 - `ego_gazebo_bridge/include/ego_gazebo_bridge/ego_mavros_bridge.h`、
   `src/ego_mavros_bridge.cpp`：统一未来偏差语义、真实clock回退安全清缓存、
   `/input_health`证据。
-- `astra_tower_mission/include/astra_tower_mission/stage3_planner.h`、
-  `src/stage3_planner.cpp`、`src/stage3_ego_mission_node.cpp`：候选边界数值容差、粗几何
+- `astra_tower_mission/include/astra_tower_mission/inspection_candidate_planner.h`、
+  `src/inspection_candidate_planner.cpp`、`src/sector_inspection_mission_node.cpp`：候选边界数值容差、粗几何
   单次净空、同扇区安全直线偏好、联合候选ID/扇区绑定、地图包络preflight。
-- `astra_tower_mission/test/stage3_planner_test.cpp`：上述规则的单元回归。
+- `astra_tower_mission/test/inspection_candidate_planner_test.cpp`：上述规则的单元回归。
 - `astra_swarm_bringup/launch/{dual_tower_inspection,uav_tower_stack,
   triple_tower_inspection,triple_px4_mavros}.launch`：只在三机阶段启用新偏好、90×90地图、
   后台PX4控制台和证据参数；单机/双机默认候选策略不变。
 - `astra_swarm_bringup/scripts/swarm_evidence_recorder.py`、
-  `scripts/run_sh/stage5_three_uav.sh`、`scripts/tool/{stage5_map_probe,
-  analyze_stage5_occupancy_bag,plot_stage5_trajectory}.py`：永久日志、bag、数据年龄、逐候选
+  `scripts/run_sh/three_uav_inspection.sh`、`scripts/tool/{three_uav_map_probe,
+  analyze_occupancy_bag,plot_three_uav_trajectory}.py`：永久日志、bag、数据年龄、逐候选
   JSONL、地图离线核对和轨迹图。
 
 ### 永久证据目录与真实运行结果
@@ -484,7 +484,7 @@ staging记到22.5°扇区，释放后直接请求67.5°，形成约17.75 m/90°�
   确认三台EGO/任务节点均为90×90 m、planning horizon 7.5 m、原始/粗几何净空1.0 m、
   已膨胀图附加净空0.5 m、最小三维机间距离3.0 m、swarm clearance 1.5 m。
 - 当前直接执行的C++/Python测试148项全部通过，其中规划器59/59；工作区测试结果汇总
-  为303项中的302项通过。唯一缺项是 `stage3_no_control_integration.rostest`：沙箱禁止
+  为303项中的302项通过。唯一缺项是 `sector_inspection_no_control.rostest`：沙箱禁止
   `netifaces.interfaces()`，申请沙箱外执行又因执行服务登录refresh token已撤销而拒绝。
   这明确记为“未执行”，不算通过。
 - 地图扩大和首扇区绑定修复完成后，因同一外部执行授权故障，无法再启动第三次真实
@@ -517,7 +517,7 @@ HOLD、安全收尾、部分绕塔或授权阻塞写成PASSED；只有后续新�
 
 目标六包构建通过。C++/Python/rostest汇总为 **308 tests, 0 errors, 0 failures, 0 skipped**；
 Python `py_compile`、Stage5脚本 `bash -n`、全部相关launch XML解析和 `git diff --check`
-均通过。此前受沙箱网络接口限制而未执行的 `stage3_no_control_integration.rostest` 已使用
+均通过。此前受沙箱网络接口限制而未执行的 `sector_inspection_no_control.rostest` 已使用
 隔离 `ROS_HOME` 在允许环境中执行通过。
 
 ### 最终dry-run预检
