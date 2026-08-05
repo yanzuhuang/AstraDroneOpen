@@ -11,6 +11,7 @@
   <xacro:arg name="base_model" default="iris_without_GPS_0"/>
   <xacro:arg name="robot_namespace" default="/uav1"/>
   <xacro:arg name="frame_prefix" default="uav1"/>
+  <xacro:arg name="gazebo_camera_name" default="UAV1_Camera"/>
   <xacro:arg name="camera_namespace" default="/uav1/d435"/>
   <xacro:arg name="lidar_namespace" default="/uav1/livox"/>
 
@@ -19,10 +20,12 @@
   <xacro:property name="base_model" value="$(arg base_model)"/>
   <xacro:property name="robot_namespace" value="$(arg robot_namespace)"/>
   <xacro:property name="frame_prefix" value="$(arg frame_prefix)"/>
+  <xacro:property name="gazebo_camera_name"
+                  value="$(arg gazebo_camera_name)"/>
   <xacro:property name="camera_namespace" value="$(arg camera_namespace)"/>
   <xacro:property name="lidar_namespace" value="$(arg lidar_namespace)"/>
   <xacro:property name="d435_sensor_prefix"
-                  value="${frame_prefix}_d435_"/>
+                  value="${gazebo_camera_name}_"/>
 
   <model name="${model_name}">
     <include>
@@ -223,7 +226,7 @@
 
       <sensor name="${d435_sensor_prefix}color" type="camera">
         <pose>0.0325 0 0 3.14 -1.57 1.57</pose>
-        <camera name="color">
+        <camera name="${gazebo_camera_name}_color">
           <horizontal_fov>1.211</horizontal_fov>
           <image>
             <width>640</width>
@@ -247,7 +250,7 @@
 
       <sensor name="${d435_sensor_prefix}ired1" type="camera">
         <pose>0.02 0 0 3.14 -1.57 1.57</pose>
-        <camera name="ired1">
+        <camera name="${gazebo_camera_name}_infra1">
           <horizontal_fov>1.571</horizontal_fov>
           <image>
             <width>640</width>
@@ -271,7 +274,7 @@
 
       <sensor name="${d435_sensor_prefix}ired2" type="camera">
         <pose>-0.03 0 0 3.14 -1.57 1.57</pose>
-        <camera name="ired2">
+        <camera name="${gazebo_camera_name}_infra2">
           <horizontal_fov>1.571</horizontal_fov>
           <image>
             <width>640</width>
@@ -295,7 +298,7 @@
 
       <sensor name="${d435_sensor_prefix}depth" type="depth">
         <pose>0.0325 0 0 3.14 -1.57 1.57</pose>
-        <camera name="depth">
+        <camera name="${gazebo_camera_name}_depth">
           <horizontal_fov>1.571</horizontal_fov>
           <image>
             <width>640</width>
@@ -321,7 +324,7 @@
       <child>d435_link</child>
     </joint>
 
-    <plugin name="${frame_prefix}_d435"
+    <plugin name="${gazebo_camera_name}_plugin"
             filename="librealsense_gazebo_plugin.so">
       <prefix>${d435_sensor_prefix}</prefix>
       <depthUpdateRate>30</depthUpdateRate>

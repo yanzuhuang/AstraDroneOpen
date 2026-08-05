@@ -41,12 +41,15 @@
            loops otherwise flood roslaunch output and consume scheduler time. -->
       <arg name="interactive" value="true"/>
       <arg name="robot_namespace" value="/uav1"/>
+      <!-- Generate the complete sensor SDF before the spawn node starts.
+           Passing it as cmd removes the old same-parameter overwrite race. -->
+      <arg name="cmd"
+           value="$(find xacro)/xacro $(arg sensor_model)
+                  uav_id:=1 model_name:=uav1 base_model:=iris_without_GPS_0
+                  robot_namespace:=/uav1 frame_prefix:=uav1
+                  gazebo_camera_name:=UAV1_Camera
+                  camera_namespace:=/uav1/d435 lidar_namespace:=/uav1/livox"/>
     </include>
-    <param name="sdf_iris_mid360_00"
-           command="$(find xacro)/xacro $(arg sensor_model)
-                    uav_id:=1 model_name:=uav1 base_model:=iris_without_GPS_0
-                    robot_namespace:=/uav1 frame_prefix:=uav1
-                    camera_namespace:=/uav1/d435 lidar_namespace:=/uav1/livox"/>
     <group>
       <!-- Keep MAVROS' generic map_ned/odom_ned/base_link_frd helpers on a
            vehicle-local TF bus. Project-owned prefixed frames remain global. -->
@@ -72,12 +75,13 @@
       <arg name="mavlink_cam_udp_port" value="14531"/>
       <arg name="interactive" value="true"/>
       <arg name="robot_namespace" value="/uav2"/>
+      <arg name="cmd"
+           value="$(find xacro)/xacro $(arg sensor_model)
+                  uav_id:=2 model_name:=uav2 base_model:=iris_without_GPS_1
+                  robot_namespace:=/uav2 frame_prefix:=uav2
+                  gazebo_camera_name:=UAV2_Camera
+                  camera_namespace:=/uav2/d435 lidar_namespace:=/uav2/livox"/>
     </include>
-    <param name="sdf_iris_mid360_11"
-           command="$(find xacro)/xacro $(arg sensor_model)
-                    uav_id:=2 model_name:=uav2 base_model:=iris_without_GPS_1
-                    robot_namespace:=/uav2 frame_prefix:=uav2
-                    camera_namespace:=/uav2/d435 lidar_namespace:=/uav2/livox"/>
     <group>
       <remap from="/tf" to="/uav2/mavros/tf"/>
       <remap from="/tf_static" to="/uav2/mavros/tf_static"/>
@@ -101,12 +105,13 @@
       <arg name="mavlink_cam_udp_port" value="14532"/>
       <arg name="interactive" value="true"/>
       <arg name="robot_namespace" value="/uav3"/>
+      <arg name="cmd"
+           value="$(find xacro)/xacro $(arg sensor_model)
+                  uav_id:=3 model_name:=uav3 base_model:=iris_without_GPS_2
+                  robot_namespace:=/uav3 frame_prefix:=uav3
+                  gazebo_camera_name:=UAV3_Camera
+                  camera_namespace:=/uav3/d435 lidar_namespace:=/uav3/livox"/>
     </include>
-    <param name="sdf_iris_mid360_22"
-           command="$(find xacro)/xacro $(arg sensor_model)
-                    uav_id:=3 model_name:=uav3 base_model:=iris_without_GPS_2
-                    robot_namespace:=/uav3 frame_prefix:=uav3
-                    camera_namespace:=/uav3/d435 lidar_namespace:=/uav3/livox"/>
     <group>
       <remap from="/tf" to="/uav3/mavros/tf"/>
       <remap from="/tf_static" to="/uav3/mavros/tf_static"/>

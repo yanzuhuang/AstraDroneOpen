@@ -1,3 +1,22 @@
+# 三机绕塔启动方式（Gazebo GUI + RViz）
+
+> 以下命令会启用仿真飞行控制：三架无人机会自动进入 OFFBOARD、解锁、起飞并执行绕塔任务。启动前请确认没有残留的 ROS、Gazebo 或 PX4 仿真进程。
+
+在终端中执行：
+
+```bash
+cd /home/yanzu/AstraDroneOpen
+scripts/run_sh/three_uav_inspection.sh --control --gui --rviz
+```
+
+- `--control`：允许三架无人机自动解锁、起飞并执行绕塔任务。
+- `--gui`：打开 Gazebo Classic GUI，观察三架无人机的实际运动。
+- `--rviz`：打开三机 RViz，观察地图、点云、规划轨迹和任务状态。
+- 观察结束后，在启动终端按 `Ctrl+C`，脚本会停止本次仿真。
+- 本次运行的日志、rosbag 和检查结果会写入仓库根目录的 `runtime_artifacts/three_uav_inspection_control_<时间戳>/`。
+
+---
+
 # AstraDrone 统一扇区、航点与净空规则
 
 版本：1.0  
