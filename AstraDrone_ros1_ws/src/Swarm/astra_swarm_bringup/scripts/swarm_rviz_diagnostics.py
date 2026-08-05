@@ -238,7 +238,6 @@ class SwarmRvizDiagnostics:
             state = self.states.get(uid)
             if state is None:
                 continue
-            planner = self.planners.get(uid)
             marker = Marker()
             marker.header.frame_id = "world"
             marker.header.stamp = now
@@ -251,25 +250,7 @@ class SwarmRvizDiagnostics:
             marker.pose.orientation.w = 1.0
             marker.scale.z = 0.42
             self.color(marker, uid)
-            planner_text = "NO_STATUS"
-            if planner is not None:
-                planner_text = "{} replans={} reason={}".format(
-                    planner.planner_state,
-                    planner.consecutive_plan_failures,
-                    planner.failure_reason or "NONE")
-            role = ("LEADER" if uid == self.role_order[0] else
-                    "TRAILING" if uid == self.role_order[-1] else "MIDDLE")
-            marker.text = (
-                "UAV{} {} task={} sector={} mask=0x{:02X}\n"
-                "released={} orbit={:.1f}deg speed_scale={} "
-                "bridge={} safety={} planner={}").format(
-                    uid, role, self.mission_states[uid], self.sectors[uid],
-                    self.sector_masks[uid],
-                    self.orbit_released[uid],
-                    math.degrees(self.accumulated[uid]),
-                    self.formation.get("speed_scales", {}).get(str(uid),
-                                                               "pending"),
-                    self.bridge_states[uid], self.last_safety, planner_text)
+            marker.text = "uav{}".format(uid)
             markers.markers.append(marker)
         coordinator = Marker()
         coordinator.header.frame_id = "world"
@@ -285,9 +266,7 @@ class SwarmRvizDiagnostics:
         coordinator.scale.z = 0.55
         coordinator.color.r = coordinator.color.g = coordinator.color.b = 1.0
         coordinator.color.a = 1.0
-        coordinator.text = "UAV3 -> UAV2 -> UAV1\n{}\n{}\n{}".format(
-            self.coordinator, self.coordinator_reason,
-            json.dumps(self.formation, sort_keys=True))
+        coordinator.text = "swarm"
         markers.markers.append(coordinator)
         self.status_pub.publish(markers)
 

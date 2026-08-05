@@ -71,7 +71,7 @@
 
 未修改 launch；三机实际 launch 原本已经永久加载上述 `triple_tower.rviz`。
 
-相对单机基准，三机配置只增加了三架 RobotModel、三条真实历史轨迹和一组主航点；FAST-LIO 点云改为显示三机各自最终供规划使用的 `/uavN/stage3/cloud_registered_filtered`，并沿用单机基准的 AxisColor、点大小、衰减时间、背景色和网格风格。EGO 仅保留三机局部 `optimal_list` 与局部 goal。
+后续因完整三机 GUI 运行触发主机 OOM，按用户要求恢复到此前三机 RViz 的轻量显示风格：2 m 网格、深色背景，以及三色、半透明的 `/uavN/cloud_registered_peer_filtered` 点云。EGO 仍只显示三机局部 `optimal_list` 与局部 goal。
 
 主航点仍由同一个中心发布器按原塔心、原半径、原顺序和固定 8 扇区生成；话题为 `/swarm/rviz/mission_markers`，位置 namespace 为 `main_waypoints`，短标签 namespace 为 `main_waypoint_labels`。显示内容只有一组 8 个球体和 `WP1`～`WP8`；没有 24 个重复航点。
 
@@ -81,13 +81,14 @@
 - `/uav2/tower_mission/mission_route`；
 - `/uav3/tower_mission/mission_route`；
 - 预设绕塔圆环、ENTRY/EXIT/PRE_ENTRY/FIRST 标记及 home→pre-entry→entry→first 参考连线；
-- 当前任务目标 Pose 和长篇状态/协调调试文字。
+- 长篇状态/协调调试文字（状态 Marker 仅显示 `uav1`、`uav2`、`uav3` 和 `swarm`）。
 
 保留：
 
 - 三机 RobotModel，Display Name 为 `uav1`、`uav2`、`uav3`；
 - 三机 FAST-LIO/规划输入点云；
 - 三机 EGO 局部轨迹和局部 goal；
+- 三机当前局部目标 `/uavN/tower_mission/current_target`；
 - `/uav1/swarm/actual_path`、`/uav2/swarm/actual_path`、`/uav3/swarm/actual_path`；
 - 一组 `/swarm/rviz/mission_markers` 的 `WP1`～`WP8`；
 - Grid 和 TF（TF 名称只在画面中隐藏，没有修改任何 TF frame）。
@@ -102,3 +103,15 @@
 - 本任务相关两个文件的 `git diff --check` 通过。全工作区检查仍会报告既有 `FAST_LIO/Log/mat_pre.txt` 行尾空格，该文件未由本任务修改或清理。
 
 本次没有启动 Gazebo/PX4/MAVROS，没有解锁或飞行，没有修改 ROS namespace、Topic 通信关系、TF frame、8 个任务航点、ENTRY_GATE、EXIT_GATE、同步、返航、避障、EGO/FAST-LIO 参数或任何飞行/轨迹规划逻辑。
+
+## 5. 2026-08-03 OOM 故障复核与显示回退
+
+- 内核日志明确记录 `ReceiveQueue invoked oom-killer`，随后以 OOM 原因杀死 `gzserver`；被杀时 `gzserver` 的匿名常驻内存约 5.77 GB。因此“长时间不起飞”不是航点或规划参数问题，而是仿真进程在严重资源压力下失去实时性并最终退出。
+- 同一时刻 RViz 诊断日志记录 `/clock` 连接断开。后续 RViz 空白是 Gazebo 时钟和数据发布者消失后的结果，没有发现 RViz 配置损坏或 RViz 独立崩溃的证据。
+- RViz 已回退到此前三机配置的显示风格，但未恢复三条 `/uavN/tower_mission/mission_route` 全局参考 Path；真实历史轨迹 `/uavN/swarm/actual_path` 继续保留。
+- RobotModel 名称为 `uav1`、`uav2`、`uav3`；其他各机 Display Name 也统一使用 `uavN cloud/EGO/goal/path/target` 短名称。TF 名称继续隐藏，只改变画面标签，不改变 frame。
+- 回退后完成 Python AST、RViz YAML、launch 展开和话题静态检查；没有再次启动 Gazebo、PX4、MAVROS 或执行飞行。
+
+## 6. 最新录制数据追加清理
+
+按用户后续指示，已整组删除最新录制目录 `test_evidence/stage5_control_20260803_180328/`（约 1.6 GB）。删除内容包括 `stage5.bag`、三机 CSV、`swarm.csv`、`candidates.jsonl`、`summary.json`、二维/三维轨迹图、运行 metadata、rosbag/roslaunch 日志及该次 ROS 节点日志。没有删除此前两次 OOM 故障目录或其他用途不确定的实验数据。
