@@ -33,7 +33,8 @@ while (($#)); do
       ;;
     --help)
       echo "stage5_three_uav.sh [--control] [--gui] [--rviz] [--duration SEC] [--results-dir DIR]"
-      echo "Every run stores ROS logs, CSV/JSONL, summary, console output and a rosbag under test_evidence/."
+      echo "By default, every run stores temporary ROS logs, CSV/JSONL, summary, console output and a rosbag under runtime_artifacts/."
+      echo "Use --results-dir to select a timestamped runtime_artifacts/ or test_evidence/ archive directory."
       exit 0
       ;;
     *)
@@ -49,10 +50,11 @@ if "$enable_control"; then
   mode="control"
 fi
 if [[ -z "$results_dir" ]]; then
-  results_dir="$repo_root/test_evidence/stage5_${mode}_$(date +%Y%m%d_%H%M%S)"
+  results_dir="$repo_root/runtime_artifacts/stage5_${mode}_$(date +%Y%m%d_%H%M%S)"
 fi
-if [[ "$results_dir" != "$repo_root"/test_evidence/stage5_* ]]; then
-  echo "results directory must be a timestamped test_evidence/stage5_* path" >&2
+if [[ "$results_dir" != "$repo_root"/runtime_artifacts/stage5_* && \
+      "$results_dir" != "$repo_root"/test_evidence/stage5_* ]]; then
+  echo "results directory must be a timestamped runtime_artifacts/stage5_* or test_evidence/stage5_* path" >&2
   exit 2
 fi
 mkdir -p "$results_dir/ros_logs"
@@ -178,5 +180,5 @@ if ((duration_seconds > 0)); then
   watchdog_pid=$!
 fi
 
-echo "Stage 5 $mode started; permanent evidence: $results_dir"
+echo "Stage 5 $mode started; artifacts: $results_dir"
 wait "$launch_pid"

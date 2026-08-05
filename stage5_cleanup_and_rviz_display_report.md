@@ -115,3 +115,7 @@
 ## 6. 最新录制数据追加清理
 
 按用户后续指示，已整组删除最新录制目录 `test_evidence/stage5_control_20260803_180328/`（约 1.6 GB）。删除内容包括 `stage5.bag`、三机 CSV、`swarm.csv`、`candidates.jsonl`、`summary.json`、二维/三维轨迹图、运行 metadata、rosbag/roslaunch 日志及该次 ROS 节点日志。没有删除此前两次 OOM 故障目录或其他用途不确定的实验数据。
+
+## 7. 2026-08-05 缓存清理后续
+
+本报告第 1 节记录的是 2026-08-03 当时的保留状态。2026-08-05 后续缓存清理会从当前版本移除原始 rosbag、ROS 节点日志、`master.log`、`roslaunch.log` 与 `rosout.log` 等可再生运行产物；最终实验的 CSV、JSON、轨迹图、分析脚本和报告继续保留。八边形根因分析所需的两组 `roslaunch.log` 与各自 `rosout.log` 例外保留。文中对原始 bag/日志“保留”或“封存”的陈述应理解为该报告写作时的历史事实，而非清理后的当前文件清单。
