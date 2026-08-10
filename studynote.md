@@ -1,572 +1,827 @@
-# AstraDrone 仿真、控制与 EGO-Planner 学习笔记
+# 1. AstraDrone 绕塔项目的三套 RViz 配置
 
-## 1. 当前学习范围与顺序
+本项目中与当前绕塔任务直接对应的 RViz 配置有三套。它们分别服务于：单机固定航线展示、单机 EGO 低空避障展示，以及三机绕塔的全局态势展示。三者不能混用，因为订阅的 Topic、命名空间和固定坐标系不同。
 
-本笔记按“基础控制 → 连续轨迹 → 定位建图 → 局部避障规划”的顺序组织。当前已经从 PX4/Gazebo/MAVROS/Offboard 基础控制进入 FAST-LIO 与 EGO-Planner 集成阶段；仍不需要修改 PX4 内环。
+## 1. 单机固定绕塔：`fixed_orbit_inspection.rviz`
 
-推荐顺序：
-
-```text
-跑通 pc_example.sh
-  -> 理解 PX4、Gazebo、MAVROS 的分工
-  -> 读懂默认 Offboard 状态机
-  -> 起飞、悬停、降落
-  -> 航点和轨迹
-  -> 数据验证
-  -> FAST-LIO 定位
-  -> EGO-Planner 和避障
-```
-
-## 2. 把主控制链看成“领导关系”
+配置文件：
 
 ```text
-autoarming_control.cpp：任务层，决定“飞到哪里、何时起降”
-        ↓ ROS 位置目标
-MAVROS：翻译层，在 ROS 消息与 MAVLink/PX4 之间转换
-        ↓
-PX4：飞控层，根据目标计算速度、姿态、推力和电机输出
-        ↓
-Gazebo：物理层，模拟无人机、传感器、重力和运动
-        ↓ 实际位置反馈
-MAVROS -> autoarming_control.cpp，形成闭环
+AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/rviz/fixed_orbit_inspection.rviz
 ```
 
-类比开车：控制节点是导航，MAVROS 是翻译员，PX4 是司机，Gazebo 是虚拟车辆和道路。
+启动入口：`astra_tower_mission/launch/fixed_orbit_inspection.launch`。该 launch 的 `rviz` 参数默认是 `true`，因此运行固定绕塔检查时会默认启动此 RViz。
 
-关键边界：`autoarming_control.cpp` 只生成上层 setpoint，不直接控制姿态和电机；PX4 内部控制器负责底层闭环。
+它用于阶段 1 的单机、固定高度、预设闭合航线绕塔任务。这里的航线由任务节点直接生成和执行，并不通过 EGO-Planner 做局部避障或在线重规划。
 
-默认的 `pc_example.sh + autoarming_control` 链路中，FAST-LIO 虽由脚本启动，但 `autoarming_control` 不订阅它的 `/Odometry`，EGO-Planner 也不会自动接管无人机。旧路线阶段 6 当时使用独立集成 launch；该入口现按功能命名为 `ego_gazebo_bridge.launch`，由 `ego_mavros_bridge` 把 FAST-LIO、EGO-Planner 与 PX4/Gazebo 安全地连接起来。
+固定坐标系是 `map`，主要显示：
 
-## 3. 主控制链术语
-
-| 术语 | 理解 |
-|---|---|
-| ROS1 | 机器人程序通信框架，节点通过 topic、service、parameter 协作。 |
-| `roscore` | ROS1 的通信登记中心。 |
-| node | 一个正在运行的 ROS 程序，如 `autoarming_control`。 |
-| topic | 持续发布/订阅的数据通道，如位置和 setpoint。 |
-| service | 一次请求和响应，如解锁、切换模式。 |
-| launch | 同时启动节点并配置参数的 XML 文件。 |
-| PX4 | 无人机飞控软件，执行状态估计和位置/速度/姿态/电机控制。 |
-| SITL | Software In The Loop，在电脑上运行的虚拟 PX4 飞控。 |
-| FCU | Flight Control Unit；在当前仿真中主要指 PX4 SITL。 |
-| Gazebo | 模拟世界、无人机动力学、碰撞和传感器的物理仿真器。 |
-| `iris_mid360` | 搭载 Mid-360 激光雷达的四旋翼仿真模型。 |
-| MAVLink | PX4 与外部程序通信使用的无人机协议。 |
-| MAVROS | ROS1 与 PX4/MAVLink 之间的桥梁，并处理许多坐标转换。 |
-| Offboard | PX4 接受外部计算机持续发送目标值的飞行模式；不是绕过 PX4。 |
-| setpoint | 目标值，例如“希望飞到 `(x,y,z)`”。 |
-| local pose | 无人机当前的局部位置和姿态，不是经纬度。 |
-| Arm/Disarm | 解锁/上锁；解锁后才允许电机产生正常飞行推力。 |
-| QGC | QGroundControl 地面站，用于查看状态、告警和参数。 |
-| FAST-LIO | 激光雷达与 IMU 定位建图算法；当前不在默认控制闭环中。 |
-| planner | 根据状态、目标和环境约束计算路径或轨迹的规划器。 |
-| path | 只描述经过哪些位置，不一定包含时间。 |
-| trajectory | 描述每个时刻的位置、速度和加速度，是可执行的时间化路径。 |
-| EGO-Planner | 基于局部占据地图和 B 样条优化的局部轨迹规划器。 |
-| planning frame | 规划器统一使用的坐标系；阶段 6 默认为 `camera_init`。 |
-
-三个重要话题：
-
-```text
-/mavros/state                    PX4 是否连接、当前模式、是否解锁
-/mavros/local_position/pose      实际局部位姿反馈
-/mavros/setpoint_position/local  控制节点发布的目标位置
-```
-
-## 4. 外部软件与仓库文件的区别
-
-| 内容 | 主要位置 |
-|---|---|
-| 完整 PX4 源码 | `~/PX4-Autopilot` |
-| 已安装 MAVROS | `/opt/ros/noetic/share/mavros` 等系统目录 |
-| Astra 的 PX4/Gazebo 适配 | `simulation/px4_sim_files/` |
-| Gazebo 场景 | `simulation/astra_gazebo_worlds/` |
-| Offboard 控制代码 | `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/` |
-| FAST-LIO 源码 | `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/` |
-| EGO-Planner 源码 | `AstraDrone_ros1_ws/src/Planner/ego-planner/` |
-| EGO 到 MAVROS 的集成与安全桥 | `AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/` |
-
-PX4、MAVROS、Gazebo 是独立软件；本仓库主要保存安装脚本、项目配置、模型、场景和上层控制代码。
-
-下文的 `offboard/` 指 `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/`。
-
-## 5. 现阶段最重要的文件
-
-### `scripts/run_sh/pc_example.sh`
-
-职责：用 tmux 一键启动 `roscore`、仓库内 `astra_example.launch`、FAST-LIO、Offboard 控制节点和 QGC。
-
-何时修改：需要改变启动模块、启动顺序或等待时间时。它是启动器，不应放飞行轨迹算法。
-
-### `simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch`
-
-职责：配置并启动 PX4 SITL、Gazebo、MAVROS，设置 world、机型、出生位置、SDF 和通信地址。
-
-常用参数：
-
-| 参数 | 作用 | 何时修改 |
+| 显示内容 | Topic | 用途 |
 |---|---|---|
-| `world` | Gazebo 场景 | 切换空场、森林、动态避障场景 |
-| `vehicle` | 无人机型号 | 更换传感器或无 GPS 机型 |
-| `x/y/z/R/P/Y` | 出生位置和姿态 | 调整初始位置 |
-| `sdf` | 无人机模型文件 | 更换模型结构或传感器 |
-| `fcu_url` | MAVROS 与 PX4 的通信地址 | 多机或端口变化时 |
+| 地图网格 | 无 Topic | 观察任务的平面位置关系。 |
+| 闭合航线预览 | `/tower_mission/route_preview` | 绿色路线，表示任务计划的绕塔闭环。 |
+| 航点与朝向 | `/tower_mission/waypoint_poses` | 橙色箭头，表示每个航点位置和面向塔的 yaw。 |
+| 塔与巡检安全包络 | `/tower_mission/route_markers` | 显示铁塔碰撞包络及巡检环。 |
+| 实际飞行轨迹 | `/tower_mission/actual_path` | 蓝色轨迹，用于与预设航线比较。 |
+| 当前目标 | `/tower_mission/current_target` | 当前正在跟踪的目标位姿。 |
+| 飞机实际位姿 | `/mavros/local_position/pose` | MAVROS 提供的 PX4/Gazebo 实际位姿。 |
 
-当前 `pc_example.sh` 直接加载仓库内这份 launch，不再依赖 `~/PX4-Autopilot` 中的同名副本。
+判断任务时，要同时看绿色的计划闭环和蓝色的实际轨迹；计划路线正确不代表飞机一定已经正确跟踪。
 
-### `offboard/launch/autoarming_control.launch` 与 `continuous_trajectory.launch`
+## 2. 单机低空避障：`ego_gazebo_bridge.rviz`
 
-`autoarming_control.launch` 启动相对 home 航点任务，从 `relative_waypoint_mission.yaml` 读取航点；`continuous_trajectory.launch` 启动圆、方形、8 字或椭圆连续轨迹。两者都设置 `map -> camera_init` 静态 TF、集中配置实验参数，并可启动 RViz。只改 launch/YAML 参数通常不需要重新编译。
-
-连续轨迹常用参数包括 `trajectory_type`、`speed`、`yaw_mode`、`target_laps`、`radius`、`side_length`、`ellipse_a/b`、`max_tracking_error` 和 `loop_rate`。新增参数时要同时完成：launch 定义参数，C++ 读取参数，并让参数真正参与计算。
-
-### `offboard/src/autoarming_control.cpp`
-
-职责：Offboard 会话、解锁、目标位置生成和任务状态机，是基础控制阶段最重要的修改文件。
-
-当前流程：
+配置文件：
 
 ```text
-等待 FCU
-  -> 以 20 Hz 预发送 100 个当前位置 setpoint
-  -> 请求 OFFBOARD
-  -> 请求 Arm
-  -> TAKEOFF
-  -> INITIAL_HOVER
-  -> WAYPOINTS，或 TRAJECTORY_ENTRY -> TRACKING
-  -> RETURN_HOME
-  -> 请求 PX4 AUTO.LAND
-  -> PX4 报告落地并自动上锁后 COMPLETED
+AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/rviz/ego_gazebo_bridge.rviz
 ```
 
-适合修改：起飞点、悬停、航点、预设轨迹、yaw、状态转换、到达门限、超时和安全处理。当前源码已经包含有效位姿检查、home 记录、合法四元数、悬停、轨迹速度、跟踪误差门限、超时、返航和 PX4 原生降落。
+启动入口是 `ego_gazebo_bridge/launch/ego_gazebo_bridge.launch`。该 launch 的 `rviz` 参数默认是 `false`；单机低空避障的 `low_altitude_inspection.launch` 将该参数透传给 bridge，因此只有显式传入 `rviz:=true` 时才会启动。
 
-### 其他文件何时关注
+这套配置用于单机的 FAST-LIO + EGO-Planner 局部规划链，重点是检查感知、占据地图与规划轨迹是否一致。固定坐标系是 `camera_init`，即当前 EGO 规划坐标系。
 
-| 需求 | 文件位置 |
-|---|---|
-| 修改障碍物和场景 | `simulation/astra_gazebo_worlds/*.world` |
-| 修改机体、传感器安装 | `simulation/px4_sim_files/px4_iris_sdf/*.sdf` |
-| 修改 PX4 机架/EKF 参数 | `simulation/px4_sim_files/px4_iris_params/*`，基础阶段暂缓 |
-| 新增 C++ 可执行节点 | `offboard/CMakeLists.txt` |
-| 新增 ROS 依赖 | `offboard/package.xml` |
-| 修改 RViz 显示 | `offboard/rviz_config/*.rviz` |
-| 学习定位 | `SLAM/FAST_LIO/` 配置与源码 |
-| 学习规划避障 | `Planner/ego-planner/`，基础控制稳定后再进入 |
-| 将 EGO 轨迹交给 PX4 | `MissionControl/ego_gazebo_bridge/` |
-
-不要修改 `build/`、`devel/` 生成文件，也不要同时运行多个节点向同一架无人机持续发布 setpoint。
-
-当前 `position_control*` 缺少完整的 OFFBOARD/解锁和可靠循环，不作为第一条学习主线。
-
-## 6. 启动、换场景和编译
-
-完整启动命令保持不变：
-
-```bash
-cd ~/AstraDroneOpen
-./scripts/run_sh/pc_example.sh
-```
-
-切换 world：只修改 `astra_example.launch` 第 15 行末尾的文件名，例如：
-
-```xml
-example.world
-forest.world
-dynamic_avoidance.world
-```
-
-修改 world/launch 后不用编译，但必须完全关闭旧 Gazebo/PX4 后重新启动。
-
-修改 `autoarming_control.cpp` 后：
-
-```bash
-cd ~/AstraDroneOpen/AstraDrone_ros1_ws
-catkin_make
-source devel/setup.bash
-```
-
-只修改 `autoarming_control.launch` 参数，一般重新启动该 launch 即可。
-
-## 7. 基础检查命令
-
-```bash
-rospack find px4
-rospack find mavros
-rospack find offboard
-
-rostopic echo -n 1 /mavros/state
-rostopic echo -n 1 /mavros/local_position/pose
-rostopic echo /mavros/setpoint_position/local
-rostopic hz /mavros/setpoint_position/local
-rostopic info /mavros/setpoint_position/local
-```
-
-排查顺序：
-
-```text
-FCU connected
-  -> pose 是否持续有效
-  -> setpoint 是否只有一个发布者且频率稳定
-  -> 是否进入 OFFBOARD
-  -> 是否 Armed
-  -> 目标值是否正确
-  -> 实际位置是否跟随
-```
-
-## 8. 基础控制阶段的第一个改造任务
-
-先在 `autoarming_control.cpp` 实现：
-
-```text
-等待有效位姿
-  -> 记录起飞点
-  -> 垂直起飞到相对高度
-  -> 定点悬停 10 秒
-  -> 垂直降落
-  -> 确认上锁
-```
-
-这项基础任务在当前 `autoarming_control.cpp` 中已经扩展为航点、连续轨迹、返航、故障悬停和 `AUTO.LAND` 状态机。后续重点是理解 EGO-Planner，并通过阶段 6 桥接完成真正的局部避障闭环。
-
-## 9. EGO-Planner 与项目现有逻辑的关系
-
-### 9.1 先给结论
-
-仓库中的规划器并不是一个“与 EGO-Planner 类似的自研 planner”：`AstraDrone_ros1_ws/src/Planner/ego-planner/` 放的就是 EGO-Planner 源码。需要区分的是“规划器”“任务/轨迹发生器”和“控制桥”三个角色：
-
-| 模块 | 它决定什么 | 是否读取障碍地图 | 是否局部重规划 | 是否直接向 MAVROS 发 setpoint |
-|---|---|---:|---:|---:|
-| EGO-Planner | 接下来怎样平滑、安全地绕障飞 | 是 | 是 | 否，先输出 B 样条和 `PositionCommand` |
-| `autoarming_control` | 何时起飞、去哪个航点、沿哪种预设几何轨迹飞、何时返航/降落 | 否 | 否 | 是 |
-| `ego_mavros_bridge` | 谁拥有控制权，以及何时接管、保持、返航或降落 | 不负责规划 | 不负责规划 | 是，把 EGO 指令转换为 PX4 位置目标 |
-| `rc_obstacle_avoidance` | 把遥控量变成 Fast-Planner 目标并转发规划结果 | 自身不建图 | 依赖外部 Fast-Planner | 是，但包当前被 `CATKIN_IGNORE` 禁用 |
-
-因此，`autoarming_control` 中的“圆/方形/8 字/椭圆轨迹逻辑”和 EGO 的共同点只是：都会产生随时间变化的位置目标，也都有任务状态和安全判断。核心算法并不相同：前者根据公式或航点查表，环境中即使出现障碍物也不会改变路线；后者根据里程计、目标和局部地图优化 B 样条，并在执行中检查碰撞、重新规划或急停。
-
-`rc_obstacle_avoidance` 的 README 提到 Fast-Planner，但仓库内没有对应的 Fast-Planner 实现，而且该包当前被禁用，所以它不是当前 EGO 集成主线。
-
-### 9.2 哪个更加好用
-
-没有脱离任务场景的绝对优劣：
-
-- 学习 OFFBOARD、验证 PX4 跟踪、空场按固定图形飞行：`autoarming_control` 更好用。依赖少、行为确定、参数直观，故障也更容易定位。
-- 森林、仓库等有障碍环境，需要自主绕障和在线重规划：EGO-Planner 更好用。预设轨迹发生器不具备这一能力。
-- 当前项目要做完整避障飞行：最合适的组合是“EGO-Planner 负责轨迹 + `ego_mavros_bridge` 负责 PX4 接管和安全”。两者不是二选一，桥接层补上了 EGO 原生输出与 MAVROS/PX4 之间的接口、坐标系和安全状态机。
-- 只想验证规划算法是否运行：可用 EGO 自带 SO3 模拟器；要验收本项目：必须看 PX4 控制的 Gazebo 物理无人机是否真正跟踪并避障，不能只看 RViz 曲线。
-
-## 10. EGO-Planner 是什么
-
-EGO-Planner 是四旋翼无人机的局部轨迹规划器。它根据无人机当前状态、目标点和附近障碍物，生成安全、平滑且满足速度和加速度限制的三维轨迹。它回答“无人机接下来应该怎样飞”，但它不是相机、SLAM、飞控或底层控制器。
-
-```text
-相机 / 激光雷达
-        ↓ 深度图 / 点云
-定位与局部占据地图
-        ↓
-EGO-Planner
-        ↓ B 样条轨迹
-traj_server
-        ↓ 当前时刻的位置、速度、加速度和 yaw
-控制器 / 桥接层
-        ↓ setpoint
-PX4 -> Gazebo 中的无人机
-```
-
-### 10.1 路径和轨迹
-
-- 路径（path）只描述从起点到终点经过哪些位置，不一定包含时间信息。
-- 轨迹（trajectory）还描述什么时间到达什么位置，并可求出速度、加速度和 jerk。
-
-可以记成：路径像地图上的路线；轨迹像带时间安排的行程表。EGO 输出的是轨迹，不只是离散路径点。
-
-### 10.2 基本工作流程
-
-```text
-获取里程计、目标和障碍地图
-  -> 生成初始轨迹
-  -> 检查碰撞
-  -> 为碰撞段寻找无碰撞引导路径
-  -> 调整并优化 B 样条控制点
-  -> 检查速度和加速度可行性
-  -> 发布轨迹
-  -> 执行一小段
-  -> 根据新感知继续重规划
-```
-
-这种“感知 → 建图 → 规划 → 执行 → 再感知 → 再规划”就是局部重规划。
-
-## 11. 占据地图、膨胀地图与 ESDF
-
-### 11.1 占据地图
-
-占据地图把三维空间划分成体素，记录空闲、占据或未知，回答“这里有没有障碍物”。它不能直接给出当前位置到障碍物的距离。
-
-```text
-□ □ ■ □
-□ □ ■ □
-□ □ □ □
-```
-
-### 11.2 障碍物膨胀地图
-
-无人机不是质点。规划无人机中心轨迹时，需要按机身/旋翼尺寸、定位与地图误差以及安全余量，把障碍物向外扩大：
-
-```text
-原障碍物：      膨胀后：
-
-    ■             ■ ■ ■
-                  ■ ■ ■
-                  ■ ■ ■
-```
-
-膨胀地图本质上仍是占据地图，它回答“为机体和误差留出空间后，这里还能不能通过”。项目 `grid_map.cpp` 同时维护原始占据缓存和膨胀占据缓存，阶段 6 的 `obstacles_inflation` 控制膨胀尺度。
-
-### 11.3 ESDF
-
-ESDF（Euclidean Signed Distance Field，欧氏有符号距离场）为地图位置保存到最近障碍物的欧氏距离。常见约定是障碍物外为正、表面为零、内部为负，但具体系统也可能相反。
-
-```text
-2.8  2.2  2.0  2.2  2.8
-2.2  1.4  1.0  1.4  2.2
-2.0  1.0  0.0  1.0  2.0
-2.2  1.4  1.0  1.4  2.2
-```
-
-ESDF 既能回答“离障碍物多远”，其梯度还能表示“往哪个方向移动能最快远离障碍物”。
-
-| 地图 | 保存的信息 | 回答的问题 |
+| 显示内容 | Topic | 用途 |
 |---|---|---|
-| 占据地图 | 空闲、占据、未知 | 这里有没有障碍物？ |
-| 膨胀地图 | 扩大后的占据区域 | 留出安全空间后能否通过？ |
-| ESDF | 到最近障碍物的距离 | 离障碍物多远，往哪里更安全？ |
+| 地图网格 | 无 Topic | 提供局部三维观察参考。 |
+| FAST-LIO 注册点云 | `/cloud_registered` | 观察传感器建图输入和环境障碍物。 |
+| FAST-LIO 里程计 | `/Odometry` | 显示飞机的定位结果和短历史。 |
+| 膨胀占据地图 | `/grid_map/occupancy_inflate` | 以体素盒显示规划器判定不可通行的安全障碍区。 |
+| EGO 目标点 | `/ego_planner_node/goal_point` | 当前局部规划目标。 |
+| 全局参考 | `/ego_planner_node/global_list` | 到达目标的全局参考路线。 |
+| 优化局部轨迹 | `/ego_planner_node/optimal_list` | EGO 实际优化输出、用于执行的局部绕障轨迹。 |
+| TF 坐标树 | `/tf`、`/tf_static` | 检查 `camera_init`、机体和其他坐标系的连通性。 |
+
+配置中还保留了 `/ego_planner_node/a_star_list` 的 A* 搜索路径显示，但默认关闭。低空避障排查时应优先核对点云、膨胀地图、目标和优化轨迹：若它们不在同一空间关系中，先检查 frame/TF，而不是直接判断规划失败。
+
+## 3. 三机绕塔：`triple_tower.rviz`
+
+配置文件：
 
 ```text
-点云 / 深度图
-      ↓
-占据地图
-      ├── 障碍物膨胀 -> 膨胀地图
-      └── 距离场计算 -> ESDF
+AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/config/triple_tower.rviz
 ```
 
-记忆：占据地图看“有没有”，膨胀地图看“留出安全距离后能不能过”，ESDF 看“多远、往哪里躲”。
+启动入口：`astra_swarm_bringup/launch/triple_tower_inspection.launch`。其中 `start_rviz` 默认是 `true`，启动的节点名为 `astra_swarm_three_uav_rviz`，命令指定该配置并以 `world` 为固定坐标系。
 
-## 12. “ESDF-free”真正表示什么
+这套配置是三机项目的全局态势面板。它不会启动每架机内部的 bridge RViz；每架机的 `uav_tower_stack.launch` 明确传入 `rviz:=false`，避免同一项目弹出三套重复的单机规划窗口。
 
-完整 ESDF 需要为局部地图的大量体素计算并持续更新最近障碍物距离和方向。传感器带来新点云后，地图变化，已有距离也可能失效，持续更新这个数据结构就是“维护 ESDF”。
+固定坐标系是 `world`，主要显示：
 
-EGO-Planner 不提前构建并持续维护覆盖整个局部地图的完整 ESDF，而是围绕当前轨迹处理碰撞信息：
+| 显示内容 | Topic 或来源 | 用途 |
+|---|---|---|
+| 世界网格 | 无 Topic | 以全局坐标观察三机与铁塔的相对位置。 |
+| 三架飞机模型 | `uav1`、`uav2`、`uav3` 的 robot description/TF | 显示三架机当前姿态。 |
+| 三份独立点云 | `/uav1/cloud_registered_peer_filtered`、`/uav2/cloud_registered_peer_filtered`、`/uav3/cloud_registered_peer_filtered` | 比较每架机的局部感知结果。 |
+| 三条 EGO 优化轨迹 | `/uav1/drone_0_ego_planner_node/optimal_list`、`/uav2/drone_1_ego_planner_node/optimal_list`、`/uav3/drone_2_ego_planner_node/optimal_list` | 观察每架机当前的局部规划。 |
+| 三条实际航迹 | `/uav1/swarm/actual_path`、`/uav2/swarm/actual_path`、`/uav3/swarm/actual_path` | 对比三机实际执行情况。 |
+| 三个当前任务目标 | `/uav1/tower_mission/current_target`、`/uav2/tower_mission/current_target`、`/uav3/tower_mission/current_target` | 显示各机此刻要去的位置与朝向。 |
+| 任务航点 | `/swarm/rviz/mission_markers` | 显示绕塔任务的 WP1--WP8 等任务标记。 |
+| 集群状态诊断 | `/swarm/rviz/status_markers` | 显示集群任务状态与协调诊断标记。 |
+| TF 坐标树 | `/tf`、`/tf_static` | 检查 world 与三架无人机的坐标树是否连通。 |
+
+## 使用关系速记
 
 ```text
-检查当前轨迹
-  -> 发现碰撞段
-  -> 用 A* 等方法为该段寻找无碰撞引导路径
-  -> 提取障碍物锚点和推出方向
-  -> 优化碰撞附近的 B 样条控制点
+单机固定绕塔、无 EGO 避障
+  -> fixed_orbit_inspection.rviz
+  -> 固定坐标系：map
+
+单机低空避障、FAST-LIO + EGO
+  -> ego_gazebo_bridge.rviz
+  -> 固定坐标系：camera_init
+
+三机低空绕塔、集群协调
+  -> triple_tower.rviz
+  -> 固定坐标系：world
 ```
 
-所以 ESDF-free 不等于不需要地图、不检查碰撞、不考虑安全距离或不知道避障方向；它只是不把“持续维护完整 ESDF”作为前置条件。可以记成：轨迹碰到哪里，就重点处理哪里。
+不要将三机 Topic 直接填入单机 EGO RViz，也不要把单机 `/cloud_registered` 误认为三机的每机点云。三机任务使用带 `/uav1`、`/uav2`、`/uav3` 前缀的独立命名空间；单机任务使用无前缀的全局 Topic。
 
-## 13. B 样条与轨迹优化
+# 2. ROS 数据流与 Topic：三机如何真正飞起来
 
-### 13.1 B 样条
+本节学习的是：一个“绕塔目标”怎样经过 ROS 的消息通道，最终成为 PX4 的飞行指令。这里的 Topic 可以理解为持续传送某一类数据的“管道”：发布者写入，订阅者读取；它不是函数调用，也不会因为某个节点发布一次就自动让所有后续动作完成。
 
-B 样条用一组控制点生成平滑曲线。控制点像牵引一根柔软绳子的支点，会影响曲线形状，但曲线通常不逐个经过所有控制点。
+三机项目中，每架机有自己的命名空间，例如 UAV1 的绝大多数 Topic 都以 `/uav1/` 开头。下文用 `N` 表示 `1`、`2` 或 `3`，例如 `/uavN/Odometry` 指 `/uav1/Odometry`、`/uav2/Odometry` 或 `/uav3/Odometry`。
+
+## 一条完整的数据闭环
 
 ```text
-P0      P1      P2      P3
-●-------●-------●-------●
+Gazebo 传感器
+  ├─ /uavN/livox/lidar、/uavN/livox/imu
+  │      ↓
+  ├─ FAST-LIO + frame_adapter
+  │      ├─ /uavN/Odometry                 本机位姿
+  │      ├─ /uavN/cloud_registered         原始注册点云
+  │      └─ /tf、/tf_static                坐标关系
+  │      ↓
+  ├─ 队友点云过滤 + 自身机体过滤 + 地面过滤
+  │      └─ /uavN/stage3/cloud_registered_filtered
+  │      ↓
+  ├─ EGO-Swarm：点云建图、避障、协同重规划
+  │      └─ /uavN/planning/bspline         带时间的 B 样条轨迹
+  │      ↓
+  ├─ traj_server
+  │      └─ /uavN/planning/pos_cmd         PositionCommand（位置、速度、加速度、yaw）
+  │      ↓
+  ├─ /uavN/ego_mavros_bridge
+  │      └─ /uavN/mavros/setpoint_raw/local  PositionTarget
+  │      ↓
+  ├─ MAVROS → MAVLink → PX4 OFFBOARD → Gazebo 飞机运动
+  │      ├─ 运动后的传感器数据重新进入 FAST-LIO，产生 /uavN/Odometry
+  │      └─ /uavN/mavros/local_position/pose 反馈给 bridge 执行检查
+  └─ 两类反馈分别重新进入任务、规划和 bridge，构成闭环
 ```
 
-它适合无人机规划，因为：
+上图中箭头不表示只有一条串行流水线：任务状态机、集群协调器和安全监督也会持续读取位姿、状态和轨迹，并在合适的时刻更新目标或许可。
 
-- 曲线平滑，容易求位置、速度和加速度；
-- 修改一个控制点主要影响附近轨迹，适合局部避障；
-- 控制点可以作为数值优化变量；
-- 容易检查速度、加速度等动力学限制。
+## 目标从哪里来
 
-初始轨迹穿过障碍物时，EGO 会识别碰撞附近的控制点并沿安全方向移动，再由新控制点生成平滑轨迹。控制点是“塑造曲线的变量”，不是无人机必须逐一到达的航点。
+`/uavN/tower_mission` 是本机任务状态机。它根据当前任务阶段和集群许可选择下一个巡检点，并发布：
 
-### 13.2 时间与动力学可行性
+| Topic | 消息类型 | 含义 |
+|---|---|---|
+| `/uavN/planning/goal` | `geometry_msgs/PoseStamped` | 交给规划器的当前目标位姿。它回答“要到哪里”。 |
+| `/uavN/tower_mission/current_target` | `geometry_msgs/PoseStamped` | 当前任务目标的可视化/状态输出，供 RViz、集群状态和记录器观察。 |
+| `/uavN/tower_mission/state` | `std_msgs/String` | 本机任务阶段，例如等待许可、进场、绕塔或退出。 |
+| `/uavN/tower_mission/selected_tower_center` | `geometry_msgs/PointStamped` | 塔心位置，bridge 用它在绕塔时计算“朝向塔”的 yaw。 |
 
-B 样条包含时间参数，因此可在任意时刻求位置、速度和加速度。若轨迹超过最大速度或最大加速度，EGO 会重新分配时间或再次细化优化，而不是只判断几何上是否绕开障碍。
+`astra_swarm_manager` 不替代这个目标 Topic 去逐点指挥飞机。它通过 `/uavN/swarm/...permission` 一类 Topic 发放阶段许可；`tower_mission` 在获准后才发布或推进下一目标。因此要分清：**许可决定“现在可不可以做”，目标决定“接下来去哪”。**
 
-### 13.3 优化目标
+## 感知、规划与轨迹的三种不同数据
 
-源码中的主要代价可概括为：
+| 数据 | 典型 Topic | 谁产生 | 谁使用 | 不要混淆为 |
+|---|---|---|---|---|
+| 位姿/里程计 | `/uavN/Odometry` | FAST-LIO 经 frame adapter 整理 | 任务、EGO-Swarm、bridge | 规划轨迹。它只是“飞机现在在哪、朝哪”。 |
+| 点云 | `/uavN/cloud_registered`、`/uavN/stage3/cloud_registered_filtered` | FAST-LIO 和过滤节点 | EGO-Swarm 占据地图 | 飞机的飞行路径。它描述观测到的环境点。 |
+| 膨胀占据地图 | `/uavN/drone_*_ego_planner_node/grid_map/occupancy_inflate` | EGO-Swarm | 任务节点和 RViz | 原始点云。它是为安全距离膨胀后的不可通行空间。 |
+| B 样条 | `/uavN/planning/bspline` | EGO-Swarm | `traj_server` | 单个目标点。它是带时间参数的连续规划轨迹。 |
+| 连续控制参考 | `/uavN/planning/pos_cmd` | `traj_server` | `ego_mavros_bridge` | PX4 原生指令。它仍是 ROS 侧的 `PositionCommand`。 |
+| MAVROS setpoint | `/uavN/mavros/setpoint_raw/local` | `ego_mavros_bridge` | MAVROS/PX4 | 实际位姿反馈。它是唯一的持续控制出口。 |
+
+## `traj_server` 与 bridge 为什么要分开
+
+EGO-Swarm 输出的是整段 B 样条，`traj_server` 按时间把它展开成高频的 `PositionCommand`。该消息同时带位置、速度、加速度、yaw 和 yaw rate，因而比“下一个航点”更接近可执行轨迹。
+
+`ego_mavros_bridge` 仍不能被省掉：它检查输入是否新鲜、frame 是否一致、是否发生多个控制节点抢占 Topic，以及集群起飞许可是否满足；只有控制启用且检查通过时，才把命令转换成 `mavros_msgs/PositionTarget` 发布到 `/uavN/mavros/setpoint_raw/local`。在 dry-run 中，它可以观察整条链路，但不会创建或发布该控制 Topic。
+
+## 看 Topic 时的正确顺序
+
+排障时按“先有输入，再有规划，最后有控制”检查，而不是先盯着 RViz：
 
 ```text
-总代价
-  = 平滑代价
-  + 碰撞/安全距离代价
-  + 动力学可行性代价
-  + 细化阶段的轨迹贴合代价
+1. /uavN/Odometry 是否持续且 frame_id 正确？
+2. /uavN/stage3/cloud_registered_filtered 是否持续、是否在 planning frame？
+3. /uavN/planning/goal 是否随任务阶段更新？
+4. /uavN/planning/bspline 和 /uavN/planning/pos_cmd 是否出现且时戳新鲜？
+5. bridge state 是否允许跟踪，且 /uavN/mavros/setpoint_raw/local 是否只有 bridge 一个发布者？
+6. /uavN/mavros/state 是否已连接、OFFBOARD、已解锁？
 ```
 
-- 平滑代价抑制突然转弯和抖动。
-- 碰撞代价把控制点从障碍物附近推开。
-- 可行性代价惩罚超过速度和加速度限制的轨迹。
-- 贴合代价用于细化时避免轨迹偏离已有参考过多。
+常用的只读观察命令如下；将 `uav1` 替换为要检查的无人机即可：
 
-`lambda_smooth`、`lambda_collision`、`lambda_feasibility`、`lambda_fitness` 是相应权重，`dist0` 是优化器希望保持的避障距离尺度。参数越保守并不总越好：膨胀或 `dist0` 过大时，窄通道可能无解。
-
-## 14. EGO 源码职责与状态机
-
-| 包或文件 | 主要职责 |
-|---|---|
-| `plan_env/grid_map.cpp` | 融合点云/深度和里程计，维护占据与膨胀占据地图 |
-| `path_searching/dyn_a_star.cpp` | 为碰撞轨迹段寻找无碰撞引导路径 |
-| `bspline_opt/bspline_optimizer.cpp` | 构造并优化 B 样条控制点代价 |
-| `plan_manage/planner_manager.cpp` | 生成全局参考、局部目标、初始轨迹并组织优化/时间重分配 |
-| `plan_manage/ego_replan_fsm.cpp` | 接收目标和里程计，决定生成、执行、重规划或急停，并发布 B 样条 |
-| `plan_manage/traj_server.cpp` | 按当前时间对 B 样条求值，持续输出位置、速度、加速度和 yaw |
-| `ego_gazebo_bridge` | 校验坐标和输入新鲜度，把规划指令转换成 MAVROS 位置 setpoint，并管理接管、保持和降落 |
-
-EGO 的核心 FSM 可简化为：
-
-```text
-INIT
-  -> WAIT_TARGET
-  -> GEN_NEW_TRAJ
-  -> EXEC_TRAJ
-       ├── 正常推进后 REPLAN_TRAJ -> EXEC_TRAJ
-       ├── 发现未来碰撞后立即尝试重规划
-       └── 障碍太近且重规划失败 -> EMERGENCY_STOP
-  -> 到达后 WAIT_TARGET
+```bash
+rostopic info /uav1/planning/goal
+rostopic echo -n 1 /uav1/Odometry
+rostopic echo -n 1 /uav1/planning/pos_cmd
+rostopic echo -n 1 /uav1/ego_mavros_bridge/state
+rostopic info /uav1/mavros/setpoint_raw/local
 ```
 
-这正是它与预设轨迹发生器最本质的区别：`autoarming_control` 的 FSM 管任务阶段和 PX4 会话；EGO 的 FSM 管局部轨迹的生命周期与碰撞风险。
+`rostopic info` 特别适合查“谁在发布、谁在订阅”；正常控制时，`/uavN/mavros/setpoint_raw/local` 的发布者应只有本机的 `ego_mavros_bridge`。`rostopic echo -n 1` 只读取一条消息，适合先确认 Topic 是否存在、消息是否新鲜、坐标 frame 是否符合预期。
 
-## 15. ROS 数据流：原生演示与本项目阶段 6
+# 3. 单机任务状态机：一架机怎样完成自己的绕塔任务
 
-### 15.1 EGO 原生 SO3 演示
+当前三机项目不是只有一个总状态机。每架机各运行一个 `sector_inspection_mission_node`，节点名都叫 `tower_mission`，但命名空间不同：`/uav1/tower_mission`、`/uav2/tower_mission`、`/uav3/tower_mission`。它们运行同一套状态机逻辑，却各自维护本机目标、完成进度、失败次数和恢复过程。
 
-```text
-mockamap_node -> 仿真全局障碍物
-pcl_render_node -> 局部点云
-waypoint_generator -> 目标航点
-ego_planner_node -> /planning/bspline
-traj_server -> /planning/pos_cmd（经 launch 重映射）
-so3_control -> 控制指令
-quadrotor_simulator_so3 -> 新里程计 -> 反馈给规划器
-```
+这个节点的职责只有一句话：**在正确的时刻选出本机下一个正式目标，并决定等待、重试、恢复、返航或结束。** 它不自己计算绕障曲线，不直接发布 MAVROS 控制 setpoint，也不替集群协调器决定三机的先后顺序。
 
-原生演示常见输入为 `/visual_slam/odom`、`/map_generator/global_cloud` 和 `/pcl_render_node/cloud`。这些话题用于 EGO 自带模拟环境，不应机械地当成本项目阶段 6 的实际接口。
-
-### 15.2 AstraDrone 阶段 6 实际数据流
+## 状态机与规划器、bridge 的边界
 
 ```text
-FAST-LIO /Odometry + /cloud_registered
+tower_mission
+  - 决定：下一正式目标是什么；何时等待许可；该重试、恢复还是结束
+  - 发布：/uavN/planning/goal
                  ↓
-      EGO 局部地图与规划 FSM
-
-/move_base_simple/goal
-        ↓ ego_mavros_bridge 校验并变换坐标
-/planning/goal
-        ↓ waypoint_generator
-/waypoint_generator/waypoints
-        ↓ ego_planner_node
-/planning/bspline
-        ↓ traj_server，100 Hz 对轨迹求值
-/planning/pos_cmd
-        ↓ ego_mavros_bridge，校验/限速/50 Hz 持续发布
-/mavros/setpoint_position/local
-        ↓ MAVROS -> PX4 -> Gazebo 物理无人机
-        └──────── 位姿与传感器反馈
+EGO-Swarm + traj_server
+  - 决定：在点云障碍和队友轨迹下，怎样生成连续可行轨迹
+  - 发布：/uavN/planning/pos_cmd
+                 ↓
+ego_mavros_bridge
+  - 决定：轨迹能否被安全交给飞控；进入 HOLD、返航或降落的执行动作
+  - 发布：/uavN/mavros/setpoint_raw/local
 ```
 
-关键区别：`/planning/bspline` 是一整条新轨迹，只在生成或重规划时发布；`/planning/pos_cmd` 是对当前轨迹按时间求值后的瞬时参考，包含位置、速度、加速度和 yaw。阶段 6 第一版桥接只把位置与 yaw 转为 `PoseStamped`，没有把速度、加速度前馈交给 PX4。
+所以状态机中的“到达目标”不是它自己控制飞机到达，而是它根据里程计、规划器状态、bridge 状态和到达阈值判断：上一次发出的正式目标是否已被下层成功执行。
 
-### 15.3 主要节点
+## 主流程：从等待输入到完成
 
-| 节点 | 作用 |
-|---|---|
-| `mockamap_node` | EGO 原生演示中生成仿真障碍物地图 |
-| `pcl_render_node` | EGO 原生演示中模拟局部点云/深度感知 |
-| `waypoint_generator` | 把目标转换为规划器航点 |
-| `ego_planner_node` | 建图、局部重规划和 B 样条优化 |
-| `traj_server` | 对 B 样条按时间求值 |
-| `so3_control` | EGO 原生演示控制器，不是项目阶段 6 的 PX4 桥 |
-| `quadrotor_simulator_so3` | EGO 原生动力学模拟器，不是 Gazebo/PX4 SITL |
-| `odom_visualization` | 显示模型和实际飞行路径 |
-| `ego_mavros_bridge` | 项目阶段 6 的目标转发、控制权、安全状态机和 MAVROS setpoint 桥 |
-
-### 15.4 阶段 6 关键 Topic
-
-| Topic | 含义 |
-|---|---|
-| `/Odometry` | FAST-LIO 给规划器的当前位置、姿态和速度 |
-| `/cloud_registered` | 当前环境点云，作为局部地图输入 |
-| `/move_base_simple/goal` | RViz 中给出的原始目标 |
-| `/planning/goal` | 经过桥接层校验和坐标变换后的目标 |
-| `/waypoint_generator/waypoints` | 发给 EGO FSM 的目标航点 |
-| `/grid_map/occupancy` | 原始占据地图可视化 |
-| `/grid_map/occupancy_inflate` | 膨胀占据地图可视化 |
-| `/planning/bspline` | EGO 输出的完整 B 样条轨迹 |
-| `/planning/pos_cmd` | 当前时刻的规划参考状态 |
-| `/mavros/setpoint_position/local` | 桥接层持续发给 PX4 的位置和 yaw 目标 |
-
-## 16. RViz 显示与判断方法
-
-| 显示名称 | 常见 Topic | 含义 |
-|---|---|---|
-| `goal_point` | `/ego_planner_node/goal_point` | 当前目标点 |
-| `optimal_traj` | `/ego_planner_node/optimal_list` | 优化后的局部轨迹 |
-| `global_path` | `/ego_planner_node/global_list` | 全局参考路线 |
-| `AStar` | `/ego_planner_node/a_star_list` | 碰撞段的无碰撞引导路径 |
-| `InitTraj` | `/ego_planner_node/init_list` | 优化前的初始轨迹 |
-| `drone_path` | `/odom_visualization/path` 或实际位姿历史 | 无人机已经飞过的路径 |
-| `simulation_map` | `/map_generator/global_cloud` | 原生演示的完整仿真障碍物 |
-| `map inflate` | `/grid_map/occupancy_inflate` | 膨胀占据地图 |
-| `real_map` | `/grid_map/occupancy` | 原始占据地图 |
-| `robot` | `/odom_visualization/robot` | 无人机模型 |
-
-RViz 的颜色没有统一含义，应先看 Display 名称和 Topic。`optimal_traj` 是计划怎样飞，`drone_path` 是实际上已经怎样飞；前者避障不代表后者一定跟得上。
-
-## 17. EGO 常用检查命令与排查顺序
-
-```bash
-rosnode list
-rostopic list | sort
-rosnode info /ego_planner_node
-
-rostopic echo -n 1 /Odometry
-rostopic hz /Odometry
-rostopic hz /cloud_registered
-
-rostopic info /planning/bspline
-rostopic hz /planning/pos_cmd
-rostopic info /mavros/setpoint_position/local
-
-rqt_graph
-```
-
-排查时按数据链从上游向下游走：
+源码中有二十多个精细状态；学习时先将它们按任务意图归为六段。箭头表示正常流程，方括号表示需要集群许可。
 
 ```text
-里程计和点云是否新鲜、frame 是否一致
-  -> 目标是否到达 /planning/goal 和 waypoints
-  -> EGO 是否从 WAIT_TARGET 进入 GEN_NEW_TRAJ / EXEC_TRAJ
-  -> /planning/bspline 是否在规划时更新
-  -> /planning/pos_cmd 是否连续
-  -> bridge 是否允许 TRACK_EGO、是否有 watchdog 报警
-  -> MAVROS setpoint 是否只有 bridge 一个发布者
-  -> PX4 是否 OFFBOARD/Armed
-  -> 实际轨迹是否跟踪计划轨迹并与障碍保持距离
+1. 准备
+WAIT_INPUTS
+  -> STAGING_POINT / SEGMENTED_CLIMB
+
+2. 进场
+  -> [WAIT_ENTRY_PERMISSION]
+  -> ENTRY_GATE_TRANSIT
+  -> [ENTRY_READY：等待 MOVE_TO_ORBIT_STAGING]
+  -> [ORBIT_STAGING_READY：等待 ORBIT_RELEASE]
+
+3. 绕塔巡检
+  -> EVALUATING -> TARGET_LOCKED -> NAVIGATING
+  -> （下一扇区）EVALUATING -> ...
+
+4. 可选换层
+  -> [WAIT_TRANSITION_PERMISSION] -> LAYER_TRANSITION -> EVALUATING
+
+5. 退出与返航
+  -> [WAIT_EXIT_PERMISSION] -> GO_TO_EXIT_GATE
+  -> NORMAL_RETURN 或 RETURN_EGRESS -> RETURN_HOME -> DONE
+
+6. 任何阶段的异常分支
+  -> HOLDING -> 重试 / 重新选点 / RECOVERING / 返航 / FAILURE_LANDING / ERROR
 ```
 
-阶段 6 默认 `enable_control: false`，即 dry run：节点会检查和转换数据，但不会创建 MAVROS setpoint 发布者，也不会请求解锁或切换模式。只有坐标对齐、地图、输入新鲜度、控制权唯一性和故障行为都验证后，才能启用控制。
+当前 `triple_tower_inspection.launch` 默认是低空模式（`low_altitude_enabled=true`）、单层（每机 `layer_offsets=[0.0]`）、巡检高度 `3.0 m`。因此“换层”状态是通用能力，当前默认任务通常不会实际进入；而 `STAGING_POINT`/通用分段爬升也会被 bridge 已完成的低空稳定悬停路径部分绕过。它们仍保留在状态机中，以支持非低空或多层配置。
 
-## 18. EGO 核心记忆
+## 每一段具体在做什么
 
-1. EGO-Planner 是局部轨迹规划器，不是飞控，也不是底层控制器。
-2. 仓库 `Planner/ego-planner/` 就是 EGO 源码；`autoarming_control` 不是另一个同类避障 planner。
-3. 占据地图判断有无障碍，膨胀地图为机体和误差留空间，ESDF 表示距离和梯度。
-4. EGO 的 ESDF-free 指不维护完整 ESDF，不代表不建图或不检查碰撞。
-5. B 样条控制点影响曲线形状，不一定是必经航点。
-6. EGO 通过移动控制点，兼顾平滑、碰撞代价和动力学可行性。
-7. `/planning/bspline` 是完整轨迹，`/planning/pos_cmd` 是当前时刻的参考指令。
-8. `optimal_traj` 是计划轨迹，`drone_path` 是实际轨迹，两者必须同时检查。
-9. EGO 负责“怎样绕障飞”，桥接层负责“何时允许把这条轨迹交给 PX4”。
-10. 同一时刻只能有一个节点持续发布 MAVROS setpoint；地图源、规划坐标和 PX4 坐标必须经过验证。
+| 任务段 | 关键状态 | 进入条件与动作 | 正常离开条件 |
+|---|---|---|---|
+| 输入准备 | `WAIT_INPUTS` | 等待新鲜里程计、点云/地图、bridge 状态；控制模式还要等待 bridge `HOVER_READY` 与任务开始许可。随后记录 home，并构造本层扇区与进场候选。 | 输入健康且允许开始。 |
+| 起飞后集结/爬升 | `STAGING_POINT`、`SEGMENTED_CLIMB` | 高度较高的通用模式先到安全集结点，再按分段目标爬升并等待点云覆盖稳定。低空模式中，bridge 已稳定在入口高度，任务节点直接使用当前悬停位姿建立进场。 | 入口走廊候选可用，且地图新鲜。 |
+| 等待进场 | `WAIT_ENTRY_PERMISSION` | 发布可选进场走廊，等待协调器从三机候选中选择一个并发放独占进入许可。 | 已锁定走廊且许可新鲜为真。 |
+| 入口通行 | `ENTRY_GATE_TRANSIT` | 向 EGO-Swarm 发布锁定的入口门目标；规划器负责从当前位置绕障到门。 | 到达入口门，且本机规划/bridge/地图仍健康。 |
+| 等待绕塔放行 | `ENTRY_READY`、`ORBIT_STAGING_READY` | 到入口后先等待进入绕塔预备位置的许可，再等待正式开始绕塔的许可。等待时请求停止轨迹跟踪/保持，避免未经协调继续推进。 | 收到对应许可，并能锁定第一个方向正确的扇区目标。 |
+| 选择与锁定扇区 | `EVALUATING`、`TARGET_LOCKED` | 在当前扇区的正式航点和同扇区备选点中，依据新鲜占据地图评估安全性；一旦锁定，正式目标坐标不再被任务层悄悄改写。 | 已得到一个安全、可规划的正式扇区目标。 |
+| 执行绕塔 | `NAVIGATING` | 发布 `/uavN/planning/goal`，等待 EGO-Swarm 和 bridge 执行。 | 到达并满足到达保持条件，扇区标为已覆盖；然后评估下一个扇区。 |
+| 换层 | `WAIT_TRANSITION_PERMISSION`、`LAYER_TRANSITION` | 一层完成后等待集群许可，再沿受检查的固定垂直转换目标到下一层。 | 新层激活后重新开始扇区评估。 |
+| 退出与返航 | `WAIT_EXIT_PERMISSION`、`GO_TO_EXIT_GATE`、`NORMAL_RETURN`、`RETURN_EGRESS`、`RETURN_HOME` | 先等待退出走廊许可；正常情况下从出口门沿实际入场路径反向返回，再由 bridge 完成 home hover 和降落。若正常返程不可用，才使用保守的安全返航走廊。 | bridge 报告完成，且任务节点验证已落地、已上锁并在 home 附近，才进入 `DONE`。 |
+
+## 绕塔时一个目标怎样被处理
+
+以“前往当前扇区的一个标准航点”为例：
+
+```text
+EVALUATING
+  读取最新占据地图，比较正式航点和同扇区备选点
+      ↓
+TARGET_LOCKED
+  锁定一个正式目标；不把局部 A* 中间点误当作新的任务航点
+      ↓
+NAVIGATING
+  发布 /uavN/planning/goal
+      ↓
+EGO-Swarm 自己生成/重规划 B 样条
+      ↓
+任务节点读取 odom、planner/status、bridge/state
+  ├─ 到达并满足保持条件：该扇区 COVERED，评估下一扇区
+  ├─ 规划器暂时不可达、无进展或目标超时：进入 HOLDING
+  └─ 地图/协调许可失效或 bridge HOLD：立即进入 HOLDING
+```
+
+这里最容易误解的一点是：**EGO-Swarm 可以为了避障在局部轨迹上绕开障碍，但任务状态机仍然记住“我正在完成哪个正式扇区目标”。** 轨迹绕路不等于任务航点被改成了绕路中的某个中间点。
+
+## HOLD 不是结束，而是受控决策点
+
+`HOLDING` 是异常处理的中心状态，而不是简单报错。进入 HOLD 后，状态机会先停止继续推进，并根据失败类型选择有限、可解释的后续动作：
+
+| 失败类型 | HOLD 后的典型处理 |
+|---|---|
+| 集群许可失效、阶段安全禁止 | 保持等待；许可恢复后要求 EGO 重新生成新轨迹，不恢复旧 B 样条。 |
+| 同一安全目标出现短暂规划失败、无进展或超时 | 对同一锁定目标进行有限次数重试。 |
+| 重试后仍确认不可达 | `RELOCATING`，只在当前任务允许的候选范围内重选目标。 |
+| 需要姿态/高度恢复 | `RECOVERING`，执行受限的 R1/R2/重新进场步骤，然后回到重选目标。 |
+| 进场、退出、返程恢复耗尽 | 请求受控返航；安全返程也失败时才进入 `FAILURE_LANDING` 或 `ERROR`。 |
+
+这解释了为什么状态机没有采用“规划失败就随便换下一个航点”的策略：它会先保持、有限重试、记录原因，再在明确范围内恢复或返航，避免把一次短暂感知/规划抖动误判成任务完成。
+
+## 状态机依赖什么、发布什么
+
+| 类别 | 主要输入/输出 | 目的 |
+|---|---|---|
+| 位姿与感知输入 | `/uavN/Odometry`、过滤后的点云、膨胀占据地图 | 判断当前位置、目标/走廊是否安全、地图是否新鲜。 |
+| 规划执行反馈 | `/uavN/planning/pos_cmd`、`/uavN/planner/status`、`/uavN/ego_mavros_bridge/state` | 判断规划是否生成、是否失败、bridge 是否 HOLD 或已返航。 |
+| 飞控反馈 | `/uavN/mavros/state`、`/uavN/mavros/extended_state` | 确认连接、解锁与最终接地。 |
+| 集群许可输入 | `/uavN/swarm/...permission` | 控制开始、进场、绕塔、换层、退出与降落的先后。 |
+| 核心输出 | `/uavN/planning/goal`、`/uavN/tower_mission/state`、`/uavN/tower_mission/current_target` | 分别是给规划器的目标、给协调/记录器的状态、给显示/记录的当前任务目标。 |
+
+学习和排查时，先看 `/uavN/tower_mission/state` 知道任务“正在等什么”，再看 `/uavN/tower_mission/current_target` 知道“要去哪”，最后看 `/uavN/planning/pos_cmd` 与 bridge 状态确认“下层是否真的在执行”。不要只看到 RViz 中有轨迹，就认为任务状态机已经允许进入下一扇区。
+
+# 4. 航点选择与评分：当前扇区该去哪个点
+
+本节讲的是任务层怎样选择“正式航点”。它与 EGO-Swarm 的局部绕障不同：任务层决定当前扇区的正式目标坐标，EGO-Swarm 再决定绕开障碍和队友后怎样到达该目标。
+
+## 先记住结论
+
+当前三机低空绕塔不是把所有候选点混在一起，谁总分高就去谁；它是“**先按半径分层，再在当前层内选择**”。
+
+```text
+当前应执行的扇区
+  → 生成该扇区候选点
+  → 淘汰不安全/不可用点
+  → 先看 12.5 m 半径层
+  → 12.5 m 全部淘汰，才看 14.5 m
+  → 14.5 m 也全部淘汰，才看 16.5 m
+  → 在第一个仍有安全候选的半径层内作最终选择
+```
+
+最终选择也有固定优先顺序：
+
+```text
+仍安全的旧锁定点
+  → 当前半径层的中心角名义点
+    → 其余安全候选的评分最高者
+```
+
+因此，`12.5 m + 扇区中心角 + 3 m` 的名义点只要满足硬约束，就直接锁定；不会因为外圈候选评分更高而改去外圈。
+
+## 候选点从哪里来
+
+三机低空任务固定 8 个扇区，逆时针执行。每个扇区围绕它自己的中心角，生成以下候选网格：
+
+```text
+半径：12.5 m、14.5 m、16.5 m
+角度偏移：0°、-5°、+5°、-10°、+10°、-12°、+12°
+高度：3.0 m（低空任务固定，不允许候选降到 2 m、1 m 或 0 m）
+```
+
+候选的角度始终不能离开当前扇区。若当前要完成第 3 扇区，任务只能在第 3 扇区的上述网格中找替代点；不会跳到第 4 或第 2 扇区来换取更高分数。
+
+## 先淘汰：哪些点根本不能评分
+
+以下是硬约束。任一项失败，候选会被标记为拒绝，不参与评分：
+
+- 地图不新鲜，或目标高度/扇区边界不合法；
+- 违反塔体 keep-out；
+- 候选端点落在 EGO 膨胀占据地图中，或端点净空不够；
+- 与已知粗略静态障碍的端点净空不够；
+- 已经被有限次数 EGO 尝试证实为 `PLANNER_UNREACHABLE`；
+- 会使当前逆时针绕塔进度倒退。
+
+### 当前净空到底是多少
+
+“净空”是候选点到障碍的三维距离，并不是一个统一的单一半径。当前三机低空配置中：
+
+| 对象 | 任务层要求 | 如何理解 |
+|---|---:|---|
+| EGO 已膨胀占据地图 | 至少 `0.5 m` | 候选点到任何膨胀占据点的距离必须不少于 `0.5 m`。 |
+| EGO 地图膨胀本身 | `0.4 m` | 已包含在占据地图中；粗略理解，真实障碍外的总操作余量约为 `0.4 + 0.5 = 0.9 m`，但体素化使它不是精确几何保证。 |
+| 塔体 | 离塔心至少 `8.41 m` | 塔体碰撞半径 `6.41 m` 加任务 keep-out `2.0 m`。 |
+| 已知粗略静态障碍 | 至少 `1.0 m` | 候选端点必须离其粗略包络至少 `1.0 m`。 |
+
+因此，“被障碍物占据”指候选端点距离某个膨胀地图占据点小于 `0.5 m`。这种候选直接得到 `OCCUPANCY_OR_CLEARANCE`，不会被发给 EGO-Swarm。
+
+## 什么时候真正打分
+
+只有出现下面的情况才打分：当前最小可用半径层中，没有仍安全的旧锁定目标，也没有安全的中心角名义点。此时在该半径层的剩余安全候选间计算：
+
+```text
+分数 =
+  + 0.2 × 净空
+  - 6.0 × 半径偏差
+  - 4.0 × 12.5 × 角度偏差（弧度）
+  - 14.0 × 高度偏差
+  - 0.1 × 到当前位置的三维距离
+  - 0.2 × 到上一正式巡检目标的三维距离
+  - 1.0 × 未知区域比例
+  - 6.0 × 直线走廊被阻挡的风险
+```
+
+分数越大越好。当前低空任务高度固定，且评分只发生在同一半径层内，因此“高度偏差”和“半径偏差”通常均为零；实际最常比较的是角度偏离、净空、当前位置距离、连续性和走廊风险。
+
+| 评分要素 | 它实际表示什么 | 对选择的影响 |
+|---|---|---|
+| 净空 | 候选点到最近塔体、膨胀占据点或硬静态障碍的距离。 | 越大越加分；但低于阈值时直接淘汰，而不是仅扣分。 |
+| 半径偏差 | `|候选半径 - 12.5 m|`。 | 越靠近名义巡检圆越好；不过半径层本身先后已是硬顺序。 |
+| 角度偏差 | 候选点偏离当前扇区中心角的绝对角度。 | 越接近标准扇区中心线越好；在 `12.5 m` 半径上偏 `5°` 约相当于沿圆周偏 `1.09 m`。 |
+| 高度偏差 | 候选高度偏离当前巡检层高度的距离。 | 当前低空固定 `3 m`，通常为零；高空多层任务才会明显影响结果。 |
+| 当前位置距离 | 当前 odom 位置到候选点的三维直线距离。 | 更近会少扣分，避免不必要的大跨度目标跳转。 |
+| 连续性 | 候选点到**上一正式巡检目标**的三维直线距离。 | 更近会少扣分，避免正式航点突然跳得很远；它只是距离近似，不是曲率或真正轨迹平滑度。 |
+| 未知区域比例 | 候选附近有多少区域未被当前传感器充分观测。 | 当前低空配置中只作为风险扣分，不会单独淘汰端点。 |
+| 走廊风险 | 从当前位置到候选点画直线，并按 `0.4 m` 间隔检查中间是否穿过膨胀地图或静态障碍。 | 端点安全但直线路径不安全时，候选会被标记 `STRAIGHT_CORRIDOR_BLOCKED`。 |
+
+## 走廊风险为何不总是直接淘汰
+
+“候选端点安全”与“直线飞过去安全”是两个不同问题：
+
+```text
+当前位置 ────（直线中间有障碍）──── 候选端点
+                                  ↑
+                              端点本身仍安全
+```
+
+当前三机 launch 启用了 `prefer_clear_straight_corridor=true`：如果同一半径层存在端点安全且直线走廊也安全的候选，所有直线走廊被挡住的候选都会被排除；如果该层所有安全端点的直线走廊都被挡住，它们才会保留并各扣 `6` 分，由 EGO-Swarm 为锁定的正式目标生成局部绕行轨迹。已知静态障碍走廊若被配置为硬约束，则会直接淘汰；当前低空配置将其作为风险，而非一律硬淘汰。
+
+## 已锁定点后来失败怎么办
+
+评分只负责选出目标，不能保证 EGO 一定能到达。若锁定点端点安全，但 EGO 报告不可达、无进展或目标超时，状态机会：
+
+```text
+HOLD 2 秒
+  → 对同一锁定目标最多重试 2 次
+  → 仍不可达：标记该 candidate ID 为 PLANNER_UNREACHABLE
+  → 回到当前扇区，按上述规则选下一个候选
+  → 当前扇区全部候选耗尽：不跳扇区、不标记完成，转入受控恢复或返航/降落
+```
+
+这就是“任务层选正式点，EGO-Swarm 选绕行轨迹”的边界：任务层不会因为 EGO 的局部绕障而忘记当前正在完成哪个扇区，也不会把局部 A* 中间点偷换成新的正式巡检航点。
+
+# 5. EGO-Swarm 规划逻辑：怎样同时避开障碍和队友
+
+当前三机项目使用的是 EGO-Swarm 规划核心，而仓库仍沿用 `ego_planner` 包名、`ego_planner_node` 可执行文件和 `EGOPlannerManager` 类名。不要被名称误导：每架机的规划器除读取本机目标、里程计和点云外，还会交换带时间戳的队友 B 样条轨迹，并把机间距离纳入规划与在线检查。
+
+它不是一个集中式“大脑”替三架机一次性求解整条任务。实际结构是 **三套本地规划器并行运行、每套各自重规划、通过共享预测轨迹互相约束**：
+
+```text
+/uav1/tower_mission ──目标──> UAV1 EGO-Swarm ──本机轨迹──┐
+/uav2/tower_mission ──目标──> UAV2 EGO-Swarm ──本机轨迹──┼─> /swarm/trajectories
+/uav3/tower_mission ──目标──> UAV3 EGO-Swarm ──本机轨迹──┘       （共享）
+                                      ↑                                    │
+                                      └──── 每套规划器读取三机预测轨迹 ──────┘
+```
+
+## 它接收什么，输出什么
+
+以第 N 架机为例：
+
+| 类型 | Topic / 参数 | 作用 |
+|---|---|---|
+| 当前位姿 | `/uavN/Odometry` | FAST-LIO 给出的当前位置、速度和姿态；规划从这里开始。 |
+| 环境障碍 | `/uavN/stage3/cloud_registered_filtered` | 经过队友点云、自身机体和地面处理后的本机点云；用于构建本机局部占据地图。 |
+| 正式目标 | `/uavN/planning/goal` | 单机任务状态机给出的下一个目标。EGO-Swarm 只负责怎样到达，不决定任务顺序。 |
+| 取消请求 | `/uavN/planning/cancel` | 使当前轨迹失效，避免旧轨迹继续由 `traj_server` 执行。 |
+| 队友预测 | `/swarm/trajectories`、`/swarm/broadcast_bspline` | 三机共享的、带开始时刻和 `drone_id` 的 B 样条；用于时空避让。 |
+| 本机局部轨迹 | `/uavN/planning/bspline` | 在 `uavN/camera_init` 中给 `traj_server` 执行的三次 B 样条。 |
+| 规划状态 | `/uavN/planner/status` | 让任务状态机获知规划成功、不可达、地图陈旧等情况。 |
+
+注意：队友不是主要通过“把对方当成点云里的移动障碍物”来避让，而是通过对方未来一段时间会经过哪里来避让。点云过滤首先避免本机局部地图把队友机体残影误当成静态障碍；EGO-Swarm 的机间避让依据是共享的时间化轨迹。
+
+## 从一个目标到一条局部 B 样条
+
+```text
+收到 /uavN/planning/goal
+  ↓
+1. 以当前 odom 和目标构造全局参考
+  ↓
+2. 在本机膨胀占据地图中选取规划视野内的局部目标
+  ↓
+3. 生成初始路径，参数化为三次 B 样条控制点
+  ↓
+4. 优化控制点：平滑、静态障碍距离、动力学可行性、贴近参考、队友轨迹间距
+  ↓
+5. 检查速度/加速度约束；成功后生成轨迹编号、开始时间和 knots
+  ↓
+本地 /uavN/planning/bspline ──> traj_server
+共享 world B 样条 ─────────────> 队友规划器
+```
+
+“B 样条”可以先理解为一条由少数控制点描述的光滑、带时间曲线，而不是许多离散航点的折线。`traj_server` 可以对它求导，得到同一时刻的位置、速度和加速度；这就是下游能连续控制飞机的原因。
+
+规划器并非只在收到新目标时工作。它的执行 FSM 以约 `100 Hz` 检查执行状态，并会在轨迹执行一段时间后重规划；安全检查约 `20 Hz` 检查本机未来可执行轨迹是否进入膨胀障碍或接近队友。若可以重新规划，便发布新 B 样条；若危险已经很近且无法及时重规划，规划器会进入紧急停止轨迹。bridge 和任务状态机还会在其外层继续执行 HOLD、返航和降落策略。
+
+## 两套坐标：本地规划，公共比较
+
+每架机的 EGO-Swarm 在自己的 `uavN/camera_init` 中建图和生成本地执行轨迹；因此 UAV2 和 UAV3 不会把同一个本地 `(x,y,z)` 数字误认为与 UAV1 处于同一物理位置。
+
+但是机间距离必须在同一坐标系中比较。当前约定是：
+
+```text
+本机 local B 样条（uavN/camera_init）
+       │  使用 swarm_origin 转换
+       ▼
+公共 B 样条（world，/swarm/trajectories）
+       │  队友收到后，按自己的 swarm_origin 反变换
+       ▼
+队友本地规划坐标中的“预测队友轨迹”
+```
+
+默认 `swarm_origin` 分别是 UAV1 `(0,0,0)`、UAV2 `(4,0,0)`、UAV3 `(8,0,0)`，与 `world -> uavN/map` 的初始平移一致。共享消息的 `frame_id` 必须是 `world`；接收者会拒绝 frame 不正确、轨迹格式错误、开始时刻异常或过期的队友轨迹。它也会忽略远到超出本机规划视野的队友预测，避免把无关远处飞机加入本地优化。
+
+## 它怎样避免相撞
+
+EGO-Swarm 的机间检查不是只看“此刻两机是否相撞”，而是比较**同一绝对时间**的预测位置：
+
+```text
+对未来时刻 t：
+  p_self(t)  = 本机 B 样条在 t 的位置
+  p_peer(t)  = 队友 B 样条在 t 的位置
+
+若 ||p_self(t) - p_peer(t)|| < swarm_clearance
+  => 当前轨迹冲突，触发重新规划或安全处理
+```
+
+当前三机 launch 的 `swarm_clearance` 是 `1.50 m`。规划器在收到新的队友 B 样条时会检查与本机正在执行轨迹的时空冲突；它还会持续检查当前轨迹的前段。这里的距离是对预测轨迹的规划约束，不等同于最终验收所需的真实最小机间距证据。
+
+首次启动时，规划器还保留了按 `drone_id` 的顺序启动机制：`drone_id=0` 可以先生成第一条轨迹，后续编号的规划器等待前序轨迹后再生成首轨迹。之后每次成功重规划都会刷新共享轨迹链，不能把它理解为“UAV1 永远集中指挥 UAV2/UAV3”。
+
+## 当前低空绕塔参数如何影响它
+
+当前默认三机低空配置的关键值是：
+
+| 参数 | 当前值 | 对规划的直接含义 |
+|---|---:|---|
+| `max_vel` | `0.20 m/s` | 轨迹速度上限。 |
+| `max_acc` | `0.50 m/s²` | 轨迹加速度上限。 |
+| `planning_horizon` | `7.5 m` | 每次局部规划优先处理的前方范围；不是整项任务的总半径。 |
+| `map_resolution` | `0.25 m` | 当前三机 launch 传给 EGO 的占据地图体素边长。 |
+| `obstacles_inflation` | `0.40 m` | 点云障碍在地图中额外膨胀的安全边界。 |
+| `swarm_clearance` | `1.50 m` | 预测队友轨迹间的最小规划间距。 |
+| 本地更新窗口 | `12.5 × 12.5 × 4.5 m` | 低空配置覆盖当前飞机附近、供重规划使用的点云范围。 |
+
+这些是当前 launch/配置的仿真参数，不是通用真机安全保证。特别是点云漏检、`map -> camera_init` 的单位对齐假设失效、队友轨迹超时或控制执行偏差，都可能使真实净空与规划预期不同；所以集群协调、安全监督和 bridge 的检查仍不能省略。
+
+## EGO-Swarm 与其他层的分工
+
+```text
+astra_swarm_manager：三机谁可以进场、绕塔、退出（任务时序）
+sector_inspection_mission_node：本机下一正式目标是什么（任务语义）
+EGO-Swarm：此刻怎样绕开环境与预测队友到该目标（局部时空轨迹）
+ego_mavros_bridge：这条轨迹能否安全交给 MAVROS/PX4（执行安全）
+```
+
+因此，如果三机间距风险发生，不能只问“EGO-Swarm 为什么没让它们分开”：可能是任务层过早放行、共享轨迹/时间戳/坐标不正确、点云或定位异常、局部规划不可行，或实际飞控执行偏离。排查顺序应是先确认三机 `planner/status` 和共享轨迹是否新鲜，再确认任务许可和 bridge 状态，最后才判断优化器参数是否需要调整。
+
+# 6. 当前三机低空绕塔（阶段 3）的分层架构
+
+先区分两种“分层”的口径，二者不矛盾。
+
+从整个项目的**功能**看，可以粗分为三块：
+
+```text
+任务与控制主链：决定并执行三机绕塔
+显示层：RViz 展示坐标、点云、轨迹与三机态势
+记录层：CSV / JSONL 保存任务状态和验收证据
+```
+
+显示层和记录层不参与控制决策：RViz 只订阅并显示数据，记录器只订阅并写入文件；两者停止或异常不应替代任务状态机、规划器或飞控来指挥飞机。因此，这三块不是从上到下的三级控制链，而是“一条主链 + 两个旁路支撑能力”。
+
+如果只沿着真正让无人机飞行的**任务与控制主链**看，“阶段 3”也只是项目阶段编号，不表示软件只有三层。当前三机低空绕塔共有五层主链；其中只有前两层属于“任务管理”。
+
+```text
+第 1 层：集群协调
+  -> 第 2 层：单机任务
+      -> 第 3 层：EGO-Swarm 局部协同规划
+          -> 第 4 层：单机执行与控制权
+              -> 第 5 层：飞控执行
+```
+
+三块功能与五层主链的关系如下：
+
+```text
+显示层（RViz）     <──订阅──  五层任务与控制主链  ──发布──> 飞行器
+记录层（CSV/JSONL）<──订阅──┘
+```
+
+因此，回答“项目有多少层”时：若问功能模块，可说三块（任务与控制、显示、记录）；若问实际控制链，答案是五层主链，外加横向安全监督。
+
+## 第 1 层：集群协调层
+
+核心节点是 `astra_swarm_manager`，整个三机任务只有一个。它根据三架机的状态、预测轨迹和安全许可，决定每架机是否可以进入下一个任务阶段。
+
+它向每架机发放的不是具体坐标，而是许可：起飞、任务开始、进入巡检区、准备绕塔、开始绕塔、换层、退出和降落。也就是说，它回答的是“哪一架机现在可以做什么”。
+
+本层包含：
+
+1. 一个 `astra_swarm_manager`：集群协调与许可发放。
+2. 三个 `swarm_state_publisher`：每架机一个，汇总本机任务、桥接、飞控和预测状态后发布给协调器。
+
+## 第 2 层：单机任务层
+
+核心节点是 `sector_inspection_mission_node`，节点名为 `tower_mission`。三架机各有一个实例：`/uav1/tower_mission`、`/uav2/tower_mission` 和 `/uav3/tower_mission`。
+
+这一层把巡检任务拆成可执行的阶段，并在需要时等待第 1 层发放许可。它决定“本机下一站要去哪里”，但不负责计算绕障曲线。
+
+每个单机任务状态机包含的主要小阶段是：
+
+```text
+等待输入
+  -> 集结点 / 分段爬升
+  -> 等待进场许可
+  -> 进入巡检区
+  -> 等待绕塔准备许可 / 绕塔许可
+  -> 评估并锁定当前巡检目标
+  -> 导航、绕塔、必要时保持或恢复
+  -> 等待换层许可并换层
+  -> 等待退出许可
+  -> 退出、返航、降落
+  -> 完成或报错
+```
+
+因此，第 2 层不是“一个总任务状态机”，而是三份独立的单机状态机；它们接受同一个第 1 层协调器的约束。
+
+## 第 3 层：EGO-Swarm 局部协同规划层
+
+每架机运行一套 EGO-Swarm 规划核心和一个 `traj_server`，共三套。EGO-Swarm 是在 EGO-Planner 基础上扩展出的多机规划版本，因此仓库仍保留历史包名 `ego_planner`、节点名 `ego_planner_node` 和类名 `EGOPlannerManager`；名称保留不表示当前三机任务只运行单机 EGO-Planner。
+
+每套的两个核心节点是：
+
+1. `ego_planner_node`：读取本机里程计、点云、膨胀占据地图和第 2 层给出的当前目标，生成或重规划 B 样条轨迹；同时带本机 `drone_id` 发布本机轨迹、接收另外两架机的轨迹，并按 `swarm_clearance` 检查机间冲突。
+2. `traj_server`：把协同规划得到的整条 B 样条按时间展开为连续的 `PositionCommand`，包含位置、速度、加速度和航向参考。
+
+这一层回答“到当前目标，怎样绕开环境障碍物和其他无人机飞过去”。它不是任务管理器，也不决定三架机的任务先后次序；起飞、进场、绕塔、换层和返航的次序仍由第 1 层的 `astra_swarm_manager` 管理。
+
+## 第 4 层：单机执行与控制权层
+
+每架机一个 `ego_mavros_bridge`，共三个。它是 EGO 轨迹到 MAVROS/PX4 之间唯一允许持续发布控制指令的出口。
+
+它的主要小阶段包括：连接与输入检查、OFFBOARD 准备、起飞/悬停就绪、跟踪 EGO、HOLD、返航悬停、降落和完成/错误。它回答“这条规划轨迹现在能否安全执行；不能执行时应保持、返航还是降落”。
+
+## 第 5 层：飞控执行层
+
+每架机都有一组 MAVROS 和 PX4 SITL，共三组：
+
+1. MAVROS：将 ROS 的控制消息转换为 MAVLink/PX4 接口，并处理坐标转换。
+2. PX4：在 OFFBOARD 模式下执行位置、速度、姿态、推力等底层闭环控制。
+
+这一层不理解“巡检扇区”或“集群许可”，只负责让飞机按照上层给定的连续指令飞行。
+
+## 横向安全层与五层主链的关系
+
+横向安全层不是“第 6 层”，因为它不位于第 1 层到第 5 层的单向命令链上，也不负责把一个任务目标逐层翻译成电机控制。它像覆盖在主链旁边的一条独立安全监督线。
+
+```text
+五层主链：集群协调 -> 单机任务 -> EGO-Swarm 规划 -> bridge 执行 -> PX4
+                         ↑                                    ↓
+横向安全层：读取三机状态、预测轨迹、间距和规划状态；发现风险后阻止继续放行
+```
+
+本项目的横向安全层主要是一个 `astra_swarm_safety` 节点。它读取每架机的 `SwarmState`、预测轨迹、当前巡检扇区和规划状态，检查心跳是否新鲜、预测最小间距是否满足要求、是否存在碰撞风险。
+
+它发布 `/swarm/safety/clear`。`astra_swarm_manager` 只有在这个安全结果为允许、且每架机状态正常时，才会继续发放下一阶段许可。因此它与第 1 层的关系是“监督和否决”：安全层不为飞机挑选航点，但可以阻止协调器批准进入、绕塔、换层或降落。
+
+同时，第 4 层的每个 `ego_mavros_bridge` 也有本机独立的输入时效、控制权冲突和轨迹执行安全检查；发现问题会进入 HOLD。两者的分工是：
+
+| 安全机制 | 覆盖范围 | 主要动作 |
+|---|---|---|
+| `astra_swarm_safety` | 三机之间 | 阻止集群协调器继续放行，避免三机冲突。 |
+| `astra_swarm_manager` | 三机任务次序 | 根据安全结果和协调规则，发或不发许可。 |
+| `ego_mavros_bridge` | 单架机自身 | 指令异常、控制冲突或执行异常时 HOLD、返航或降落。 |
+| EGO-Swarm 核心（节点仍名为 `ego_planner_node`） | 单架机局部环境与机间轨迹 | 避开点云/占据地图中的环境障碍，并以共享 B 样条轨迹避免机间冲突。 |
+
+最简记忆：第 1 层管“三架机能否同时做某事”，第 2 层管“本机接下来去哪里”，第 3 层由 EGO-Swarm 管“本机怎样同时避开环境和队友到那里”，第 4 层管“是否安全地把轨迹交给飞控”，第 5 层管“怎样真的飞出来”；横向安全层持续检查三机是否仍然允许继续执行。
+
+# 7. 三机绕塔项目的 TF 坐标系
+
+本节说明当前 `triple_tower_inspection.launch` 的三机仿真坐标契约。TF（Transform）可以理解为一张“坐标系之间如何平移和旋转”的关系图：每个 frame 都有自己的原点和 XYZ 轴；有了两帧间的 TF，才可以把“在 A 坐标系下的位置”换算成“在 B 坐标系下的位置”。
+
+当前项目不是让三架机共用一个没有前缀的 `map` 或 `body`。它采用一个公共世界坐标系 `world`，下面挂接三棵彼此隔离、带无人机前缀的本机坐标树。这样同名的 FAST-LIO frame 不会互相冲突。
+
+## 总体结构
+
+```text
+world                                      三机共享的绝对坐标系
+|
+|-- uav1/map                               UAV1 的本地地图 / MAVROS 参考系
+|    `-- uav1/camera_init                  UAV1 的 FAST-LIO 与 EGO-Swarm 规划系
+|         `-- uav1/body                    UAV1 的 FAST-LIO 动态机体系
+|              `-- uav1/base_link          UAV1 机体模型基准
+|                   |-- uav1/mid360_link   MID360 的安装位置
+|                   `-- uav1/d435_link     D435i 的安装位置
+|                        |-- uav1/d435_color_optical_frame
+|                        |-- uav1/d435_depth_optical_frame
+|                        |-- uav1/d435_infra1_optical_frame
+|                        `-- uav1/d435_infra2_optical_frame
+|
+|-- uav2/map
+|    `-- uav2/camera_init
+|         `-- uav2/body
+|              `-- uav2/base_link
+|                   |-- uav2/mid360_link
+|                   `-- uav2/d435_link -> 各 D435i optical frame
+|
+`-- uav3/map
+     `-- uav3/camera_init
+          `-- uav3/body
+               `-- uav3/base_link
+                    |-- uav3/mid360_link
+                    `-- uav3/d435_link -> 各 D435i optical frame
+```
+
+箭头 `父坐标系 -> 子坐标系` 的含义是：子坐标系的位置和姿态用父坐标系描述。例如 `world -> uav2/map` 表示 UAV2 的本地原点放在公共世界中的什么位置。
+
+## 三个层次：全局、本机规划、传感器/机体
+
+| 层次 | 坐标系 | 谁使用 | 作用 |
+|---|---|---|---|
+| 公共全局层 | `world` | 三机 RViz、EGO-Swarm 共享轨迹、集群协调与安全 | 所有无人机、铁塔和环境障碍共有的绝对参考。 |
+| 每机本地参考层 | `uavN/map` | MAVROS 位姿、任务层、bridge | 第 N 架机自己的局部 ENU 地图参考；同一座塔在三架机的 local 坐标中数值不同。 |
+| 每机规划层 | `uavN/camera_init` | FAST-LIO、点云、EGO-Swarm、`traj_server` | 第 N 架机的规划 frame；当前仿真中与本机 `map` 通过单位静态 TF 对齐。 |
+| 动态机体层 | `uavN/body` | FAST-LIO 输出、机体姿态 | 随无人机飞行实时运动；FAST-LIO 发布 `camera_init -> body`。 |
+| 物理模型层 | `uavN/base_link` | RViz 机体模型、传感器安装关系 | 机体模型的基准 frame；当前通过单位静态 TF 与 `body` 重合。 |
+| 传感器层 | `uavN/mid360_link`、`uavN/d435_link` 及 optical frames | RViz 和传感器几何 | 表示激光雷达、D435i 及其光学坐标系相对机体的固定安装位置。 |
+
+这里 `N` 只能是 `1`、`2` 或 `3`。例如，UAV2 的规划点云应是 `uav2/camera_init`，绝不能写成无前缀的 `camera_init`，否则会与其他飞机的数据混淆。
+
+## 各 TF 的来源与是否变化
+
+| TF | 类型 | 当前来源 | 含义 |
+|---|---|---|---|
+| `world -> uavN/map` | 静态 | 三机 launch 的 `static_transform_publisher` | 把每架机的本地原点放到公共世界中。 |
+| `uavN/map -> uavN/camera_init` | 静态、单位变换 | `ego_gazebo_bridge.launch` | 当前 Gazebo/MID360/FAST-LIO 与 MAVROS ENU 启动时对齐，因此平移为 0、旋转为单位四元数。 |
+| `uavN/camera_init -> uavN/body` | 动态 | FAST-LIO，经 `frame_adapter_node.py` 改写为带前缀的 frame 名 | 表示 FAST-LIO 估计出的无人机实时位置和姿态；飞行时持续变化。 |
+| `uavN/body -> uavN/base_link` | 静态、单位变换 | `uav_sensor_frames.launch` | 让 FAST-LIO 的机体系与 RViz 机体模型连接；当前两者重合。 |
+| `uavN/base_link -> uavN/mid360_link` | 静态 | `uav_sensor_frames.launch` | MID360 位于机体基准上方 `0.08 m`。 |
+| `uavN/base_link -> uavN/d435_link` | 静态 | `uav_sensor_frames.launch` | D435i 位于机体前方 `0.12 m`、上方 `0.03 m`，并有固定安装旋转。 |
+| `uavN/d435_link -> ...optical_frame` | 静态 | `uav_sensor_frames.launch` | D435i 彩色、深度、红外光学坐标系的固定转换。 |
+
+“静态”表示启动后不会随飞行改变；“动态”表示无人机飞行时持续更新。当前树中真正描述飞行运动的关键边是 `uavN/camera_init -> uavN/body`。
+
+## 套回当前三机项目：静态/动态与单位/非单位
+
+“静态/动态”和“单位/非单位”是两组彼此独立的判断。把它们直接套到当前三机的 TF 树中：
+
+```text
+world ──静态、非单位──> uavN/map
+      └─ UAV1: (0, 0, 0)；UAV2: (4, 0, 0)；UAV3: (8, 0, 0)
+
+uavN/map ──静态、单位──> uavN/camera_init
+uavN/camera_init ──动态、通常非单位──> uavN/body
+uavN/body ──静态、单位──> uavN/base_link
+uavN/base_link ──静态、非单位──> uavN/mid360_link
+uavN/base_link ──静态、非单位──> uavN/d435_link
+```
+
+- `world -> uavN/map`：静态，因为三架机的本地原点出生后不移动；非单位，因为 UAV2、UAV3 的本地原点相对共享世界原点分别平移 `+4 m`、`+8 m`。
+- `uavN/map -> uavN/camera_init`：当前仿真中的静态单位对齐，表示 MAVROS 本地坐标和 FAST-LIO 规划原点暂时按同一坐标处理；这不是实测的真实传感器标定结果。
+- `uavN/camera_init -> uavN/body`：动态 TF。FAST-LIO 持续估计无人机当前位姿；飞行时平移和旋转都会改变，因此通常不是单位变换。
+- `uavN/body -> uavN/base_link`：静态单位对齐。当前工程把 FAST-LIO 的机体系与 RViz 机体模型基准视为同一位置、同一朝向。
+- `base_link -> mid360_link`、`base_link -> d435_link`：静态但非单位。传感器相对机体不动，但有固定安装偏移；D435 还带有固定安装旋转。
+
+所以判断任意一条 TF 时，分别问两个问题：它会不会随时间改变？它是不是“零平移 + 单位旋转”？前者决定静态或动态，后者决定单位或非单位。
+
+## 默认出生位置下，三棵本地树如何落在同一个世界中
+
+三机 launch 的默认出生位置是 UAV1 `(0, 0, 0)`、UAV2 `(4, 0, 0)`、UAV3 `(8, 0, 0)`，三个 `world -> uavN/map` 都没有初始旋转。因此默认关系为：
+
+```text
+world -> uav1/map : 平移 (0, 0, 0)
+world -> uav2/map : 平移 (4, 0, 0)
+world -> uav3/map : 平移 (8, 0, 0)
+```
+
+设一点在第 N 架机本地 `map` 中的坐标为 `(x_local, y_local, z_local)`，则在默认无旋转条件下：
+
+```text
+UAV1：p_world = (x_local,     y_local, z_local)
+UAV2：p_world = (x_local + 4, y_local, z_local)
+UAV3：p_world = (x_local + 8, y_local, z_local)
+```
+
+所以铁塔在 `world` 中只有一个绝对位置，但在每架机的 `map/camera_init` 中会有不同的 X 坐标。例如默认塔心世界坐标为 `(-10.0551, 19.7104)` 时：
+
+```text
+uav1 本地：(-10.0551, 19.7104)
+uav2 本地：(-14.0551, 19.7104)
+uav3 本地：(-18.0551, 19.7104)
+```
+
+这正是三机任务 launch 为每架机分别传入本地塔心、并让 EGO-Swarm 以 `world` 作为 `swarm_common_frame` 的原因：本地规划各自独立，但队友轨迹比较必须回到同一个公共坐标系。
+
+## 数据怎样走过这棵 TF 树
+
+```text
+MID360 激光数据
+  -> FAST-LIO 原始输出（原始 frame 名未带 uav 前缀）
+  -> frame_adapter_node.py 重写 frame 名
+  -> /uavN/Odometry：header.frame_id = uavN/camera_init
+                        child_frame_id  = uavN/body
+  -> /uavN/cloud_registered：frame_id = uavN/camera_init
+  -> EGO-Swarm 在 uavN/camera_init 中建图并规划
+  -> 将本机 B 样条按本机 swarm_origin 转成 world 中的共享轨迹
+  -> 读取两架队友在 world 中的共享轨迹，进行机间避碰
+  -> traj_server 输出本机规划指令
+  -> ego_mavros_bridge 通过 uavN/map <-> uavN/camera_init 的 TF
+     校验/转换后发布给 /uavN/mavros/setpoint_raw/local
+  -> MAVROS/PX4 执行
+```
+
+`frame_adapter_node.py` 是多机 TF 的关键适配层：FAST-LIO 本身有硬编码的 `camera_init`、`body` 等 frame 名；适配器把每架机的里程计、点云和 TF 改写为 `uav1/...`、`uav2/...`、`uav3/...`，从而防止三套 FAST-LIO 把同名 frame 发布到同一棵 ROS TF 树中。
+
+## 容易混淆的名称
+
+| 名称 | 是否是当前公共三机 TF frame | 说明 |
+|---|---:|---|
+| `world` | 是 | 三机共同的绝对 frame。 |
+| `uavN/map` | 是 | 第 N 架机局部参考，挂在 `world` 下。 |
+| `uavN/camera_init` | 是 | FAST-LIO/EGO-Swarm 的本机规划 frame。 |
+| `uavN/body` | 是 | FAST-LIO 动态机体系。 |
+| `uavN/base_link` | 是 | RViz/传感器模型 frame。 |
+| `odom`、`base_link`（无 `uavN/` 前缀） | 否，属于 MAVROS 外部里程计消息约定 | frame adapter 为 MAVROS 的 `odometry/out` 复制一份使用这些名字的消息，以便 MAVROS 完成 ENU/FLU 到 PX4 NED/FRD 的转换；它们不应被当成三机公共 TF 树中的 frame。 |
+| `iris_without_GPS_N::base_link`、`mid360_N::lidar_link` | 否，属于 Gazebo/SDF 模型命名 | 它们描述 Gazebo 模型链接；RViz/ROS 的项目级 TF 使用的是 `uavN/base_link` 和 `uavN/mid360_link`。 |
+
+## 当前约定的边界与排查
+
+`uavN/map -> uavN/camera_init` 的单位变换是当前 Gazebo 仿真的对齐假设，bridge 会在运行中检查位置和 yaw 是否一致；它不是已经完成真机外参标定的结论。真机或非对齐定位系统接入时，不能继续默认单位变换，必须提供经过测量验证的 TF。
+
+启动三机仿真后，可用以下只读命令检查实际树和某一条转换：
+
+```bash
+rosrun tf2_tools view_frames.py
+rosrun tf tf_echo world uav3/body
+rosrun tf tf_echo uav2/camera_init uav2/mid360_link
+rostopic echo -n 1 /uav1/Odometry
+```
+
+排查顺序：先确认 `world` 到三架机的 `map` 都存在；再确认每架机都有 `map -> camera_init -> body`；最后检查机体和传感器静态分支。若 RViz 中三机重叠、点云漂移或 EGO-Swarm 误判队友位置，优先核对消息的 `header.frame_id`、`world -> uavN/map` 初始平移，以及 `map -> camera_init` 是否仍满足对齐条件。
