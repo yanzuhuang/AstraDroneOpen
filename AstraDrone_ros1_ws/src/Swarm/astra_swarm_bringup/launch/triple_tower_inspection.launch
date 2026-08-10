@@ -94,6 +94,8 @@
        default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/summary.json"/>
   <arg name="evidence_candidate_file"
        default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/candidates.jsonl"/>
+  <arg name="evidence_record_enabled" default="true"/>
+  <arg name="evidence_candidate_record_mode" default="full"/>
   <env name="ROS_LOG_DIR"
        value="$(optenv ROS_LOG_DIR runtime_artifacts/direct_triple_tower/ros_logs)"/>
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
@@ -391,7 +393,8 @@
     <arg name="trajectory_color_b" value="0.2"/>
   </include>
 
-  <node pkg="astra_swarm_bringup" type="swarm_evidence_recorder.py"
+  <node if="$(arg evidence_record_enabled)"
+        pkg="astra_swarm_bringup" type="swarm_evidence_recorder.py"
         name="astra_swarm_evidence_recorder" output="screen">
     <rosparam param="uav_ids">[1, 2, 3]</rosparam>
     <rosparam param="tower_center">[-10.0551, 19.7104]</rosparam>
@@ -400,6 +403,8 @@
     <param name="csv_file" value="$(arg evidence_csv_file)"/>
     <param name="summary_file" value="$(arg evidence_summary_file)"/>
     <param name="candidate_file" value="$(arg evidence_candidate_file)"/>
+    <param name="candidate_record_mode"
+           value="$(arg evidence_candidate_record_mode)"/>
   </node>
 
   <node pkg="astra_swarm_bringup" type="swarm_rviz_diagnostics.py"

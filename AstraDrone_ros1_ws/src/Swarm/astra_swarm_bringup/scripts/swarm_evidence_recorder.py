@@ -46,7 +46,14 @@ class EvidenceRecorder:
             "~summary_file", direct_artifact_dir / "summary.json")
         self.candidate_path = runtime_output_param(
             "~candidate_file", direct_artifact_dir / "candidates.jsonl")
+        self.candidate_record_mode = str(rospy.get_param(
+            "~candidate_record_mode", "full")).strip().lower()
+        if self.candidate_record_mode not in ("none", "light", "full"):
+            raise rospy.ROSInitException(
+                "~candidate_record_mode must be one of none, light, full: {}"
+                .format(self.candidate_record_mode))
         self.candidate_file_lock = threading.Lock()
+        self.last_candidate_signatures = {}
         self.tower_center = [
             float(v) for v in rospy.get_param(
                 "~tower_center", [-10.0551, 19.7104])]
@@ -262,6 +269,37 @@ class EvidenceRecorder:
             self.candidate_file.flush()
         return True
 
+    @staticmethod
+    def candidate_change_signature(record):
+        """Return the meaningful candidate state, excluding noisy metrics."""
+        return (
+            record["record_type"],
+            record["frame_id"],
+            record["uav_id"],
+            record["current_sector"],
+            record["locked_candidate_id"],
+            tuple((
+                item["candidate_id"],
+                item["sector_id"],
+                item["layer_id"],
+                tuple(round(value, 6) for value in item["target"]),
+                item["accepted"],
+                item["rejection_reason"],
+            ) for item in record["candidates"]),
+        )
+
+    def should_write_candidate_record(self, record):
+        if self.candidate_record_mode == "none":
+            return False
+        if self.candidate_record_mode == "full":
+            return True
+        key = (record["uav_id"], record["record_type"])
+        signature = self.candidate_change_signature(record)
+        if self.last_candidate_signatures.get(key) == signature:
+            return False
+        self.last_candidate_signatures[key] = signature
+        return True
+
     def candidate_cb(self, uid, msg, source="candidate_targets"):
         record = {
             "record_type": source,
@@ -287,7 +325,8 @@ class EvidenceRecorder:
         # rospy may dispatch a final queued candidate callback concurrently
         # with the shutdown hook.  Serialize the write and close so a normal
         # SIGINT cannot turn complete evidence into a spurious traceback.
-        if not self.write_candidate_record(record):
+        if (self.should_write_candidate_record(record)
+                and not self.write_candidate_record(record)):
             return
         counts = self.candidate_rejection_observations[uid]
         for item in msg.candidates:
@@ -302,11 +341,12 @@ class EvidenceRecorder:
         except (TypeError, ValueError):
             return
         self.entry_corridor_audit = audit
-        self.write_candidate_record({
-            "record_type": "joint_entry_corridor_audit",
-            "receive_sim_time": rospy.Time.now().to_sec(),
-            "audit": audit,
-        })
+        if self.candidate_record_mode != "none":
+            self.write_candidate_record({
+                "record_type": "joint_entry_corridor_audit",
+                "receive_sim_time": rospy.Time.now().to_sec(),
+                "audit": audit,
+            })
 
     def state_cb(self, uid, msg):
         previous_phase = self.last_phase.get(uid)

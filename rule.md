@@ -6,14 +6,19 @@
 
 ```bash
 cd /home/yanzu/AstraDroneOpen
-scripts/run_sh/three_uav_inspection.sh --control --gui --rviz
+scripts/run_sh/three_uav_inspection.sh --control --gui --rviz --record light
 ```
 
 - `--control`：允许三架无人机自动解锁、起飞并执行绕塔任务。
 - `--gui`：打开 Gazebo Classic GUI，观察三架无人机的实际运动。
 - `--rviz`：打开三机 RViz，观察地图、点云、规划轨迹和任务状态。
+- `--record light`：日常默认录制模式；保留状态、任务、规划和安全证据，不把点云、膨胀占据地图或 Gazebo 全模型状态写入 bag。省略 `--record` 时同样使用 `light`。
+- `--record none`：不保留本次任务的 bag、CSV、summary、候选 JSONL、启动日志或轨迹图，也不创建本次 `runtime_artifacts` 结果目录；实时 Gazebo、RViz 和飞行链路不受影响。ROS 启动必需的临时日志位于 `/tmp`，退出时自动删除。
+- `--record full`：正式验收或排查地图、避障问题时使用，保留原完整录制清单。
 - 观察结束后，在启动终端按 `Ctrl+C`，脚本会停止本次仿真。
-- 本次运行的日志、rosbag 和检查结果会写入仓库根目录的 `runtime_artifacts/three_uav_inspection_control_<时间戳>/`。
+- 使用 `light` 或 `full` 时，本次运行的日志、检查结果以及按模式生成的 rosbag 会写入仓库根目录的 `runtime_artifacts/three_uav_inspection_control_<时间戳>/`。
+- 录制模式只改变保存到磁盘的内容，不会关闭点云、占据地图等 Topic 的发布，因此实时 RViz 显示不变；轻量 bag 回放时不会重现未录制的点云和地图。
+- `light` 和 `full` 都会在正常退出时根据 `swarm.csv` 生成 `trajectory_xy.png` 与 `trajectory_3d.png`；`none` 不生成轨迹图。
 
 ---
 
