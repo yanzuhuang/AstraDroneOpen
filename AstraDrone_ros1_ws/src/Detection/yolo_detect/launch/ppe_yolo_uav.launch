@@ -1,0 +1,23 @@
+<launch>
+  <arg name="vehicle_ns"/>
+  <arg name="camera_name"/>
+  <arg name="model_path"/>
+  <arg name="config" default="$(find yolo_detect)/config/ppe_three_uav.yaml"/>
+  <arg name="python_exec" default="/usr/bin/python3"/>
+  <arg name="device" default="cpu"/>
+  <arg name="image_topic" default="/$(arg vehicle_ns)/d435/color/image_raw"/>
+
+  <group ns="$(arg vehicle_ns)">
+    <node pkg="yolo_detect" type="yolo_detect.py" name="ppe_yolo"
+          output="screen" required="false"
+          launch-prefix="$(arg python_exec)">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="model_path" value="$(arg model_path)"/>
+      <param name="device" value="$(arg device)"/>
+      <param name="camera_name" value="$(arg camera_name)"/>
+      <param name="image_topic" value="$(arg image_topic)"/>
+      <param name="detections_topic" value="/$(arg vehicle_ns)/yolo/detections"/>
+      <param name="annotated_topic" value="/$(arg vehicle_ns)/yolo/detect_image"/>
+    </node>
+  </group>
+</launch>

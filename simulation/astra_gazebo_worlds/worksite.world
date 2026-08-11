@@ -197,7 +197,10 @@
         <enable_wind>0</enable_wind>
         <kinematic>0</kinematic>
       </link>
-      <pose>-17.4209 22.29 0 0 -0 0</pose>
+      <!-- Keep the model definition aligned with the saved <state> pose
+           below.  Conflicting values make Gazebo Classic render the mesh at
+           a different location from get_model_state after some restarts. -->
+      <pose>-10.0551 19.7104 0 0 -0 0</pose>
     </model>
     <model name='water_tower'>
       <static>1</static>
@@ -1628,5 +1631,36 @@
       </link>
       <pose>0.102195 -9.25917 0 0 -0 0</pose>
     </model>
+    <!-- PPE detection fixtures copied from 002_core_forest_helmet_sampling
+         and translated as one rigid group to this world's tower center. -->
+    <include><uri>model://helmet_worker_standing</uri><name>helmet_ground_north</name><pose>-10.055100 27.710400 -0.013728 0 0 0</pose></include>
+    <include><uri>model://worker_no_helmet</uri><name>person_ground_east</name><pose>-2.055100 19.710400 -0.013728 0 0 -1.570796</pose></include>
+    <include><uri>model://helmet_worker_standing</uri><name>helmet_ground_south</name><pose>-10.055100 11.710400 -0.013728 0 0 3.141593</pose></include>
+    <include><uri>model://worker_no_helmet</uri><name>person_ground_west</name><pose>-18.055100 19.710400 -0.013728 0 0 1.570796</pose></include>
+
+    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_north</name><pose>-10.055100 23.590400 13.306000 0 0 0</pose></include>
+    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_east</name><pose>-6.175100 19.710400 13.306000 0 0 -1.570796</pose></include>
+    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_south</name><pose>-10.055100 15.830400 13.306000 0 0 3.141593</pose></include>
+    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_west</name><pose>-13.935100 19.710400 13.306000 0 0 1.570796</pose></include>
+
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_north</name><pose>-10.055100 24.190400 13.306000 0 0 0</pose></include>
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_east</name><pose>-5.575100 19.710400 13.306000 0 0 -1.570796</pose></include>
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_south</name><pose>-10.055100 15.230400 13.306000 0 0 3.141593</pose></include>
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_west</name><pose>-14.535100 19.710400 13.306000 0 0 1.570796</pose></include>
+
+    <include><uri>model://helmet_worker_standing</uri><name>helmet_beam_north</name><pose>-10.055100 24.190400 13.292272 0 0 0</pose></include>
+    <include><uri>model://worker_no_helmet</uri><name>person_beam_east</name><pose>-5.575100 19.710400 13.292272 0 0 -1.570796</pose></include>
+    <include><uri>model://helmet_worker_standing</uri><name>helmet_beam_south</name><pose>-10.055100 15.230400 13.292272 0 0 3.141593</pose></include>
+    <include><uri>model://worker_no_helmet</uri><name>person_beam_west</name><pose>-14.535100 19.710400 13.292272 0 0 1.570796</pose></include>
+
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_north</name><pose>-10.055100 24.190400 17.820000 0 0 0</pose></include>
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_east</name><pose>-5.575100 19.710400 17.820000 0 0 -1.570796</pose></include>
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_south</name><pose>-10.055100 15.230400 17.820000 0 0 3.141593</pose></include>
+    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_west</name><pose>-14.535100 19.710400 17.820000 0 0 1.570796</pose></include>
+
+    <include><uri>model://helmet_worker_standing</uri><name>helmet_mid_north</name><pose>-10.055100 24.190400 17.806272 0 0 0</pose></include>
+    <include><uri>model://worker_no_helmet</uri><name>person_mid_east</name><pose>-5.575100 19.710400 17.806272 0 0 -1.570796</pose></include>
+    <include><uri>model://helmet_worker_standing</uri><name>helmet_mid_south</name><pose>-10.055100 15.230400 17.806272 0 0 3.141593</pose></include>
+    <include><uri>model://worker_no_helmet</uri><name>person_mid_west</name><pose>-14.535100 19.710400 17.806272 0 0 1.570796</pose></include>
   </world>
 </sdf>

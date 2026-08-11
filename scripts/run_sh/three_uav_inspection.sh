@@ -3,7 +3,9 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-px4_root="/home/yanzu/PX4-Autopilot"
+# Keep the audited developer default while allowing another workstation to
+# select its existing, version-locked PX4 tree without editing this script.
+px4_root="${ASTRA_PX4_ROOT:-/home/yanzu/PX4-Autopilot}"
 
 enable_control=false
 gui=false

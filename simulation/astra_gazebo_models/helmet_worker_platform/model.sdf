@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="helmet_worker_platform">
+    <static>true</static>
+    <link name="link">
+      <collision name="platform_collision">
+        <pose>0 0 -0.06 0 0 0</pose>
+        <geometry><box><size>1.6 1.8 0.12</size></box></geometry>
+      </collision>
+      <visual name="platform_visual">
+        <pose>0 0 -0.06 0 0 0</pose>
+        <geometry><box><size>1.6 1.8 0.12</size></box></geometry>
+        <material>
+          <ambient>0.20 0.24 0.28 1</ambient>
+          <diffuse>0.30 0.36 0.42 1</diffuse>
+          <specular>0.15 0.15 0.15 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

@@ -23,6 +23,8 @@ add_message_files(
   PlannerStatus.msg
   InspectionCandidate.msg
   InspectionCandidateArray.msg
+  AstraDetection2D.msg
+  AstraDetection2DArray.msg
 )
 
 # 服务声明

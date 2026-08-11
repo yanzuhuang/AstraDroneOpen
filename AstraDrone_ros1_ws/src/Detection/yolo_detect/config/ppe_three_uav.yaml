@@ -1,0 +1,8 @@
+confidence_threshold: 0.35
+iou_threshold: 0.45
+image_size: 640
+device: "cpu"
+max_inference_rate: 5.0
+publish_annotated_image: false
+expected_class_names: [person, helmet, no_helmet, safety_vest, no_safety_vest]
+allowed_class_names: [person, no_helmet, no_safety_vest]
