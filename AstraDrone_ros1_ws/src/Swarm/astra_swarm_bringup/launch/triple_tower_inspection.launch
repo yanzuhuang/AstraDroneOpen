@@ -17,6 +17,7 @@
   <arg name="start_sim" default="true"/>
   <arg name="gui" default="true"/>
   <arg name="start_rviz" default="true"/>
+  <arg name="start_rviz_diagnostics" default="true"/>
   <arg name="use_sim_time" default="true"/>
   <arg name="world"
        default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
@@ -27,6 +28,8 @@
   <!-- Mid360 plugin-level ray decimation.  Keep 1 as the validated default;
        larger integers are explicit simulation resource trade-offs. -->
   <arg name="lidar_downsample" default="1"/>
+  <arg name="world"
+       default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/low_altitude_inspection.yaml"/>
   <arg name="takeoff_interval_sec" default="0.0"/>
@@ -126,6 +129,7 @@
            file="$(find astra_swarm_bringup)/launch/triple_px4_mavros.launch">
     <arg name="gui" value="$(arg gui)"/>
     <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="world" value="$(arg world)"/>
     <arg name="world" value="$(arg world)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
@@ -448,7 +452,8 @@
            value="$(arg evidence_candidate_record_mode)"/>
   </node>
 
-  <node pkg="astra_swarm_bringup" type="swarm_rviz_diagnostics.py"
+  <node if="$(arg start_rviz_diagnostics)"
+        pkg="astra_swarm_bringup" type="swarm_rviz_diagnostics.py"
         name="astra_swarm_rviz_diagnostics" output="screen" required="true">
     <rosparam param="uav_ids">[1, 2, 3]</rosparam>
     <rosparam param="tower_center">[-10.0551, 19.7104]</rosparam>
