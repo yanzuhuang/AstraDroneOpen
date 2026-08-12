@@ -134,15 +134,15 @@ if (pose_fresh && mavros_position_pub_)
 
 `aruco_localization`：利用 ArUco 标记图（Marker Map）来实现相机或机器人的定位。
 
-`yolo_detect`：基于 **YOLOv8** 和 **ROS 1** 的无人机视觉感知程序包。
+`yolo_detect`：基于 **YOLOv8** 和 **ROS 1** 的参数化 PPE 二维检测包。当前以三机独立、只读感知链路为准，不参与 MAVROS、规划或任务控制。
 
-·`pt2eng.py`：加载标准的 PyTorch 模型 (`.pt`) 并将其导出为 TensorRT 引擎文件 (`.engine`)。加速模型加载。
+·`yolo_detect.py`：订阅参数指定的 RGB 图像，加载外部 PPE 权重，发布 `astra_custom_msgs/AstraDetection2DArray` 结构化检测结果，并可选发布标注图像。
 
-·`testEnv.py`：一个不依赖 ROS 的独立测试脚本。它加载模型并读取一张程序包内本地图片 (`bus.jpg`) 进行循环检测，并在窗口中显示结果和 FPS。用于检测 YOLO 环境（ultralytics 库）、OpenCV 和模型路径是否配置正确。
+·`ppe_yolo_uav.launch`：为一架无人机配置命名空间、D435 图像、模型、Python 解释器和检测输出。
 
-·`yolo_detect.py`：基础的2D检测节点，订阅 RGB 图像话题 `/csi_camera/image_raw`，并发布标注后的图像到 `/yolo/detect_image`。
+·`ppe_yolo_three_uav.launch`：分别启动 UAV1、UAV2、UAV3 的 PPE YOLO 节点。三机输入为 `/uavN/d435/color/image_raw`，输出为 `/uavN/yolo/detections`。
 
-·`yolo_detect_fusion.py`：识别物体并在图像上获得中心点 (u, v)，结合相机内参，将 2D 像素点反投影为相机坐标系下的 3D 点 (x, y, z)。并利用 TF 树，将坐标从**相机坐标系**转换到**无人机机体坐标系 (FMU)**。利用深度学习进行目标检测，并将 2D 图像检测结果与深度相机数据融合，实现目标的 **3D 空间定位**。
+PPE 权重不在仓库中内置；启动时必须通过 `model_path` 指定包含 `person`、`helmet`、`no_helmet`、`safety_vest`、`no_safety_vest` 类别的模型。部署和启动方式见 `docs/05-三机YOLO部署与交接说明.md`。
 
 `target_prediction`： 利用 **卡尔曼滤波（Kalman Filter）** 及其变体（**EKF** 和 **UKF**），对一个移动目标（通常是带有 ArUco 码的车辆或平台）进行状态估计和未来轨迹预测。
 

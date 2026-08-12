@@ -18,54 +18,6 @@
         <falloff>0</falloff>
       </spot>
     </light>
-    <model name='ground_plane'>
-      <static>1</static>
-      <link name='link'>
-        <collision name='collision'>
-          <geometry>
-            <plane>
-              <normal>0 0 1</normal>
-              <size>100 100</size>
-            </plane>
-          </geometry>
-          <surface>
-            <contact>
-              <collide_bitmask>65535</collide_bitmask>
-              <ode/>
-            </contact>
-            <friction>
-              <ode>
-                <mu>100</mu>
-                <mu2>50</mu2>
-              </ode>
-              <torsional>
-                <ode/>
-              </torsional>
-            </friction>
-            <bounce/>
-          </surface>
-          <max_contacts>10</max_contacts>
-        </collision>
-        <visual name='visual'>
-          <cast_shadows>0</cast_shadows>
-          <geometry>
-            <plane>
-              <normal>0 0 1</normal>
-              <size>100 100</size>
-            </plane>
-          </geometry>
-          <material>
-            <script>
-              <uri>file://media/materials/scripts/gazebo.material</uri>
-              <name>Gazebo/Grey</name>
-            </script>
-          </material>
-        </visual>
-        <self_collide>0</self_collide>
-        <enable_wind>0</enable_wind>
-        <kinematic>0</kinematic>
-      </link>
-    </model>
     <gravity>0 0 -9.8</gravity>
     <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
     <atmosphere type='adiabatic'/>
@@ -197,67 +149,18 @@
         <enable_wind>0</enable_wind>
         <kinematic>0</kinematic>
       </link>
-      <!-- Keep the model definition aligned with the saved <state> pose
-           below.  Conflicting values make Gazebo Classic render the mesh at
-           a different location from get_model_state after some restarts. -->
       <pose>-10.0551 19.7104 0 0 -0 0</pose>
-    </model>
-    <model name='water_tower'>
-      <static>1</static>
-      <link name='link'>
-        <collision name='collision'>
-          <geometry>
-            <mesh>
-              <uri>model://water_tower/meshes/water_tower.dae</uri>
-            </mesh>
-          </geometry>
-          <max_contacts>10</max_contacts>
-          <surface>
-            <contact>
-              <ode/>
-            </contact>
-            <bounce/>
-            <friction>
-              <torsional>
-                <ode/>
-              </torsional>
-              <ode/>
-            </friction>
-          </surface>
-        </collision>
-        <visual name='visual'>
-          <geometry>
-            <mesh>
-              <uri>model://water_tower/meshes/water_tower.dae</uri>
-            </mesh>
-          </geometry>
-        </visual>
-        <self_collide>0</self_collide>
-        <enable_wind>0</enable_wind>
-        <kinematic>0</kinematic>
-      </link>
-      <pose>-18.3559 -29.7161 0 0 -0 0</pose>
     </model>
     <state world_name='default'>
       <sim_time>11934 9000000</sim_time>
-      <real_time>575 296516691</real_time>
-      <wall_time>1785213062 819499939</wall_time>
-      <iterations>573730</iterations>
+      <real_time>0 0</real_time>
+      <wall_time>1786458234 393720650</wall_time>
+      <iterations>0</iterations>
       <model name='Oak_tree_0'>
         <pose>-15.0907 5.38341 0 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
           <pose>-15.0907 5.38341 0 0 -0 0</pose>
-          <velocity>0 0 0 0 -0 0</velocity>
-          <acceleration>0 0 0 0 -0 0</acceleration>
-          <wrench>0 0 0 0 -0 0</wrench>
-        </link>
-      </model>
-      <model name='Pine_Tree_6'>
-        <pose>10.6186 -12.113 0 0 -0 0</pose>
-        <scale>1 1 1</scale>
-        <link name='link'>
-          <pose>10.6186 -12.113 0 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -324,7 +227,7 @@
         </link>
       </model>
       <model name='Pine_Tree_6_clone_5'>
-        <pose>4.09258 -4.08359 -0 0 -0 0</pose>
+        <pose>4.09258 -4.08359 0 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
           <pose>4.09258 -4.08359 -0 0 -0 0</pose>
@@ -353,21 +256,241 @@
           <wrench>0 0 0 0 -0 0</wrench>
         </link>
       </model>
-      <model name='ground_plane'>
-        <pose>0 0 0 0 -0 0</pose>
+      <model name='helmet_beam_north'>
+        <pose>-10.0551 24.1904 13.2923 0 -0 0</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>0 0 0 0 -0 0</pose>
+          <pose>-10.0551 24.1904 13.2923 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
         </link>
       </model>
-      <model name='my_asphalt_plane'>
-        <pose>-3.15809 -3.16301 0 0 -0 0</pose>
+      <model name='helmet_beam_south'>
+        <pose>-10.0551 15.2304 13.2923 0 -0 -3.14159</pose>
         <scale>1 1 1</scale>
         <link name='link'>
-          <pose>-3.15809 -3.16301 0 0 -0 0</pose>
+          <pose>-10.0551 15.2304 13.2923 0 -0 -3.14159</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_ground_north'>
+        <pose>-10.0551 27.7104 -0.013728 0 -0 0</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 27.7104 -0.013728 0 -0 0</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_ground_south'>
+        <pose>-10.0551 11.7104 -0.013728 0 -0 -3.14159</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 11.7104 -0.013728 0 -0 -3.14159</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_mid_north'>
+        <pose>-10.0551 24.1904 17.8063 0 -0 0</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 24.1904 17.8063 0 -0 0</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_mid_south'>
+        <pose>-10.0551 15.2304 17.8063 0 -0 -3.14159</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 15.2304 17.8063 0 -0 -3.14159</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_platform_east'>
+        <pose>-5.5751 19.7104 17.82 0 0 -1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-5.5751 19.7104 17.82 0 0 -1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_platform_north'>
+        <pose>-10.0551 24.1904 17.82 0 -0 0</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 24.1904 17.82 0 -0 0</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_platform_south'>
+        <pose>-10.0551 15.2304 17.82 0 -0 -3.14159</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 15.2304 17.82 0 -0 -3.14159</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_platform_west'>
+        <pose>-14.5351 19.7104 17.82 0 -0 1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-14.5351 19.7104 17.82 0 -0 1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_bridge_east'>
+        <pose>-6.1751 19.7104 13.306 0 0 -1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-6.1751 19.7104 13.306 0 0 -1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_bridge_north'>
+        <pose>-10.0551 23.5904 13.306 0 -0 0</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 23.5904 13.306 0 -0 0</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_bridge_south'>
+        <pose>-10.0551 15.8304 13.306 0 -0 -3.14159</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 15.8304 13.306 0 -0 -3.14159</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_bridge_west'>
+        <pose>-13.9351 19.7104 13.306 0 -0 1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-13.9351 19.7104 13.306 0 -0 1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_platform_east'>
+        <pose>-5.5751 19.7104 13.306 0 0 -1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-5.5751 19.7104 13.306 0 0 -1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_platform_north'>
+        <pose>-10.0551 24.1904 13.306 0 -0 0</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 24.1904 13.306 0 -0 0</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_platform_south'>
+        <pose>-10.0551 15.2304 13.306 0 -0 -3.14159</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-10.0551 15.2304 13.306 0 -0 -3.14159</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='helmet_sampling_platform_west'>
+        <pose>-14.5351 19.7104 13.306 0 -0 1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-14.5351 19.7104 13.306 0 -0 1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='person_beam_east'>
+        <pose>-5.5751 19.7104 13.2923 0 0 -1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-5.5751 19.7104 13.2923 0 0 -1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='person_beam_west'>
+        <pose>-14.5351 19.7104 13.2923 0 -0 1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-14.5351 19.7104 13.2923 0 -0 1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='person_ground_east'>
+        <pose>-2.0551 19.7104 -0.013728 0 0 -1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-2.0551 19.7104 -0.013728 0 0 -1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='person_ground_west'>
+        <pose>-18.0551 19.7104 -0.013728 0 -0 1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-18.0551 19.7104 -0.013728 0 -0 1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='person_mid_east'>
+        <pose>-5.5751 19.7104 17.8063 0 0 -1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-5.5751 19.7104 17.8063 0 0 -1.5708</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
+      </model>
+      <model name='person_mid_west'>
+        <pose>-14.5351 19.7104 17.8063 0 -0 1.5708</pose>
+        <scale>1 1 1</scale>
+        <link name='link'>
+          <pose>-14.5351 19.7104 17.8063 0 -0 1.5708</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -379,8 +502,8 @@
         <link name='link'>
           <pose>2.93491 13.0335 0.050001 1e-06 -1e-06 0.058185</pose>
           <velocity>0 0 0 0 -0 0</velocity>
-          <acceleration>1.42233 3.72642 2.80502 -0.642856 1.23907 2.74233</acceleration>
-          <wrench>113.787 298.113 224.402 0 -0 0</wrench>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
         </link>
       </model>
       <model name='radio_tower'>
@@ -443,11 +566,17 @@
           <wrench>0 0 0 0 -0 0</wrench>
         </link>
       </model>
-      <model name='water_tower'>
-        <pose>6.29135 -17.758 0 0 -0 0</pose>
+      <model name='vrc_driving_terrain'>
+        <pose>0 0 0 0 -0 0</pose>
         <scale>1 1 1</scale>
+        <link name='grass_plane'>
+          <pose>0 0 0 0 -0 0</pose>
+          <velocity>0 0 0 0 -0 0</velocity>
+          <acceleration>0 0 0 0 -0 0</acceleration>
+          <wrench>0 0 0 0 -0 0</wrench>
+        </link>
         <link name='link'>
-          <pose>6.29135 -17.758 0 0 -0 0</pose>
+          <pose>0 0 0 0 -0 0</pose>
           <velocity>0 0 0 0 -0 0</velocity>
           <acceleration>0 0 0 0 -0 0</acceleration>
           <wrench>0 0 0 0 -0 0</wrench>
@@ -459,190 +588,11 @@
     </state>
     <gui fullscreen='0'>
       <camera name='user_camera'>
-        <pose>11.8898 -62.8846 86.214 0 0.965799 1.55085</pose>
+        <pose>1.96207 -30.7014 20.499 0 0.345797 1.61086</pose>
         <view_controller>orbit</view_controller>
         <projection_type>perspective</projection_type>
       </camera>
     </gui>
-    <model name='Pine_Tree_6'>
-      <static>1</static>
-      <link name='link'>
-        <collision name='collision'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-            </mesh>
-          </geometry>
-          <max_contacts>10</max_contacts>
-          <surface>
-            <contact>
-              <ode/>
-            </contact>
-            <bounce/>
-            <friction>
-              <torsional>
-                <ode/>
-              </torsional>
-              <ode/>
-            </friction>
-          </surface>
-        </collision>
-        <visual name='branch'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-              <submesh>
-                <name>Branch</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <double_sided>1</double_sided>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Pine_Tree/materials/scripts/</uri>
-              <uri>model://Pine_Tree/materials/textures/</uri>
-              <name>PineTree/Branch</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Pine_Tree/materials/textures/branch_2_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <visual name='bark'>
-          <geometry>
-            <mesh>
-              <uri>model://Pine_Tree/meshes/pine_tree.dae</uri>
-              <submesh>
-                <name>Bark</name>
-              </submesh>
-            </mesh>
-          </geometry>
-          <material>
-            <diffuse>1 1 1 1</diffuse>
-            <script>
-              <uri>model://Pine_Tree/materials/scripts/</uri>
-              <uri>model://Pine_Tree/materials/textures/</uri>
-              <name>PineTree/Bark</name>
-            </script>
-            <pbr>
-              <metal>
-                <albedo_map>model://Pine_Tree/materials/textures/bark_diffuse.png</albedo_map>
-              </metal>
-            </pbr>
-          </material>
-        </visual>
-        <self_collide>0</self_collide>
-        <enable_wind>0</enable_wind>
-        <kinematic>0</kinematic>
-      </link>
-      <pose>14.8743 -14.302 0 0 -0 0</pose>
-    </model>
-    <model name='my_asphalt_plane'>
-      <link name='link'>
-        <self_collide>0</self_collide>
-        <enable_wind>0</enable_wind>
-        <kinematic>0</kinematic>
-        <pose>0 0 0 0 -0 0</pose>
-        <gravity>1</gravity>
-        <inertial>
-          <mass>1</mass>
-          <pose>0 0 0 0 -0 0</pose>
-          <inertia>
-            <ixx>1</ixx>
-            <ixy>0</ixy>
-            <ixz>0</ixz>
-            <iyy>1</iyy>
-            <iyz>0</iyz>
-            <izz>1</izz>
-          </inertia>
-        </inertial>
-        <visual name='visual'>
-          <cast_shadows>0</cast_shadows>
-          <geometry>
-            <box>
-              <size>0 0 0</size>
-            </box>
-          </geometry>
-          <material>
-            <script>
-              <uri>model://asphalt_plane/materials/scripts</uri>
-              <uri>model://asphalt_plane/materials/textures</uri>
-              <name>vrc/asphalt</name>
-            </script>
-            <shader type='pixel'>
-              <normal_map>__default__</normal_map>
-            </shader>
-            <ambient>0.5 0.5 0.5 1</ambient>
-            <diffuse>0.5 0.5 0.5 1</diffuse>
-            <specular>0.2 0.2 0.2 1</specular>
-            <emissive>0 0 0 1</emissive>
-          </material>
-          <pose>0 0 0 0 -0 0</pose>
-          <transparency>0</transparency>
-        </visual>
-        <collision name='collision'>
-          <laser_retro>0</laser_retro>
-          <max_contacts>10</max_contacts>
-          <pose>0 0 0 0 -0 0</pose>
-          <geometry>
-            <box>
-              <size>80 80 0.1</size>
-            </box>
-          </geometry>
-          <surface>
-            <friction>
-              <ode>
-                <mu>1</mu>
-                <mu2>1</mu2>
-                <fdir1>0 0 0</fdir1>
-                <slip1>0</slip1>
-                <slip2>0</slip2>
-              </ode>
-              <torsional>
-                <coefficient>1</coefficient>
-                <patch_radius>0</patch_radius>
-                <surface_radius>0</surface_radius>
-                <use_patch_radius>1</use_patch_radius>
-                <ode>
-                  <slip>0</slip>
-                </ode>
-              </torsional>
-            </friction>
-            <bounce>
-              <restitution_coefficient>0</restitution_coefficient>
-              <threshold>1e+06</threshold>
-            </bounce>
-            <contact>
-              <collide_without_contact>0</collide_without_contact>
-              <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
-              <collide_bitmask>1</collide_bitmask>
-              <ode>
-                <soft_cfm>0</soft_cfm>
-                <soft_erp>0.2</soft_erp>
-                <kp>1e+13</kp>
-                <kd>1</kd>
-                <max_vel>0.01</max_vel>
-                <min_depth>0</min_depth>
-              </ode>
-              <bullet>
-                <split_impulse>1</split_impulse>
-                <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
-                <soft_cfm>0</soft_cfm>
-                <soft_erp>0.2</soft_erp>
-                <kp>1e+13</kp>
-                <kd>1</kd>
-              </bullet>
-            </contact>
-          </surface>
-        </collision>
-      </link>
-      <static>1</static>
-      <allow_auto_disable>1</allow_auto_disable>
-      <pose>-3.15809 -3.16301 0 0 -0 0</pose>
-    </model>
     <model name='person_walking'>
       <link name='link'>
         <inertial>
@@ -1631,36 +1581,1515 @@
       </link>
       <pose>0.102195 -9.25917 0 0 -0 0</pose>
     </model>
-    <!-- PPE detection fixtures copied from 002_core_forest_helmet_sampling
-         and translated as one rigid group to this world's tower center. -->
-    <include><uri>model://helmet_worker_standing</uri><name>helmet_ground_north</name><pose>-10.055100 27.710400 -0.013728 0 0 0</pose></include>
-    <include><uri>model://worker_no_helmet</uri><name>person_ground_east</name><pose>-2.055100 19.710400 -0.013728 0 0 -1.570796</pose></include>
-    <include><uri>model://helmet_worker_standing</uri><name>helmet_ground_south</name><pose>-10.055100 11.710400 -0.013728 0 0 3.141593</pose></include>
-    <include><uri>model://worker_no_helmet</uri><name>person_ground_west</name><pose>-18.055100 19.710400 -0.013728 0 0 1.570796</pose></include>
-
-    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_north</name><pose>-10.055100 23.590400 13.306000 0 0 0</pose></include>
-    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_east</name><pose>-6.175100 19.710400 13.306000 0 0 -1.570796</pose></include>
-    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_south</name><pose>-10.055100 15.830400 13.306000 0 0 3.141593</pose></include>
-    <include><uri>model://helmet_sampling_bridge</uri><name>helmet_sampling_bridge_west</name><pose>-13.935100 19.710400 13.306000 0 0 1.570796</pose></include>
-
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_north</name><pose>-10.055100 24.190400 13.306000 0 0 0</pose></include>
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_east</name><pose>-5.575100 19.710400 13.306000 0 0 -1.570796</pose></include>
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_south</name><pose>-10.055100 15.230400 13.306000 0 0 3.141593</pose></include>
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_sampling_platform_west</name><pose>-14.535100 19.710400 13.306000 0 0 1.570796</pose></include>
-
-    <include><uri>model://helmet_worker_standing</uri><name>helmet_beam_north</name><pose>-10.055100 24.190400 13.292272 0 0 0</pose></include>
-    <include><uri>model://worker_no_helmet</uri><name>person_beam_east</name><pose>-5.575100 19.710400 13.292272 0 0 -1.570796</pose></include>
-    <include><uri>model://helmet_worker_standing</uri><name>helmet_beam_south</name><pose>-10.055100 15.230400 13.292272 0 0 3.141593</pose></include>
-    <include><uri>model://worker_no_helmet</uri><name>person_beam_west</name><pose>-14.535100 19.710400 13.292272 0 0 1.570796</pose></include>
-
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_north</name><pose>-10.055100 24.190400 17.820000 0 0 0</pose></include>
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_east</name><pose>-5.575100 19.710400 17.820000 0 0 -1.570796</pose></include>
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_south</name><pose>-10.055100 15.230400 17.820000 0 0 3.141593</pose></include>
-    <include><uri>model://helmet_worker_platform</uri><name>helmet_platform_west</name><pose>-14.535100 19.710400 17.820000 0 0 1.570796</pose></include>
-
-    <include><uri>model://helmet_worker_standing</uri><name>helmet_mid_north</name><pose>-10.055100 24.190400 17.806272 0 0 0</pose></include>
-    <include><uri>model://worker_no_helmet</uri><name>person_mid_east</name><pose>-5.575100 19.710400 17.806272 0 0 -1.570796</pose></include>
-    <include><uri>model://helmet_worker_standing</uri><name>helmet_mid_south</name><pose>-10.055100 15.230400 17.806272 0 0 3.141593</pose></include>
-    <include><uri>model://worker_no_helmet</uri><name>person_mid_west</name><pose>-14.535100 19.710400 17.806272 0 0 1.570796</pose></include>
+    <model name='helmet_ground_north'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_dome_visual'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.9 0.75 0 1</ambient>
+            <diffuse>1 0.85 0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_dome_collision'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_brim_visual'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.8 0.65 0 1</ambient>
+            <diffuse>0.9 0.75 0 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_brim_collision'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 27.7104 -0.013728 0 -0 0</pose>
+    </model>
+    <model name='person_ground_east'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-2.0551 19.7104 -0.013728 0 0 -1.5708</pose>
+    </model>
+    <model name='helmet_ground_south'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_dome_visual'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.9 0.75 0 1</ambient>
+            <diffuse>1 0.85 0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_dome_collision'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_brim_visual'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.8 0.65 0 1</ambient>
+            <diffuse>0.9 0.75 0 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_brim_collision'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 11.7104 -0.013728 0 -0 -3.14159</pose>
+    </model>
+    <model name='person_ground_west'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-18.0551 19.7104 -0.013728 0 -0 1.5708</pose>
+    </model>
+    <model name='helmet_sampling_bridge_north'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='bridge_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='bridge_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 23.5904 13.306 0 -0 0</pose>
+    </model>
+    <model name='helmet_sampling_bridge_east'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='bridge_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='bridge_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-6.1751 19.7104 13.306 0 0 -1.5708</pose>
+    </model>
+    <model name='helmet_sampling_bridge_south'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='bridge_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='bridge_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 15.8304 13.306 0 -0 -3.14159</pose>
+    </model>
+    <model name='helmet_sampling_bridge_west'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='bridge_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='bridge_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>0.5 1.2 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-13.9351 19.7104 13.306 0 -0 1.5708</pose>
+    </model>
+    <model name='helmet_sampling_platform_north'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 24.1904 13.306 0 -0 0</pose>
+    </model>
+    <model name='helmet_sampling_platform_east'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-5.5751 19.7104 13.306 0 0 -1.5708</pose>
+    </model>
+    <model name='helmet_sampling_platform_south'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 15.2304 13.306 0 -0 -3.14159</pose>
+    </model>
+    <model name='helmet_sampling_platform_west'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-14.5351 19.7104 13.306 0 -0 1.5708</pose>
+    </model>
+    <model name='helmet_beam_north'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_dome_visual'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.9 0.75 0 1</ambient>
+            <diffuse>1 0.85 0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_dome_collision'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_brim_visual'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.8 0.65 0 1</ambient>
+            <diffuse>0.9 0.75 0 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_brim_collision'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 24.1904 13.2923 0 -0 0</pose>
+    </model>
+    <model name='person_beam_east'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-5.5751 19.7104 13.2923 0 0 -1.5708</pose>
+    </model>
+    <model name='helmet_beam_south'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_dome_visual'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.9 0.75 0 1</ambient>
+            <diffuse>1 0.85 0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_dome_collision'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_brim_visual'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.8 0.65 0 1</ambient>
+            <diffuse>0.9 0.75 0 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_brim_collision'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 15.2304 13.2923 0 -0 -3.14159</pose>
+    </model>
+    <model name='person_beam_west'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-14.5351 19.7104 13.2923 0 -0 1.5708</pose>
+    </model>
+    <model name='helmet_platform_north'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 24.1904 17.82 0 -0 0</pose>
+    </model>
+    <model name='helmet_platform_east'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-5.5751 19.7104 17.82 0 0 -1.5708</pose>
+    </model>
+    <model name='helmet_platform_south'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 15.2304 17.82 0 -0 -3.14159</pose>
+    </model>
+    <model name='helmet_platform_west'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='platform_collision'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='platform_visual'>
+          <pose>0 0 -0.06 0 -0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 1.8 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.24 0.28 1</ambient>
+            <diffuse>0.3 0.36 0.42 1</diffuse>
+            <specular>0.15 0.15 0.15 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-14.5351 19.7104 17.82 0 -0 1.5708</pose>
+    </model>
+    <model name='helmet_mid_north'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_dome_visual'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.9 0.75 0 1</ambient>
+            <diffuse>1 0.85 0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_dome_collision'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_brim_visual'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.8 0.65 0 1</ambient>
+            <diffuse>0.9 0.75 0 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_brim_collision'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 24.1904 17.8063 0 -0 0</pose>
+    </model>
+    <model name='person_mid_east'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-5.5751 19.7104 17.8063 0 0 -1.5708</pose>
+    </model>
+    <model name='helmet_mid_south'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_dome_visual'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.9 0.75 0 1</ambient>
+            <diffuse>1 0.85 0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_dome_collision'>
+          <pose>0 -0.035 1.92 0 -0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>0.11</radius>
+            </sphere>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='helmet_brim_visual'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.8 0.65 0 1</ambient>
+            <diffuse>0.9 0.75 0 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+        <collision name='helmet_brim_collision'>
+          <pose>0 -0.055 1.84 0 -0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-10.0551 15.2304 17.8063 0 -0 -3.14159</pose>
+    </model>
+    <model name='person_mid_west'>
+      <static>1</static>
+      <link name='link'>
+        <visual name='worker_visual'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+        <collision name='worker_collision'>
+          <pose>0 0 0.02 0 -0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>-14.5351 19.7104 17.8063 0 -0 1.5708</pose>
+    </model>
+    <model name='vrc_driving_terrain'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry>
+            <heightmap>
+              <uri>model://vrc_driving_terrain/materials/textures/heightmap.png</uri>
+              <size>500 500 118</size>
+              <pos>0 0 -15</pos>
+              <texture>
+                <size>10</size>
+                <diffuse>__default__</diffuse>
+                <normal>__default__</normal>
+              </texture>
+              <blend>
+                <min_height>0</min_height>
+                <fade_dist>0</fade_dist>
+              </blend>
+            </heightmap>
+          </geometry>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
+        <visual name='visual'>
+          <geometry>
+            <heightmap>
+              <texture>
+                <diffuse>file://media/materials/textures/dirt_diffusespecular.png</diffuse>
+                <normal>file://media/materials/textures/flat_normal.png</normal>
+                <size>5</size>
+              </texture>
+              <texture>
+                <diffuse>file://media/materials/textures/grass_diffusespecular.png</diffuse>
+                <normal>file://media/materials/textures/flat_normal.png</normal>
+                <size>5</size>
+              </texture>
+              <texture>
+                <diffuse>file://media/materials/textures/fungus_diffusespecular.png</diffuse>
+                <normal>file://media/materials/textures/flat_normal.png</normal>
+                <size>20</size>
+              </texture>
+              <blend>
+                <min_height>15</min_height>
+                <fade_dist>5</fade_dist>
+              </blend>
+              <blend>
+                <min_height>30</min_height>
+                <fade_dist>10</fade_dist>
+              </blend>
+              <uri>model://vrc_driving_terrain/materials/textures/heightmap.png</uri>
+              <size>500 500 118</size>
+              <pos>0 0 -15</pos>
+            </heightmap>
+          </geometry>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <link name='grass_plane'>
+        <collision name='collision'>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>500 500</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>0.5</mu>
+                <mu2>0.5</mu2>
+              </ode>
+              <torsional>
+                <ode/>
+              </torsional>
+            </friction>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+          </surface>
+          <max_contacts>10</max_contacts>
+        </collision>
+        <visual name='visual_0'>
+          <pose>0 0 0 0 -0 0</pose>
+          <cast_shadows>0</cast_shadows>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>500 500</size>
+            </plane>
+          </geometry>
+          <material>
+            <script>
+              <uri>model://vrc_driving_terrain/materials/scripts</uri>
+              <uri>model://vrc_driving_terrain/materials/textures</uri>
+              <name>vrc/grass</name>
+            </script>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <pose>0 0 0 0 -0 0</pose>
+    </model>
   </world>
 </sdf>
