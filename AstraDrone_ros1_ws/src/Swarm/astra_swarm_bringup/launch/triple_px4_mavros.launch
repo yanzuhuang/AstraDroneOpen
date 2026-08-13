@@ -11,6 +11,8 @@
   <arg name="uav1_enabled" default="true"/>
   <arg name="uav2_enabled" default="true"/>
   <arg name="uav3_enabled" default="true"/>
+  <arg name="d435_enabled" default="true"/>
+  <arg name="lidar_downsample" default="1"/>
   <arg name="spawn_y" default="0.0"/>
 
   <env name="PATH"
@@ -48,7 +50,9 @@
                   uav_id:=1 model_name:=uav1 base_model:=iris_without_GPS_0
                   robot_namespace:=/uav1 frame_prefix:=uav1
                   gazebo_camera_name:=UAV1_Camera
-                  camera_namespace:=/uav1/d435 lidar_namespace:=/uav1/livox"/>
+                  camera_namespace:=/uav1/d435 lidar_namespace:=/uav1/livox
+                  d435_enabled:=$(arg d435_enabled)
+                  lidar_downsample:=$(arg lidar_downsample)"/>
     </include>
     <group>
       <!-- Keep MAVROS' generic map_ned/odom_ned/base_link_frd helpers on a
@@ -80,7 +84,9 @@
                   uav_id:=2 model_name:=uav2 base_model:=iris_without_GPS_1
                   robot_namespace:=/uav2 frame_prefix:=uav2
                   gazebo_camera_name:=UAV2_Camera
-                  camera_namespace:=/uav2/d435 lidar_namespace:=/uav2/livox"/>
+                  camera_namespace:=/uav2/d435 lidar_namespace:=/uav2/livox
+                  d435_enabled:=$(arg d435_enabled)
+                  lidar_downsample:=$(arg lidar_downsample)"/>
     </include>
     <group>
       <remap from="/tf" to="/uav2/mavros/tf"/>
@@ -110,7 +116,9 @@
                   uav_id:=3 model_name:=uav3 base_model:=iris_without_GPS_2
                   robot_namespace:=/uav3 frame_prefix:=uav3
                   gazebo_camera_name:=UAV3_Camera
-                  camera_namespace:=/uav3/d435 lidar_namespace:=/uav3/livox"/>
+                  camera_namespace:=/uav3/d435 lidar_namespace:=/uav3/livox
+                  d435_enabled:=$(arg d435_enabled)
+                  lidar_downsample:=$(arg lidar_downsample)"/>
     </include>
     <group>
       <remap from="/tf" to="/uav3/mavros/tf"/>

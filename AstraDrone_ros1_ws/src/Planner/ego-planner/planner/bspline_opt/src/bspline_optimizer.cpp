@@ -1,9 +1,18 @@
 #include "bspline_opt/bspline_optimizer.h"
 #include "bspline_opt/gradient_descent_optimizer.h"
+#include <cmath>
 // using namespace std;
 
 namespace ego_planner
 {
+
+  bool BsplineOptimizer::setMaxVelocity(double max_velocity)
+  {
+    if (!std::isfinite(max_velocity) || max_velocity <= 0.0)
+      return false;
+    max_vel_ = max_velocity;
+    return true;
+  }
 
   void BsplineOptimizer::setParam(ros::NodeHandle &nh)
   {

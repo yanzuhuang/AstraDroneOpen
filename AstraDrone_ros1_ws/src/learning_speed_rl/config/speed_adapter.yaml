@@ -1,0 +1,50 @@
+policy:
+  mode: mock
+  mock_default_v_max: 0.20
+  reviewed_model_path: ""
+
+timing:
+  policy_rate_hz: 10.0
+  odom_timeout_sec: 0.5
+  command_timeout_sec: 0.5
+  occupancy_timeout_sec: 1.0
+
+safety:
+  v_max_min: 0.05
+  v_max_max: 0.20
+  initial_v_max: 0.20
+  rise_rate_mps2: 0.08
+  fall_rate_mps2: 0.12
+  maximum_step_mps: 0.02
+  low_pass_alpha: 0.45
+  hysteresis_mps: 0.005
+  applied_tolerance_mps: 0.005
+
+observation:
+  map_size_xyz_m: [24.0, 24.0, 8.0]
+  map_resolution_m: 0.50
+  maximum_cloud_points: 200000
+  velocity_filter_alpha: 0.30
+  acceleration_filter_alpha: 0.20
+  normalization_scales:
+    [20.0, 20.0, 10.0,
+     0.5, 0.5, 0.5,
+     1.0, 1.0, 1.0,
+     0.5, 0.5, 0.5,
+     20.0, 20.0, 10.0,
+     0.5, 0.5, 0.5,
+     1.0, 1.0, 1.0,
+     0.20]
+
+topics:
+  odom: Odometry
+  occupancy: stage3/occupancy_inflate
+  position_command: planning/pos_cmd
+  local_goal: move_base_simple/goal
+  mock_v_max: learning_speed/mock_v_max
+  raw_v_max: learning_speed/raw_v_max
+  safe_v_max: learning_speed/v_max
+  ego_applied_v_max: learning_speed/applied_v_max
+  observation_ready: learning_speed/observation_ready
+  low_dim_observation: learning_speed/observation/low_dim
+  diagnostics: learning_speed/diagnostics

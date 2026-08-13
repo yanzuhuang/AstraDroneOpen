@@ -38,6 +38,10 @@ namespace ego_planner
 
     void initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis = NULL);
 
+    // Runtime interface only: keep the manager time parameterization and the
+    // optimizer feasibility cost on one audited velocity limit.
+    bool setMaxVelocity(double max_velocity);
+
     void deliverTrajToOptimizer(void) { bspline_optimizer_->setSwarmTrajs(&swarm_trajs_buf_); };
 
     void setDroneIdtoOpt(void) { bspline_optimizer_->setDroneId(pp_.drone_id); }

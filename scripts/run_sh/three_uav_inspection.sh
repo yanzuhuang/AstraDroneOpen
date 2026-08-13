@@ -10,6 +10,10 @@ px4_root="${ASTRA_PX4_ROOT:-/home/yanzu/PX4-Autopilot}"
 enable_control=false
 gui=false
 rviz=false
+learning_speed=false
+d435_enabled=true
+lidar_downsample=1
+world_file="$repo_root/simulation/astra_gazebo_worlds/worksite.world"
 record_mode="light"
 results_dir=""
 results_dir_requested=false
@@ -19,6 +23,24 @@ while (($#)); do
     --control) enable_control=true ;;
     --gui) gui=true ;;
     --rviz) rviz=true ;;
+    --learning-speed) learning_speed=true ;;
+    --disable-d435) d435_enabled=false ;;
+    --lidar-downsample)
+      shift
+      if (($# == 0)) || [[ ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+        echo "--lidar-downsample requires a positive integer" >&2
+        exit 2
+      fi
+      lidar_downsample="$1"
+      ;;
+    --world)
+      shift
+      if (($# == 0)) || [[ ! -f "$1" ]]; then
+        echo "--world requires an existing Gazebo world file" >&2
+        exit 2
+      fi
+      world_file="$(realpath "$1")"
+      ;;
     --record)
       shift
       if (($# == 0)); then
@@ -51,11 +73,15 @@ while (($#)); do
       duration_seconds="$1"
       ;;
     --help)
-      echo "three_uav_inspection.sh [--control] [--gui] [--rviz] [--record none|light|full] [--duration SEC] [--results-dir DIR]"
+      echo "three_uav_inspection.sh [--control] [--gui] [--rviz] [--learning-speed] [--disable-d435] [--lidar-downsample N] [--world FILE] [--record none|light|full] [--duration SEC] [--results-dir DIR]"
       echo "The default --record light mode stores state and trajectory evidence without point clouds or Gazebo model states."
       echo "Use --record none to retain no task evidence, bag, CSV, summary, launch log or trajectory plots."
       echo "Light and full modes save trajectory_xy.png and trajectory_3d.png when swarm.csv contains samples."
       echo "Use --results-dir to select a timestamped runtime_artifacts/ directory for light or full mode."
+      echo "Use --learning-speed to opt in all three EGO planners and start one mock speed adapter per UAV."
+      echo "Use --disable-d435 only when the unused Gazebo Realsense plugin cannot initialize; Mid360/FAST-LIO remains enabled."
+      echo "Use --lidar-downsample N to reduce Mid360 Gazebo rays on resource-constrained hosts; the validated default is 1."
+      echo "Use --world FILE for an explicit validation scene; the existing worksite.world remains the default."
       exit 0
       ;;
     *)
@@ -120,7 +146,7 @@ else
     git -C "$repo_root" branch --show-current
     git -C "$repo_root" rev-parse HEAD
     git -C "$repo_root" status --short --branch
-    echo "mode=$mode gui=$gui rviz=$rviz record_mode=$record_mode duration_seconds=$duration_seconds"
+    echo "mode=$mode gui=$gui rviz=$rviz learning_speed=$learning_speed d435_enabled=$d435_enabled lidar_downsample=$lidar_downsample world=$world_file record_mode=$record_mode duration_seconds=$duration_seconds"
   } >"$results_dir/run_metadata.txt"
 fi
 
@@ -167,6 +193,10 @@ if [[ "$record_mode" != none ]]; then
 fi
 launch_args=(astra_swarm_bringup triple_tower_inspection.launch
   "enable_control:=$enable_control" "gui:=$gui" "start_rviz:=$rviz"
+  "world:=$world_file"
+  "learning_speed_enabled:=$learning_speed"
+  "d435_enabled:=$d435_enabled"
+  "lidar_downsample:=$lidar_downsample"
   "uav1_report_file:=$uav1_report_file"
   "uav2_report_file:=$uav2_report_file"
   "uav3_report_file:=$uav3_report_file"
@@ -204,6 +234,7 @@ for uid in 1 2 3; do
   prefix="/uav${uid}"
   topics+=(
     "$prefix/mavros/local_position/pose_framed"
+    "$prefix/mavros/local_position/velocity_local"
     "$prefix/mavros/state"
     "$prefix/mavros/extended_state"
     "$prefix/mavros/timesync_status"
@@ -221,6 +252,13 @@ for uid in 1 2 3; do
     "$prefix/planning/bspline"
     "$prefix/planning/pos_cmd"
     "$prefix/planner/status"
+    "$prefix/learning_speed/mock_v_max"
+    "$prefix/learning_speed/raw_v_max"
+    "$prefix/learning_speed/v_max"
+    "$prefix/learning_speed/applied_v_max"
+    "$prefix/learning_speed/observation_ready"
+    "$prefix/learning_speed/observation/low_dim"
+    "$prefix/learning_speed/diagnostics"
     "$prefix/tower_mission/state"
     "$prefix/tower_mission/current_target"
     "$prefix/tower_mission/current_sector"

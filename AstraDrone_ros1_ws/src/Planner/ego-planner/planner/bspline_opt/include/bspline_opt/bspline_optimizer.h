@@ -125,6 +125,8 @@ namespace ego_planner
 
     inline int getOrder(void) { return order_; }
     inline double getSwarmClearance(void) { return swarm_clearance_; }
+    bool setMaxVelocity(double max_velocity);
+    inline double getMaxVelocity(void) const { return max_vel_; }
 
   private:
     GridMap::Ptr grid_map_;

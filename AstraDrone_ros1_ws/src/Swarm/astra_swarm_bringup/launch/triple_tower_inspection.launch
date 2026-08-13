@@ -18,6 +18,15 @@
   <arg name="gui" default="true"/>
   <arg name="start_rviz" default="true"/>
   <arg name="use_sim_time" default="true"/>
+  <arg name="world"
+       default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
+  <!-- D435 is not part of the current Mid360/FAST-LIO/EGO planning chain.
+       Default true preserves the existing simulation; false is an explicit
+       host-rendering workaround, not a mission or planner mode. -->
+  <arg name="d435_enabled" default="true"/>
+  <!-- Mid360 plugin-level ray decimation.  Keep 1 as the validated default;
+       larger integers are explicit simulation resource trade-offs. -->
+  <arg name="lidar_downsample" default="1"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/low_altitude_inspection.yaml"/>
   <arg name="takeoff_interval_sec" default="0.0"/>
@@ -42,6 +51,15 @@
        default="$(arg low_altitude_enabled)"/>
   <arg name="uav3_orbit_speed_scale_enabled"
        default="$(arg low_altitude_enabled)"/>
+  <arg name="learning_speed_enabled" default="false"/>
+  <arg name="uav1_learning_speed_enabled"
+       default="$(arg learning_speed_enabled)"/>
+  <arg name="uav2_learning_speed_enabled"
+       default="$(arg learning_speed_enabled)"/>
+  <arg name="uav3_learning_speed_enabled"
+       default="$(arg learning_speed_enabled)"/>
+  <arg name="learning_speed_config"
+       default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
   <arg name="uav1_entry_sector" default="7"/>
   <arg name="uav2_entry_sector" default="8"/>
   <arg name="uav3_entry_sector" default="1"/>
@@ -104,12 +122,15 @@
            file="$(find astra_swarm_bringup)/launch/triple_px4_mavros.launch">
     <arg name="gui" value="$(arg gui)"/>
     <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="world" value="$(arg world)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
     <arg name="uav3_spawn_x" value="$(arg uav3_spawn_x)"/>
     <arg name="uav1_enabled" value="$(arg uav1_enabled)"/>
     <arg name="uav2_enabled" value="$(arg uav2_enabled)"/>
     <arg name="uav3_enabled" value="$(arg uav3_enabled)"/>
+    <arg name="d435_enabled" value="$(arg d435_enabled)"/>
+    <arg name="lidar_downsample" value="$(arg lidar_downsample)"/>
     <arg name="spawn_y" value="$(arg spawn_y)"/>
   </include>
 
@@ -143,6 +164,11 @@
          value="$(arg uav1_orbit_speed_scale_enabled)"/>
     <arg name="uav2_orbit_speed_scale_enabled"
          value="$(arg uav2_orbit_speed_scale_enabled)"/>
+    <arg name="uav1_learning_speed_enabled"
+         value="$(arg uav1_learning_speed_enabled)"/>
+    <arg name="uav2_learning_speed_enabled"
+         value="$(arg uav2_learning_speed_enabled)"/>
+    <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
     <arg name="takeoff_delay" value="$(arg takeoff_interval_sec)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
@@ -347,6 +373,9 @@
          value="$(arg uav3_orbit_permission_enabled)"/>
     <arg name="orbit_speed_scale_enabled"
          value="$(arg uav3_orbit_speed_scale_enabled)"/>
+    <arg name="learning_speed_enabled"
+         value="$(arg uav3_learning_speed_enabled)"/>
+    <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
     <arg name="entry_sector" value="$(arg uav3_entry_sector)"/>
     <arg name="entry_angle_deg" value="$(arg uav3_entry_angle_deg)"/>
     <arg name="pre_entry_radius" value="$(arg pre_entry_radius)"/>

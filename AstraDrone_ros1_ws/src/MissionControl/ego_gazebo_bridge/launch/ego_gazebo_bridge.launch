@@ -62,6 +62,15 @@
   <arg name="swarm_origin_y" default="0.0"/>
   <arg name="swarm_origin_z" default="0.0"/>
   <arg name="swarm_origin_yaw" default="0.0"/>
+  <!-- Optional interface-only EGO velocity constraint.  Its maximum is kept
+       at the statically audited max_vel ceiling. -->
+  <arg name="dynamic_speed_limit_enabled" default="false"/>
+  <arg name="dynamic_speed_limit_topic" default="learning_speed/v_max"/>
+  <arg name="dynamic_speed_limit_applied_topic"
+       default="learning_speed/applied_v_max"/>
+  <arg name="dynamic_speed_limit_minimum" default="0.05"/>
+  <arg name="dynamic_speed_limit_replan_delta" default="0.05"/>
+  <arg name="dynamic_speed_limit_replan_cooldown" default="1.0"/>
 
   <!--
     The Gazebo MID360/FAST-LIO stack and MAVROS local ENU start aligned in this
@@ -112,6 +121,19 @@
     <arg name="swarm_origin_y" value="$(arg swarm_origin_y)"/>
     <arg name="swarm_origin_z" value="$(arg swarm_origin_z)"/>
     <arg name="swarm_origin_yaw" value="$(arg swarm_origin_yaw)"/>
+    <arg name="dynamic_speed_limit_enabled"
+         value="$(arg dynamic_speed_limit_enabled)"/>
+    <arg name="dynamic_speed_limit_topic"
+         value="$(arg dynamic_speed_limit_topic)"/>
+    <arg name="dynamic_speed_limit_applied_topic"
+         value="$(arg dynamic_speed_limit_applied_topic)"/>
+    <arg name="dynamic_speed_limit_minimum"
+         value="$(arg dynamic_speed_limit_minimum)"/>
+    <arg name="dynamic_speed_limit_maximum" value="$(arg max_vel)"/>
+    <arg name="dynamic_speed_limit_replan_delta"
+         value="$(arg dynamic_speed_limit_replan_delta)"/>
+    <arg name="dynamic_speed_limit_replan_cooldown"
+         value="$(arg dynamic_speed_limit_replan_cooldown)"/>
     <!-- The EGO FSM consumes the stamped planner goal directly.  The
          waypoint-generator Path remains available for visualization but is
          not silently wired into a PoseStamped subscriber. -->

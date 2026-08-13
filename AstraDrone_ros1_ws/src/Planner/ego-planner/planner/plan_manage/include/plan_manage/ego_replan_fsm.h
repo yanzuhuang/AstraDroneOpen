@@ -10,6 +10,7 @@
 #include <sensor_msgs/Imu.h>
 #include <ros/ros.h>
 #include <std_msgs/Empty.h>
+#include <std_msgs/Float64.h>
 #include <astra_custom_msgs/PlannerStatus.h>
 #include <vector>
 #include <visualization_msgs/Marker.h>
@@ -24,6 +25,7 @@
 #include <traj_utils/planning_visualization.h>
 #include <plan_manage/planning_status_tracker.h>
 #include <plan_manage/swarm_frame_transform.h>
+#include <plan_manage/dynamic_speed_limit.h>
 
 using std::vector;
 
@@ -69,6 +71,12 @@ namespace ego_planner
     bool use_goal_height_;
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
+    bool dynamic_speed_limit_enabled_{false};
+    double current_speed_limit_{0.0};
+    double last_replan_speed_limit_{0.0};
+    double speed_limit_replan_cooldown_{1.0};
+    ros::Time last_speed_limit_replan_time_;
+    DynamicSpeedLimitGate dynamic_speed_limit_gate_;
 
     /* planning data */
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
@@ -91,8 +99,10 @@ namespace ego_planner
     ros::Timer exec_timer_, safety_timer_;
     ros::Timer status_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, swarm_trajs_sub_, broadcast_bspline_sub_, trigger_sub_, cancel_sub_;
+    ros::Subscriber speed_limit_sub_;
     ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, swarm_trajs_pub_, broadcast_bspline_pub_;
     ros::Publisher status_pub_;
+    ros::Publisher applied_speed_limit_pub_;
     std::string odom_topic_, waypoint_topic_, cancel_topic_, swarm_trajectory_topic_;
     std::string status_topic_, status_frame_id_, target_id_;
     std::string swarm_common_frame_;
@@ -125,6 +135,7 @@ namespace ego_planner
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void cancelCallback(const std_msgs::EmptyConstPtr &msg);
     void statusCallback(const ros::TimerEvent &e);
+    void speedLimitCallback(const std_msgs::Float64ConstPtr &msg);
     void recordPlanningResult(bool success, const std::string &failure_reason);
     const char *stateName() const;
     void swarmTrajsCallback(const traj_utils::MultiBsplinesPtr &msg);

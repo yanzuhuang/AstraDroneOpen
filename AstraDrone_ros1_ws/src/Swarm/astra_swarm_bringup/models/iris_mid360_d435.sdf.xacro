@@ -14,6 +14,8 @@
   <xacro:arg name="gazebo_camera_name" default="UAV1_Camera"/>
   <xacro:arg name="camera_namespace" default="/uav1/d435"/>
   <xacro:arg name="lidar_namespace" default="/uav1/livox"/>
+  <xacro:arg name="lidar_downsample" default="1"/>
+  <xacro:arg name="d435_enabled" default="true"/>
 
   <xacro:property name="uav_id" value="$(arg uav_id)"/>
   <xacro:property name="model_name" value="$(arg model_name)"/>
@@ -99,7 +101,7 @@
           </ray>
           <visualize>true</visualize>
           <samples>20000</samples>
-          <downsample>1</downsample>
+          <downsample>$(arg lidar_downsample)</downsample>
           <csv_file_name>mid360-real-centr.csv</csv_file_name>
           <publish_pointcloud_type>3</publish_pointcloud_type>
           <ros_topic>${lidar_namespace}/lidar</ros_topic>
@@ -206,6 +208,12 @@
         </surface>
       </collision>
 
+      <!-- The current tower planner uses Mid360/FAST-LIO, not D435.  Keep the
+           camera enabled by default, but allow a launch to omit only its
+           sensors/plugins when the host rendering stack cannot initialize
+           the Realsense Gazebo plugin.  The physical mount and TF contract
+           remain present in both variants. -->
+      <xacro:if value="$(arg d435_enabled)">
       <sensor name="${d435_sensor_prefix}imu" type="imu">
         <always_on>true</always_on>
         <update_rate>100</update_rate>
@@ -318,12 +326,14 @@
         <update_rate>30</update_rate>
         <visualize>false</visualize>
       </sensor>
+      </xacro:if>
     </link>
     <joint name="d435_mount_joint" type="fixed">
       <parent>${base_model}::base_link</parent>
       <child>d435_link</child>
     </joint>
 
+    <xacro:if value="$(arg d435_enabled)">
     <plugin name="${gazebo_camera_name}_plugin"
             filename="librealsense_gazebo_plugin.so">
       <prefix>${d435_sensor_prefix}</prefix>
@@ -351,5 +361,6 @@
       <!-- Keep last: the upstream parser treats this as its terminator. -->
       <robotNamespace>${camera_namespace}</robotNamespace>
     </plugin>
+    </xacro:if>
   </model>
 </sdf>

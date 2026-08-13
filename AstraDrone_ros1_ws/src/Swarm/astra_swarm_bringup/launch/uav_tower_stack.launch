@@ -26,6 +26,12 @@
   <arg name="coordination_enabled" default="true"/>
   <arg name="orbit_permission_enabled" default="false"/>
   <arg name="orbit_speed_scale_enabled" default="false"/>
+  <arg name="learning_speed_enabled" default="false"/>
+  <arg name="learning_speed_config"
+       default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
+  <arg name="learning_speed_v_max_min" default="0.05"/>
+  <arg name="learning_speed_replan_delta" default="0.03"/>
+  <arg name="learning_speed_replan_cooldown" default="1.0"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/sector_inspection.yaml"/>
   <arg name="low_altitude_ego_config"
@@ -146,6 +152,18 @@
       <arg name="trajectory_color_r" value="$(arg trajectory_color_r)"/>
       <arg name="trajectory_color_g" value="$(arg trajectory_color_g)"/>
       <arg name="trajectory_color_b" value="$(arg trajectory_color_b)"/>
+      <arg name="dynamic_speed_limit_enabled"
+           value="$(arg learning_speed_enabled)"/>
+      <arg name="dynamic_speed_limit_topic"
+           value="learning_speed/v_max"/>
+      <arg name="dynamic_speed_limit_applied_topic"
+           value="learning_speed/applied_v_max"/>
+      <arg name="dynamic_speed_limit_minimum"
+           value="$(arg learning_speed_v_max_min)"/>
+      <arg name="dynamic_speed_limit_replan_delta"
+           value="$(arg learning_speed_replan_delta)"/>
+      <arg name="dynamic_speed_limit_replan_cooldown"
+           value="$(arg learning_speed_replan_cooldown)"/>
     </include>
 
     <node pkg="astra_tower_mission" type="occupancy_stamp_adapter_node"
@@ -155,6 +173,21 @@
       <param name="output_topic"
              value="/$(arg uav_ns)/stage3/occupancy_inflate"/>
       <param name="planning_frame" value="$(arg planning_frame)"/>
+    </node>
+
+    <!-- Opt-in only.  The adapter reads existing planner/state interfaces and
+         publishes one scalar constraint; it has no mission or control output. -->
+    <node if="$(arg learning_speed_enabled)" pkg="learning_speed_rl"
+          type="speed_adapter_node.py" name="speed_adapter"
+          output="screen" required="true">
+      <rosparam command="load" file="$(arg learning_speed_config)"/>
+      <param name="safety/v_max_max" value="$(arg max_vel)"/>
+      <param name="safety/initial_v_max" value="$(arg max_vel)"/>
+      <param name="policy/mock_default_v_max" value="$(arg max_vel)"/>
+      <param name="topics/odom" value="Odometry"/>
+      <param name="topics/occupancy" value="stage3/occupancy_inflate"/>
+      <param name="topics/position_command" value="planning/pos_cmd"/>
+      <param name="topics/local_goal" value="move_base_simple/goal"/>
     </node>
 
     <rosparam if="$(arg low_altitude_enabled)" command="load"

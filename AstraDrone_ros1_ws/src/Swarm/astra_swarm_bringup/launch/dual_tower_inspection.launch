@@ -30,6 +30,13 @@
        default="$(arg orbit_permission_enabled)"/>
   <arg name="uav1_orbit_speed_scale_enabled" default="false"/>
   <arg name="uav2_orbit_speed_scale_enabled" default="false"/>
+  <arg name="learning_speed_enabled" default="false"/>
+  <arg name="uav1_learning_speed_enabled"
+       default="$(arg learning_speed_enabled)"/>
+  <arg name="uav2_learning_speed_enabled"
+       default="$(arg learning_speed_enabled)"/>
+  <arg name="learning_speed_config"
+       default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
   <arg name="takeoff_delay" default="6.0"/>
   <arg name="uav1_top_height" default="34.0"/>
   <arg name="uav2_top_height" default="28.0"/>
@@ -345,6 +352,9 @@
          value="$(arg uav1_orbit_permission_enabled)"/>
     <arg name="orbit_speed_scale_enabled"
          value="$(arg uav1_orbit_speed_scale_enabled)"/>
+    <arg name="learning_speed_enabled"
+         value="$(arg uav1_learning_speed_enabled)"/>
+    <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
     <arg name="entry_sector" value="$(arg uav1_entry_sector)"/>
     <arg name="entry_angle_deg" value="$(arg uav1_entry_angle_deg)"/>
     <arg name="pre_entry_radius" value="$(arg pre_entry_radius)"/>
@@ -412,6 +422,9 @@
          value="$(arg uav2_orbit_permission_enabled)"/>
     <arg name="orbit_speed_scale_enabled"
          value="$(arg uav2_orbit_speed_scale_enabled)"/>
+    <arg name="learning_speed_enabled"
+         value="$(arg uav2_learning_speed_enabled)"/>
+    <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
     <arg name="entry_sector" value="$(arg uav2_entry_sector)"/>
     <arg name="entry_angle_deg" value="$(arg uav2_entry_angle_deg)"/>
     <arg name="pre_entry_radius" value="$(arg pre_entry_radius)"/>

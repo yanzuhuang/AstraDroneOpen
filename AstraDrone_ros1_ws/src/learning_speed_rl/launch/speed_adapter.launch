@@ -1,0 +1,25 @@
+<launch>
+  <arg name="namespace" default="vehicle"/>
+  <arg name="config_file"
+       default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
+  <arg name="static_max_vel" default="0.20"/>
+  <arg name="odom_topic" default="Odometry"/>
+  <arg name="occupancy_topic" default="stage3/occupancy_inflate"/>
+  <arg name="position_command_topic" default="planning/pos_cmd"/>
+  <arg name="local_goal_topic" default="move_base_simple/goal"/>
+
+  <group ns="$(arg namespace)">
+    <node pkg="learning_speed_rl" type="speed_adapter_node.py"
+          name="speed_adapter" output="screen" required="true">
+      <rosparam command="load" file="$(arg config_file)"/>
+      <param name="safety/v_max_max" value="$(arg static_max_vel)"/>
+      <param name="safety/initial_v_max" value="$(arg static_max_vel)"/>
+      <param name="policy/mock_default_v_max" value="$(arg static_max_vel)"/>
+      <param name="topics/odom" value="$(arg odom_topic)"/>
+      <param name="topics/occupancy" value="$(arg occupancy_topic)"/>
+      <param name="topics/position_command"
+             value="$(arg position_command_topic)"/>
+      <param name="topics/local_goal" value="$(arg local_goal_topic)"/>
+    </node>
+  </group>
+</launch>

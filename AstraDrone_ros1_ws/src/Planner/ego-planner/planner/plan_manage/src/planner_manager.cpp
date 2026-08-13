@@ -1,5 +1,6 @@
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
+#include <cmath>
 #include <thread>
 #include "visualization_msgs/Marker.h" // zx-todo
 
@@ -11,6 +12,17 @@ namespace ego_planner
   EGOPlannerManager::EGOPlannerManager() {}
 
   EGOPlannerManager::~EGOPlannerManager() {}
+
+  bool EGOPlannerManager::setMaxVelocity(double max_velocity)
+  {
+    if (!std::isfinite(max_velocity) || max_velocity <= 0.0 ||
+        !bspline_optimizer_ ||
+        !bspline_optimizer_->setMaxVelocity(max_velocity))
+      return false;
+
+    pp_.max_vel_ = max_velocity;
+    return true;
+  }
 
   void EGOPlannerManager::initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis)
   {
