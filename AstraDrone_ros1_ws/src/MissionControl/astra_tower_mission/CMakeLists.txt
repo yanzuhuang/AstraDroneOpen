@@ -148,5 +148,10 @@ if(CATKIN_ENABLE_TESTING)
     )
   endif()
 
+  catkin_add_gtest(mission_completion_test test/mission_completion_test.cpp)
+  if(TARGET mission_completion_test)
+    target_link_libraries(mission_completion_test ${catkin_LIBRARIES})
+  endif()
+
   add_rostest(test/sector_inspection_no_control.test)
 endif()

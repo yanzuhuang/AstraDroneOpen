@@ -2978,20 +2978,11 @@
       <link name='link'>
         <collision name='collision'>
           <geometry>
-            <heightmap>
-              <uri>model://vrc_driving_terrain/materials/textures/heightmap.png</uri>
-              <size>500 500 118</size>
-              <pos>0 0 -15</pos>
-              <texture>
-                <size>10</size>
-                <diffuse>__default__</diffuse>
-                <normal>__default__</normal>
-              </texture>
-              <blend>
-                <min_height>0</min_height>
-                <fade_dist>0</fade_dist>
-              </blend>
-            </heightmap>
+            <!-- Preserve the original height samples while avoiding Gazebo
+                 Classic's pathological ODE heightfield / multi-ray path. -->
+            <mesh>
+              <uri>model://vrc_driving_terrain/meshes/heightmap_collision.obj</uri>
+            </mesh>
           </geometry>
           <max_contacts>10</max_contacts>
           <surface>

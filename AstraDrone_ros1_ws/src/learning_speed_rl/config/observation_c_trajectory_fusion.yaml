@@ -1,0 +1,44 @@
+observation_c:
+  enabled: true
+  contract_version: scheme_c_trajectory_fusion_v1.0
+
+  # Current engineering experiment values, not final paper/training parameters.
+  trajectory_sample_count: 20
+  trajectory_sample_spacing: 0.25
+  trajectory_max_distance: 5.0
+  trajectory_sampling_mode: distance
+
+  # Adaptive spatial polyline tolerance for distance/arc-length integration.
+  arc_length_resolution_m: 0.02
+  arc_length_max_depth: 16
+  expected_lidar_bins: 3200
+
+  frames:
+    world: camera_init
+    body: body
+
+  timing:
+    state_buffer_capacity: 400
+    maximum_state_interpolation_gap_sec: 0.05
+    maximum_input_age_sec: 0.25
+    pending_lidar_capacity: 10
+    diagnostics_rate_hz: 2.0
+
+  system_state:
+    # Matches the existing speed adapter's causal FAST-LIO position-difference
+    # filter. FAST-LIO currently leaves nav_msgs/Odometry.twist unpopulated.
+    velocity_filter_alpha: 0.30
+    maximum_velocity_dt_sec: 0.50
+    v_max_buffer_capacity: 100
+    minimum_v_max: 0.01
+    maximum_v_max: 10.0
+
+  topics:
+    odom: Odometry
+    trajectory: planning/bspline
+    lidar_stamped: learning_speed/observation_v2/stamped
+    lidar_valid: learning_speed/observation_v2/valid
+    ego_applied_v_max: learning_speed/applied_v_max
+    observation: learning_speed/observation_c
+    valid: learning_speed/observation_c/valid
+    diagnostics: learning_speed/observation_c/diagnostics

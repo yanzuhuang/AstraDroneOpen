@@ -38,6 +38,126 @@ CandidatePoint candidate(double x, double y, double z = 5.0) {
   return point;
 }
 
+geometry_msgs::Point obstacleAtDistance(const CandidatePoint& target,
+                                        double distance) {
+  geometry_msgs::Point obstacle;
+  obstacle.x = target.x + distance;
+  obstacle.y = target.y;
+  obstacle.z = target.z;
+  return obstacle;
+}
+
+TEST(ClearanceSemantics, UnifiedSelectorUsesRepresentationNotCloudInflation) {
+  CandidateFilterConfig config;
+  config.minimum_clearance = 1.0;
+  config.map_additional_clearance = 0.5;
+
+  config.map_points_are_inflated = false;
+  EXPECT_DOUBLE_EQ(mappedTaskClearance(config), 1.0);
+  config.map_points_are_inflated = true;
+  EXPECT_DOUBLE_EQ(mappedTaskClearance(config), 0.5);
+}
+
+TEST(ClearanceSemantics, RawObstaclePointEightFailsAndOneTwoPasses) {
+  Sector sector = makeSector();
+  CandidateFilterConfig config;
+  config.minimum_clearance = 1.0;
+  config.map_points_are_inflated = false;
+  const geometry_msgs::Point current = obstacleAtDistance(candidate(8.0, 0.0),
+                                                          0.0);
+
+  CandidatePoint too_close = candidate(8.0, 0.0);
+  EXPECT_FALSE(evaluateCandidate(
+      &too_close, sector, current,
+      {obstacleAtDistance(too_close, 0.8)}, {}, true, config));
+  EXPECT_EQ(too_close.rejection_reason, "OCCUPANCY_OR_CLEARANCE");
+
+  CandidatePoint safe = candidate(8.0, 0.0);
+  EXPECT_TRUE(evaluateCandidate(
+      &safe, sector, current,
+      {obstacleAtDistance(safe, 1.2)}, {}, true, config));
+  EXPECT_TRUE(safe.accepted);
+}
+
+TEST(ClearanceSemantics, InflatedVoxelPointFourFailsAndPointEightPasses) {
+  Sector sector = makeSector();
+  CandidateFilterConfig config;
+  config.minimum_clearance = 1.0;
+  config.map_points_are_inflated = true;
+  config.map_additional_clearance = 0.5;
+  const geometry_msgs::Point current = obstacleAtDistance(candidate(8.0, 0.0),
+                                                          0.0);
+
+  CandidatePoint too_close = candidate(8.0, 0.0);
+  EXPECT_FALSE(evaluateCandidate(
+      &too_close, sector, current,
+      {obstacleAtDistance(too_close, 0.4)}, {}, true, config));
+
+  CandidatePoint safe = candidate(8.0, 0.0);
+  EXPECT_TRUE(evaluateCandidate(
+      &safe, sector, current,
+      {obstacleAtDistance(safe, 0.8)}, {}, true, config));
+}
+
+TEST(ClearanceSemantics, CurrentPreEntryInflatedDistancePoint967Passes) {
+  CandidatePoint pre_entry;
+  pre_entry.id = "PRE_ENTRY_UAV1_LEGACY";
+  pre_entry.x = -3.166798;
+  pre_entry.y = 3.080568;
+  pre_entry.z = 3.0;
+  geometry_msgs::Point voxel;
+  voxel.x = -4.125;
+  voxel.y = 3.125;
+  voxel.z = 2.875;
+  const double distance = std::sqrt(
+      std::pow(pre_entry.x - voxel.x, 2.0) +
+      std::pow(pre_entry.y - voxel.y, 2.0) +
+      std::pow(pre_entry.z - voxel.z, 2.0));
+  EXPECT_NEAR(distance, 0.96734, 1.0e-5);
+  EXPECT_TRUE(mappedEndpointClear(pre_entry, {voxel}, 0.5));
+  EXPECT_FALSE(mappedEndpointClear(pre_entry, {voxel}, 1.0));
+}
+
+TEST(ClearanceSemantics, EntryGateAndExitGateUseInflatedMargin) {
+  RouteConfig route;
+  route.center_x = 0.0;
+  route.center_y = 0.0;
+  route.tower_collision_radius = 2.0;
+  route.minimum_safety_distance = 2.0;
+  EntryGateConfig config;
+  config.inspection_height = 5.0;
+  config.minimum_height = 2.0;
+  config.maximum_height = 10.0;
+  config.minimum_radius = 15.0;
+  config.maximum_radius = 15.0;
+  config.preferred_radius = 15.0;
+  config.minimum_clearance = 1.0;
+  config.map_points_are_inflated = true;
+  config.map_additional_clearance = 0.5;
+  CandidatePoint entry = candidate(15.0, 0.0);
+  entry.id = "ENTRY_GATE";
+  geometry_msgs::Point current;
+  current.x = entry.x;
+  current.y = entry.y;
+  current.z = entry.z;
+  geometry_msgs::Point home;
+  EXPECT_TRUE(evaluateEntryGateCandidate(
+      &entry, route, current, home,
+      {obstacleAtDistance(entry, 0.8)}, {}, true, config));
+
+  CandidatePoint blocked_entry = candidate(15.0, 0.0);
+  blocked_entry.id = "ENTRY_GATE_BLOCKED";
+  EXPECT_FALSE(evaluateEntryGateCandidate(
+      &blocked_entry, route, current, home,
+      {obstacleAtDistance(blocked_entry, 0.4)}, {}, true, config));
+
+  CandidatePoint exit_gate = entry;
+  exit_gate.id = "EXIT_GATE";
+  EXPECT_TRUE(mappedEndpointClear(
+      exit_gate, {obstacleAtDistance(exit_gate, 0.8)},
+      mappedTaskClearance(config)));
+}
+
 TEST(InspectionCandidatePlanner, GoalInsideKnownObstacleIsRejected) {
   Sector sector = makeSector();
   CandidatePoint point = candidate(8.0, 0.0);
@@ -54,7 +174,6 @@ TEST(InspectionCandidatePlanner, CoarseObstacleClearanceIsAppliedExactlyOnce) {
   StaticObstacle obstacle{"pole", 6.0, 0.0, 5.0, 0.5, 0.0, 10.0};
   CandidateFilterConfig config;
   config.minimum_clearance = 1.0;
-  config.cloud_inflation = 0.4;
 
   CandidatePoint exactly_safe = candidate(7.5, 0.0);
   EXPECT_TRUE(evaluateCandidate(&exactly_safe, sector,
@@ -123,7 +242,6 @@ TEST(InspectionCandidatePlanner, LowAltitudeBlockedNominalUsesSameSectorCandidat
 
   CandidateFilterConfig config;
   config.minimum_clearance = 1.0;
-  config.cloud_inflation = 0.4;
   config.map_points_are_inflated = true;
   config.map_additional_clearance = 0.5;
   config.unknown_is_hard_constraint = false;
@@ -419,7 +537,6 @@ TEST(InspectionCandidatePlanner, BlockedStraightCorridorIsSoftRisk) {
   cloud.z = 5.0;
   CandidateFilterConfig config;
   config.minimum_clearance = 1.0;
-  config.cloud_inflation = 0.5;
   EXPECT_TRUE(evaluateCandidate(&point, sector, current, {cloud}, {}, true,
                                 config));
   EXPECT_TRUE(point.straight_corridor_blocked);
@@ -442,7 +559,6 @@ TEST(InspectionCandidatePlanner, BlockedKnownObstacleCorridorIsRejectedWhenHard)
   tree.z_max = 8.0;
   CandidateFilterConfig config;
   config.minimum_clearance = 1.0;
-  config.cloud_inflation = 0.5;
   config.known_obstacle_is_hard_constraint = true;
   config.known_obstacle_corridor_is_hard_constraint = true;
   EXPECT_FALSE(evaluateCandidate(&point, sector, current, {}, {tree}, true,
@@ -974,9 +1090,9 @@ TEST(InspectionCandidatePlanner, ClockwiseAndCounterClockwiseRecoveryAreBothAsse
                                        counter_clockwise, &locked);
   EXPECT_LT(cw.r2.y, cw.r1.y);
   EXPECT_GT(ccw.r2.y, ccw.r1.y);
-  EXPECT_TRUE(assessRecoveryTargets(current, cw, {}, {}, 1.0, 0.5)
+  EXPECT_TRUE(assessRecoveryTargets(current, cw, {}, {}, 0.5, 1.0, 0.5)
                   .endpoints_safe);
-  EXPECT_TRUE(assessRecoveryTargets(current, ccw, {}, {}, 1.0, 0.5)
+  EXPECT_TRUE(assessRecoveryTargets(current, ccw, {}, {}, 0.5, 1.0, 0.5)
                   .endpoints_safe);
 }
 
@@ -1619,8 +1735,9 @@ TEST(InspectionCandidatePlanner, BlockedLayerHeightUsesLocalDescentThenRestoresN
   current.z = 5.0;
   CandidateFilterConfig config;
 
-  // Occupy every original-height endpoint in the current sector. The same
-  // radial/angle location remains clear one metre below.
+  // Occupy every original-height endpoint in the current sector. With the
+  // configured 2 m raw-point clearance, the same radial/angle location is
+  // accepted exactly two metres below.
   std::vector<geometry_msgs::Point> blocked_layer_points;
   for (const auto& point : sectors[0].candidates) {
     if (std::abs(point.z - route.height) < 1.0e-9) {
@@ -1638,7 +1755,7 @@ TEST(InspectionCandidatePlanner, BlockedLayerHeightUsesLocalDescentThenRestoresN
   const int lowered =
       chooseBestCandidate(sectors[0], nullptr, 0.0);
   ASSERT_GE(lowered, 0);
-  EXPECT_DOUBLE_EQ(sectors[0].candidates[lowered].z, 2.0);
+  EXPECT_DOUBLE_EQ(sectors[0].candidates[lowered].z, 3.0);
   EXPECT_NEAR(std::hypot(sectors[0].candidates[lowered].x,
                          sectors[0].candidates[lowered].y),
               route.radius, 1.0e-9);

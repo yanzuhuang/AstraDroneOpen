@@ -1,0 +1,79 @@
+observation_v2:
+  enabled: true
+  contract_version: lidar_surrogate_v2.0
+
+  # Flying-on-Point-Clouds reference values. They are configurable reference
+  # defaults, not claimed optimal for AstraDroneOpen tower inspection.
+  history_frames: 5
+  minimum_history_frames: 5
+  cloud_rate_reference_hz: 10.0
+  voxel_downsample_m: 0.05
+  angular_resolution_deg: 4.5
+  number_of_bins: 3200
+  distance_clip_m: 10.0
+  unknown_encoding_offset_m: 20.0
+
+  angular_partition:
+    azimuth_min_deg: -180.0
+    azimuth_max_deg: 180.0
+    elevation_min_deg: -90.0
+    elevation_max_deg: 90.0
+
+  timing:
+    pose_buffer_capacity: 400
+    maximum_pose_interpolation_gap_sec: 0.05
+    maximum_cloud_pose_delta_sec: 0.05
+    maximum_pose_age_sec: 0.20
+    diagnostics_rate_hz: 2.0
+
+  preprocessing:
+    maximum_input_points: 250000
+    minimum_range_m: 0.20
+
+  # FoV bounds were audited from the exact Mid360 scan pattern used by the
+  # Gazebo plugin (mid360-real-centr.csv): azimuth nearly 360 degrees,
+  # zenith 37.836..97.2123 degrees => elevation -7.2123..52.164 degrees.
+  # The estimator samples historical calibrated frusta and caps coverage at
+  # the nearest return in a coarser angular cell. This is an auditable
+  # approximation, not a claim to reproduce the unpublished 20-d_unknown code.
+  unknown_estimator:
+    mode: historical_fov_radial_sampling_v1
+    radial_sample_step_m: 0.25
+    fov_azimuth_min_deg: -180.0
+    fov_azimuth_max_deg: 180.0
+    fov_elevation_min_deg: -7.2123
+    fov_elevation_max_deg: 52.1640
+    occlusion_angular_resolution_deg: 4.5
+    occlusion_margin_m: 0.10
+
+  # FAST-LIO mid360.yaml LiDAR -> IMU/body extrinsic. The registered filtered
+  # cloud is already in camera_init; these values are used only to place each
+  # historical sensor FoV relative to the FAST-LIO body pose.
+  sensor_extrinsic:
+    translation_body_sensor_m: [-0.011, -0.02329, 0.04412]
+    rotation_body_sensor_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+  frames:
+    world: camera_init
+    body: body
+    sensor: mid360_link
+
+  topics:
+    cloud: stage3/cloud_registered_filtered
+    odom: Odometry
+    surrogate: learning_speed/observation_v2/surrogate
+    stamped: learning_speed/observation_v2/stamped
+    valid: learning_speed/observation_v2/valid
+    valid_mask: learning_speed/observation_v2/lidar_valid_mask
+    unknown_mask: learning_speed/observation_v2/unknown_mask
+    semantic: learning_speed/observation_v2/semantic
+    diagnostics: learning_speed/observation_v2/diagnostics
+    aligned_history: learning_speed/observation_v2/aligned_history
+    visualization: learning_speed/observation_v2/visualization
+
+  visualization:
+    enabled: true
+    bin_stride: 1
+    ray_width_m: 0.012
+    unknown_ray_length_m: 1.0
+    maximum_aligned_points: 100000

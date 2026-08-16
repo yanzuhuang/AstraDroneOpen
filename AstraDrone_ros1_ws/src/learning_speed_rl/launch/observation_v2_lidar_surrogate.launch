@@ -1,0 +1,22 @@
+<launch>
+  <arg name="namespace" default="vehicle"/>
+  <arg name="config_file"
+       default="$(find learning_speed_rl)/config/observation_v2_lidar_surrogate.yaml"/>
+  <arg name="cloud_topic" default="stage3/cloud_registered_filtered"/>
+  <arg name="odom_topic" default="Odometry"/>
+  <arg name="world_frame" default="camera_init"/>
+  <arg name="body_frame" default="body"/>
+  <arg name="sensor_frame" default="mid360_link"/>
+
+  <group ns="$(arg namespace)">
+    <node pkg="learning_speed_rl" type="observation_v2_node.py"
+          name="observation_v2" output="screen" required="true">
+      <rosparam command="load" file="$(arg config_file)"/>
+      <param name="observation_v2/topics/cloud" value="$(arg cloud_topic)"/>
+      <param name="observation_v2/topics/odom" value="$(arg odom_topic)"/>
+      <param name="observation_v2/frames/world" value="$(arg world_frame)"/>
+      <param name="observation_v2/frames/body" value="$(arg body_frame)"/>
+      <param name="observation_v2/frames/sensor" value="$(arg sensor_frame)"/>
+    </node>
+  </group>
+</launch>

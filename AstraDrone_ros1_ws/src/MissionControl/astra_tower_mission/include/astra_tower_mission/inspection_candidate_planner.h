@@ -84,9 +84,8 @@ struct EntryGateConfig {
   double maximum_height{45.0};
   double preferred_radius{16.0};
   double minimum_clearance{2.0};
-  double cloud_inflation{0.4};
   bool map_points_are_inflated{false};
-  double map_additional_clearance{0.0};
+  double map_additional_clearance{0.5};
   double corridor_sample_step{0.5};
   double minimum_radius{16.0};
   double maximum_radius{24.0};
@@ -127,9 +126,8 @@ struct Sector {
 struct CandidateFilterConfig {
   double minimum_clearance{2.0};
   double map_timeout{0.5};
-  double cloud_inflation{0.4};
   bool map_points_are_inflated{false};
-  double map_additional_clearance{0.0};
+  double map_additional_clearance{0.5};
   double unknown_ratio_limit{0.25};
   bool unknown_is_hard_constraint{true};
   bool known_obstacle_is_hard_constraint{true};
@@ -178,6 +176,21 @@ struct ReturnEgressConfig {
   double corridor_sample_step{0.5};
   double minimum_goal_separation{0.5};
 };
+
+// Select the task-side distance threshold from the representation being
+// queried. Raw/filtered points and coarse geometry use minimum_clearance;
+// EGO's already-inflated occupancy uses only map_additional_clearance.
+double mappedTaskClearance(double minimum_clearance,
+                           bool map_points_are_inflated,
+                           double map_additional_clearance);
+
+double mappedTaskClearance(const CandidateFilterConfig& config);
+double mappedTaskClearance(const EntryGateConfig& config);
+
+bool mappedEndpointClear(
+    const CandidatePoint& target,
+    const std::vector<geometry_msgs::Point>& map_points,
+    double clearance);
 
 std::vector<Sector> buildInspectionSectors(const RouteConfig& route,
                                             int sector_count,
@@ -339,7 +352,8 @@ RecoveryAssessment assessRecoveryTargets(
     const RecoveryTargets& targets,
     const std::vector<geometry_msgs::Point>& cloud_points,
     const std::vector<StaticObstacle>& obstacles,
-    double inflation,
+    double map_clearance,
+    double static_clearance,
     double sample_step);
 
 bool recoveryTargetsStayInSector(const RecoveryTargets& targets,

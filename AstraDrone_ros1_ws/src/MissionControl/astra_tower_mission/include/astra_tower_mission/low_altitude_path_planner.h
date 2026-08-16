@@ -27,7 +27,7 @@ struct LevelPathCostWeights {
 struct LevelPathConfig {
   double altitude{3.0};
   double vertical_half_extent{0.2};
-  double additional_clearance{0.6};
+  double additional_clearance{0.5};
   double resolution{0.4};
   double boundary_margin{6.0};
   double maximum_segment_length{5.0};

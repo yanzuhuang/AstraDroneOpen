@@ -6,6 +6,7 @@
  */
 #include "astra_tower_mission/ego_task_utils.h"
 #include "astra_tower_mission/inspection_candidate_planner.h"
+#include "astra_tower_mission/mission_completion.h"
 
 #include <astra_custom_msgs/InspectionCandidate.h>
 #include <astra_custom_msgs/InspectionCandidateArray.h>
@@ -341,7 +342,7 @@ class SectorInspectionMissionNode {
     private_node_.param("low_altitude/vertical_half_extent",
                         level_path_config_.vertical_half_extent, 0.2);
     private_node_.param("low_altitude/additional_clearance",
-                        level_path_config_.additional_clearance, 0.6);
+                        level_path_config_.additional_clearance, 0.5);
     private_node_.param("low_altitude/grid_resolution",
                         level_path_config_.resolution, 0.4);
     private_node_.param("low_altitude/boundary_margin",
@@ -416,6 +417,18 @@ class SectorInspectionMissionNode {
     private_node_.param<std::string>("outputs/altitude_policy",
                                      altitude_policy_topic_,
                                      "/tower_mission/altitude_policy");
+    private_node_.param<std::string>("outputs/mission_success",
+                                     mission_success_topic_,
+                                     "/tower_mission/mission_success");
+    private_node_.param<std::string>("outputs/mission_failure",
+                                     mission_failure_topic_,
+                                     "/tower_mission/mission_failure");
+    private_node_.param<std::string>("outputs/mission_done",
+                                     mission_done_topic_,
+                                     "/tower_mission/mission_done");
+    private_node_.param<std::string>("outputs/orbit_complete",
+                                     orbit_complete_topic_,
+                                     "/tower_mission/orbit_complete");
     private_node_.param<std::string>("services/tracking", tracking_service_,
                                      "/ego_mavros_bridge/enable_tracking");
     private_node_.param<std::string>("services/cancel", cancel_service_,
@@ -555,12 +568,10 @@ class SectorInspectionMissionNode {
                         entry_gate_config_.maximum_horizontal_distance, 60.0);
     private_node_.param("entry_gate/minimum_clearance",
                         entry_gate_config_.minimum_clearance, 2.0);
-    private_node_.param("entry_gate/cloud_inflation",
-                        entry_gate_config_.cloud_inflation, 0.4);
     private_node_.param("entry_gate/map_points_are_inflated",
                         entry_gate_config_.map_points_are_inflated, false);
     private_node_.param("entry_gate/map_additional_clearance",
-                        entry_gate_config_.map_additional_clearance, 0.0);
+                        entry_gate_config_.map_additional_clearance, 0.5);
     private_node_.param("entry_gate/corridor_sample_step",
                         entry_gate_config_.corridor_sample_step, 0.5);
     private_node_.param("entry_gate/clearance_weight",
@@ -620,12 +631,10 @@ class SectorInspectionMissionNode {
 
     private_node_.param("candidate/minimum_clearance", filter_config_.minimum_clearance,
                         2.0);
-    private_node_.param("candidate/cloud_inflation", filter_config_.cloud_inflation,
-                        0.4);
     private_node_.param("candidate/map_points_are_inflated",
                         filter_config_.map_points_are_inflated, false);
     private_node_.param("candidate/map_additional_clearance",
-                        filter_config_.map_additional_clearance, 0.0);
+                        filter_config_.map_additional_clearance, 0.5);
     private_node_.param("candidate/unknown_is_hard_constraint",
                         filter_config_.unknown_is_hard_constraint, false);
     private_node_.param("candidate/known_obstacle_is_hard_constraint",
@@ -1096,6 +1105,15 @@ class SectorInspectionMissionNode {
         node_.advertise<nav_msgs::Path>(mission_route_topic_, 1, true);
     altitude_policy_pub_ =
         node_.advertise<std_msgs::String>(altitude_policy_topic_, 1, true);
+    mission_success_pub_ =
+        node_.advertise<std_msgs::Bool>(mission_success_topic_, 1, true);
+    mission_failure_pub_ =
+        node_.advertise<std_msgs::Bool>(mission_failure_topic_, 1, true);
+    mission_done_pub_ =
+        node_.advertise<std_msgs::Bool>(mission_done_topic_, 1, true);
+    orbit_complete_pub_ =
+        node_.advertise<std_msgs::Bool>(orbit_complete_topic_, 1, true);
+    publishMissionCompletion();
     geometry_msgs::PointStamped tower_center;
     tower_center.header.stamp = ros::Time::now();
     tower_center.header.frame_id = route_.frame_id;
@@ -1618,16 +1636,8 @@ class SectorInspectionMissionNode {
         !std::isfinite(clearance) || clearance < 0.0) {
       return false;
     }
-    for (const auto& occupied : planningMapPoints()) {
-      const double dx = target.x - occupied.x;
-      const double dy = target.y - occupied.y;
-      const double dz = target.z - occupied.z;
-      if (std::sqrt(dx * dx + dy * dy + dz * dz) <
-          clearance) {
-        return false;
-      }
-    }
-    return true;
+    return astra_tower_mission::mappedEndpointClear(
+        target, planningMapPoints(), clearance);
   }
 
   std::string mappedEndpointBlockage(const CandidatePoint& target,
@@ -1662,32 +1672,22 @@ class SectorInspectionMissionNode {
   }
 
   bool mappedEndpointClear(const CandidatePoint& target) const {
-    return mappedEndpointClear(
-        target,
-        filter_config_.map_points_are_inflated
-            ? filter_config_.map_additional_clearance
-            : filter_config_.minimum_clearance +
-                  filter_config_.cloud_inflation);
+    return mappedEndpointClear(target, mappedTaskClearance());
   }
 
   double mappedTaskClearance() const {
-    return filter_config_.map_points_are_inflated
-               ? filter_config_.map_additional_clearance
-               : filter_config_.minimum_clearance +
-                     filter_config_.cloud_inflation;
+    return astra_tower_mission::mappedTaskClearance(
+        filter_config_.minimum_clearance,
+        planningMapPointsAreInflated(),
+        filter_config_.map_additional_clearance);
   }
 
   bool mappedCorridorSafe(const geometry_msgs::Point& from,
                           const geometry_msgs::Point& to) const {
     static const std::vector<StaticObstacle> no_static_obstacles;
-    const double map_clearance =
-        filter_config_.map_points_are_inflated
-            ? filter_config_.map_additional_clearance
-            : filter_config_.minimum_clearance +
-                  filter_config_.cloud_inflation;
     return lineCorridorSafe(
         from, to, planningMapPoints(), no_static_obstacles,
-        map_clearance, filter_config_.corridor_sample_step);
+        mappedTaskClearance(), filter_config_.corridor_sample_step);
   }
 
   double mappedPolylineClearance(
@@ -1864,7 +1864,7 @@ class SectorInspectionMissionNode {
     for (auto candidate : first_sector.candidates) {
       geometry_msgs::Point target = candidatePoint(candidate);
       evaluateCandidate(&candidate, first_sector, start, planningMapPoints(),
-                        obstacles_, true, filter_config_, nullptr,
+                        obstacles_, true, planningFilterConfig(), nullptr,
                         candidateUnknownRatio(target));
       if (planner_unreachable_candidates_.count(candidate.id) > 0U) {
         candidate.accepted = false;
@@ -2196,7 +2196,7 @@ class SectorInspectionMissionNode {
     entry_gate_index_ = -1;
     provisional_entry_gate_index_ = -1;
     const double layer_height = inspection_heights_[layer_index];
-    EntryGateConfig layer_config = entry_gate_config_;
+    EntryGateConfig layer_config = planningEntryGateConfig();
     layer_config.inspection_height = layer_height;
     const CandidatePoint first_inspection =
         firstInspectionReference(layer_index);
@@ -2497,6 +2497,26 @@ class SectorInspectionMissionNode {
     return occupancy_points_.empty() ? cloud_points_ : occupancy_points_;
   }
 
+  bool planningMapPointsAreInflated() const {
+    // The configured occupancy topic is inflated, but an empty occupancy
+    // message deliberately falls back to the filtered/raw cloud. The actual
+    // representation, not the topic's nominal type, selects the threshold.
+    return !occupancy_points_.empty() &&
+           filter_config_.map_points_are_inflated;
+  }
+
+  CandidateFilterConfig planningFilterConfig() const {
+    CandidateFilterConfig config = filter_config_;
+    config.map_points_are_inflated = planningMapPointsAreInflated();
+    return config;
+  }
+
+  EntryGateConfig planningEntryGateConfig() const {
+    EntryGateConfig config = entry_gate_config_;
+    config.map_points_are_inflated = planningMapPointsAreInflated();
+    return config;
+  }
+
   const std::vector<StaticObstacle>& hardPlanningObstacles() const {
     static const std::vector<StaticObstacle> no_coarse_obstacles;
     return filter_config_.known_obstacle_is_hard_constraint
@@ -2701,7 +2721,8 @@ class SectorInspectionMissionNode {
       for (auto& candidate : sector.candidates) {
         geometry_msgs::Point candidate_point = candidatePoint(candidate);
         evaluateCandidate(&candidate, sector, current, planningMapPoints(),
-                          obstacles_, mapFresh(now), filter_config_, nullptr,
+                          obstacles_, mapFresh(now), planningFilterConfig(),
+                          nullptr,
                           candidateUnknownRatio(candidate_point));
         if (planner_unreachable_candidates_.count(candidate.id) > 0U) {
           candidate.accepted = false;
@@ -2909,7 +2930,7 @@ class SectorInspectionMissionNode {
       anchor_point.z = anchor->z;
       evaluateCandidate(&(*anchor), sector, pointOf(odom_),
                         planningMapPoints(), obstacles_, mapFresh(now),
-                        filter_config_, previous,
+                        planningFilterConfig(), previous,
                         candidateUnknownRatio(anchor_point));
       if (planner_unreachable_candidates_.count(anchor->id) > 0U) {
         anchor->accepted = false;
@@ -2956,7 +2977,8 @@ class SectorInspectionMissionNode {
       candidate_point.y = candidate.y;
       candidate_point.z = candidate.z;
       evaluateCandidate(&candidate, sector, pointOf(odom_), planningMapPoints(),
-                        obstacles_, mapFresh(now), filter_config_, previous,
+                        obstacles_, mapFresh(now), planningFilterConfig(),
+                        previous,
                         candidateUnknownRatio(candidate_point));
       if (planner_unreachable_candidates_.count(candidate.id) > 0U) {
         candidate.accepted = false;
@@ -2990,7 +3012,7 @@ class SectorInspectionMissionNode {
         candidate_point.z = candidate.z;
         evaluateCandidate(&candidate, next, pointOf(odom_), planningMapPoints(),
                           obstacles_, mapFresh(now),
-                          filter_config_,
+                          planningFilterConfig(),
                           sector.locked_index >= 0
                               ? &sector.candidates[sector.locked_index]
                               : previous,
@@ -3139,8 +3161,7 @@ class SectorInspectionMissionNode {
         current.y - route_.center_y, current.x - route_.center_x);
     const double direction_sign =
         route_.direction == OrbitDirection::kCounterClockwise ? 1.0 : -1.0;
-    const double clearance = filter_config_.minimum_clearance +
-                             filter_config_.cloud_inflation;
+    const double clearance = filter_config_.minimum_clearance;
     static const std::vector<geometry_msgs::Point> no_map_points;
     // Keep static same-sector detours on the shared adaptive candidate grid;
     // inward radial offsets are not part of the design rule.
@@ -3452,12 +3473,12 @@ class SectorInspectionMissionNode {
     const RecoveryAssessment clockwise_assessment = assessRecoveryTargets(
         pointOf(odom_), clockwise_targets, planningMapPoints(),
         recovery_obstacles,
-        filter_config_.minimum_clearance,
+        mappedTaskClearance(), filter_config_.minimum_clearance,
         filter_config_.corridor_sample_step);
     const RecoveryAssessment counter_clockwise_assessment = assessRecoveryTargets(
         pointOf(odom_), counter_clockwise_targets, planningMapPoints(),
         recovery_obstacles,
-        filter_config_.minimum_clearance,
+        mappedTaskClearance(), filter_config_.minimum_clearance,
         filter_config_.corridor_sample_step);
     const bool clockwise_local =
         clockwise_assessment.endpoints_safe &&
@@ -3636,7 +3657,7 @@ class SectorInspectionMissionNode {
       point.z = candidate.z;
       evaluateCandidate(
           &candidate, start_sector, pointOf(odom_), planningMapPoints(),
-          obstacles_, true, filter_config_, &layer_transition_anchor_,
+          obstacles_, true, planningFilterConfig(), &layer_transition_anchor_,
           candidateUnknownRatio(point));
       if (!candidate.accepted) continue;
       const double xy_distance = std::hypot(
@@ -3723,11 +3744,16 @@ class SectorInspectionMissionNode {
     bottom.x = layer_transition_goals_.back().x;
     bottom.y = layer_transition_goals_.back().y;
     bottom.z = layer_transition_goals_.back().z;
-    if (!lineCorridorSafe(
-            top, bottom, planningMapPoints(), hardPlanningObstacles(),
-            filter_config_.minimum_clearance +
-                filter_config_.cloud_inflation,
-            filter_config_.corridor_sample_step)) {
+    static const std::vector<geometry_msgs::Point> no_map_points;
+    static const std::vector<StaticObstacle> no_static_obstacles;
+    const bool map_column_safe = lineCorridorSafe(
+        top, bottom, planningMapPoints(), no_static_obstacles,
+        mappedTaskClearance(), filter_config_.corridor_sample_step);
+    const bool static_column_safe = lineCorridorSafe(
+        top, bottom, no_map_points, hardPlanningObstacles(),
+        filter_config_.minimum_clearance,
+        filter_config_.corridor_sample_step);
+    if (!map_column_safe || !static_column_safe) {
       *reason = "LAYER_TRANSITION_VERTICAL_COLUMN_OCCUPIED";
       return false;
     }
@@ -3769,11 +3795,16 @@ class SectorInspectionMissionNode {
     to.x = target.x;
     to.y = target.y;
     to.z = target.z;
-    if (!lineCorridorSafe(
-            from, to, planningMapPoints(), hardPlanningObstacles(),
-            filter_config_.minimum_clearance +
-                filter_config_.cloud_inflation,
-            filter_config_.corridor_sample_step)) {
+    static const std::vector<geometry_msgs::Point> no_map_points;
+    static const std::vector<StaticObstacle> no_static_obstacles;
+    const bool map_segment_safe = lineCorridorSafe(
+        from, to, planningMapPoints(), no_static_obstacles,
+        mappedTaskClearance(), filter_config_.corridor_sample_step);
+    const bool static_segment_safe = lineCorridorSafe(
+        from, to, no_map_points, hardPlanningObstacles(),
+        filter_config_.minimum_clearance,
+        filter_config_.corridor_sample_step);
+    if (!map_segment_safe || !static_segment_safe) {
       *reason = "LAYER_TRANSITION_SEGMENT_OCCUPIED";
       return false;
     }
@@ -3851,6 +3882,20 @@ class SectorInspectionMissionNode {
     exit_gate.layer_id = current_layer_;
     exit_gate.require_arrival_yaw = false;
     exit_gate.face_tower = true;
+    if (!mapFresh(now)) return false;
+    const std::string map_blockage =
+        mappedEndpointBlockage(exit_gate, mappedTaskClearance());
+    if (!map_blockage.empty()) {
+      ROS_ERROR("[SECTOR_INSPECTION_TASK] EXIT_GATE rejected by latest map: %s",
+                map_blockage.c_str());
+      return false;
+    }
+    const std::string static_risk = staticEndpointRisk(exit_gate);
+    if (!static_risk.empty()) {
+      ROS_ERROR("[SECTOR_INSPECTION_TASK] EXIT_GATE rejected by coarse geometry: %s",
+                static_risk.c_str());
+      return false;
+    }
     final_return_ = true;
     have_sent_goal_ = false;
     arrival_since_ = ros::Time(0);
@@ -3941,9 +3986,7 @@ class SectorInspectionMissionNode {
     // trajectory clearance used by the live horizontal planner; applying
     // candidate clearance here would add the vehicle envelope twice and
     // reject a path that was just flown safely.
-    const double endpoint_clearance =
-        low_altitude_mode_ ? level_path_config_.additional_clearance
-                           : filter_config_.minimum_clearance;
+    const double endpoint_clearance = mappedTaskClearance();
     if (!mapFresh(now) ||
         !mappedEndpointClear(target, endpoint_clearance)) {
       return false;
@@ -4334,6 +4377,7 @@ class SectorInspectionMissionNode {
              planned_cycles_, final_return_ ? "true" : "false",
              previous_duration);
     state_ = next; state_entered_ = ros::Time::now(); publishState();
+    publishMissionCompletion();
   }
 
   void publishState() {
@@ -4347,8 +4391,25 @@ class SectorInspectionMissionNode {
     sector_pub_.publish(sector);
   }
 
+  void publishMissionCompletion() {
+    const MissionCompletionSignals signals = missionCompletionSignals(
+        state_ == MissionState::kDone, state_ == MissionState::kError,
+        mission_failure_latched_, orbit_complete_);
+    std_msgs::Bool message;
+    message.data = signals.mission_success;
+    mission_success_pub_.publish(message);
+    message.data = signals.mission_failure;
+    mission_failure_pub_.publish(message);
+    message.data = signals.mission_done;
+    mission_done_pub_.publish(message);
+    message.data = signals.orbit_complete;
+    orbit_complete_pub_.publish(message);
+  }
+
   void failTerminal(const std::string& reason) {
     failure_reason_ = reason;
+    mission_failure_latched_ = true;
+    publishMissionCompletion();
     if (!enable_control_) {
       transition(MissionState::kError, reason); return;
     }
@@ -4724,7 +4785,7 @@ class SectorInspectionMissionNode {
             }
           }
         } else {
-          const double endpoint_clearance = filter_config_.minimum_clearance;
+          const double endpoint_clearance = mappedTaskClearance();
           const std::string endpoint_blockage =
               mappedEndpointBlockage(target, endpoint_clearance);
           if (!endpoint_blockage.empty()) {
@@ -4832,8 +4893,12 @@ class SectorInspectionMissionNode {
         if (!requestResume()) {
           requestHold("ORBIT_RELEASE bridge resume rejected");
         } else {
-          orbit_released_latched_ = true;
-          updateOrbitProgress(pointOf(odom_));
+          if (shouldReleaseOrbitBookkeeping(
+                  require_orbit_permission_, true, false,
+                  orbit_released_latched_)) {
+            orbit_released_latched_ = true;
+            updateOrbitProgress(pointOf(odom_));
+          }
           ++visit_cursor_;
           have_sent_goal_ = false;
           arrival_since_ = ros::Time(0);
@@ -4945,6 +5010,21 @@ class SectorInspectionMissionNode {
                        "waiting for individual ORBIT_RELEASE");
             return;
           }
+          if (initial_waypoint_pending_ &&
+              shouldReleaseOrbitBookkeeping(
+                  require_orbit_permission_, false, true,
+                  orbit_released_latched_)) {
+            // With no coordination gate, reaching the same formal first orbit
+            // waypoint is the release event.  This starts bookkeeping only;
+            // it does not add a state, goal, hold, or trajectory change.
+            orbit_released_latched_ = true;
+            updateOrbitProgress(pointOf(odom_));
+            ROS_WARN("[SECTOR_INSPECTION_DIAG] uav=%d orbit permission disabled; "
+                     "first formal orbit waypoint starts independent lap "
+                     "bookkeeping at %.3fdeg sector_mask=0x%02X",
+                     uav_id_, positiveAngleDegrees(orbit_start_angle_),
+                     static_cast<int>(visited_sector_mask_));
+          }
           sectors_[current_sector_].state = SectorState::kCovered;
           initial_waypoint_pending_ = false;
           last_inspection_target_ = active_target_;
@@ -4964,6 +5044,10 @@ class SectorInspectionMissionNode {
             }
             completed_laps_ = inspection_laps_;
             ++completed_layer_count_;
+            orbit_complete_ =
+                completed_layer_count_ >=
+                static_cast<int>(layer_visit_sequence_.size());
+            publishMissionCompletion();
             ROS_WARN("[SECTOR_INSPECTION_DIAG] uav=%d orbit complete laps=%d "
                      "sector=%d target=%s %s "
                      "action=REQUEST_EXIT_PERMISSION",
@@ -5553,6 +5637,8 @@ class SectorInspectionMissionNode {
 
   void requestReturnOrLand(const std::string& reason) {
     failure_reason_ = reason;
+    mission_failure_latched_ = true;
+    publishMissionCompletion();
     if (!enable_control_) { transition(MissionState::kError, reason); return; }
     if (low_altitude_mode_) {
       requestBridgeReturnOrLand(
@@ -5715,7 +5801,8 @@ class SectorInspectionMissionNode {
       candidates_pub_, entry_corridor_candidates_pub_, progress_pub_,
       face_tower_pub_, tower_center_pub_,
       level_ingress_path_pub_, level_orbit_path_pub_, mission_route_pub_,
-      altitude_policy_pub_;
+      altitude_policy_pub_, mission_success_pub_, mission_failure_pub_,
+      mission_done_pub_, orbit_complete_pub_;
   ros::ServiceClient tracking_client_, cancel_client_, resume_client_, return_client_, land_client_;
   ros::Timer timer_;
   std::string planning_frame_, odom_topic_, command_topic_, cloud_topic_, occupancy_topic_, planner_status_topic_,
@@ -5726,6 +5813,8 @@ class SectorInspectionMissionNode {
       level_ingress_path_topic_, level_orbit_path_topic_,
       mission_route_topic_,
       altitude_policy_topic_,
+      mission_success_topic_, mission_failure_topic_, mission_done_topic_,
+      orbit_complete_topic_,
       mavros_state_topic_, mavros_extended_state_topic_, tracking_service_,
       cancel_service_, resume_service_, return_service_, land_service_,
       task_start_permission_topic_, transition_permission_topic_, entry_permission_topic_,
@@ -5888,6 +5977,7 @@ class SectorInspectionMissionNode {
   bool entry_corridor_locked_{false};
   std::uint32_t entry_corridor_generation_{0U};
   bool orbit_staging_arrived_{false}, orbit_released_latched_{false};
+  bool mission_failure_latched_{false}, orbit_complete_{false};
   geometry_msgs::Point home_position_, coverage_origin_;
   ros::Time odom_received_, command_received_, cloud_received_,
       occupancy_received_, planner_status_received_, bridge_state_received_,

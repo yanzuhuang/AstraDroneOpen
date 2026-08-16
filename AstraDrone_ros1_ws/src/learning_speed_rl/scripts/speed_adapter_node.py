@@ -22,6 +22,7 @@ from learning_speed_rl.observation import (
     VehiclePlanningState,
 )
 from learning_speed_rl.policy import (
+    FixedSpeedPolicy,
     MockSpeedPolicy,
     SafetyFilterConfig,
     SpeedSafetyFilter,
@@ -41,9 +42,9 @@ class SpeedAdapterNode:
         self._lock = threading.RLock()
 
         policy_mode = str(rospy.get_param("~policy/mode", "mock")).strip().lower()
-        if policy_mode != "mock":
+        if policy_mode not in ("fixed", "mock"):
             raise rospy.ROSInitException(
-                "only the reviewed mock policy is enabled in this integration; "
+                "policy/mode must be fixed or mock; "
                 "RL inference requires an explicit backend and reviewed model"
             )
         self._policy_mode = policy_mode
@@ -66,10 +67,24 @@ class SpeedAdapterNode:
         if not math.isfinite(self._applied_tolerance) or self._applied_tolerance < 0.0:
             raise rospy.ROSInitException("safety/applied_tolerance_mps is invalid")
 
-        mock_default = float(
-            rospy.get_param("~policy/mock_default_v_max", safety_config.initial_v_max)
-        )
-        self._policy = MockSpeedPolicy(mock_default)
+        if policy_mode == "fixed":
+            fixed_v_max = float(
+                rospy.get_param(
+                    "~policy/fixed_v_max", safety_config.initial_v_max
+                )
+            )
+            if not safety_config.v_max_min <= fixed_v_max <= safety_config.v_max_max:
+                raise rospy.ROSInitException(
+                    "policy/fixed_v_max is outside the safety filter range"
+                )
+            self._policy = FixedSpeedPolicy(fixed_v_max)
+        else:
+            mock_default = float(
+                rospy.get_param(
+                    "~policy/mock_default_v_max", safety_config.initial_v_max
+                )
+            )
+            self._policy = MockSpeedPolicy(mock_default)
 
         map_size = tuple(
             float(value)
@@ -186,9 +201,11 @@ class SpeedAdapterNode:
         self._goal_sub = rospy.Subscriber(
             self._topic_goal, PoseStamped, self._goal_callback, queue_size=1
         )
-        self._mock_sub = rospy.Subscriber(
-            self._topic_mock, Float64, self._mock_callback, queue_size=1
-        )
+        self._mock_sub = None
+        if self._policy_mode == "mock":
+            self._mock_sub = rospy.Subscriber(
+                self._topic_mock, Float64, self._mock_callback, queue_size=1
+            )
         self._applied_sub = rospy.Subscriber(
             self._topic_applied, Float64, self._applied_callback, queue_size=1
         )
@@ -196,11 +213,19 @@ class SpeedAdapterNode:
         self._timer = rospy.Timer(
             rospy.Duration(1.0 / self._policy_rate), self._policy_timer
         )
-        rospy.logwarn(
-            "learning_speed_rl mock adapter active: %s -> %s; RL inference is disabled",
-            rospy.resolve_name(self._topic_mock),
-            rospy.resolve_name(self._topic_safe),
-        )
+        if self._policy_mode == "fixed":
+            rospy.logwarn(
+                "learning_speed_rl fixed baseline source active: %.3f m/s -> %s; "
+                "mock and RL policy inputs are disabled",
+                self._policy.fixed_v_max,
+                rospy.resolve_name(self._topic_safe),
+            )
+        else:
+            rospy.logwarn(
+                "learning_speed_rl mock adapter active: %s -> %s; RL inference is disabled",
+                rospy.resolve_name(self._topic_mock),
+                rospy.resolve_name(self._topic_safe),
+            )
 
     def _odom_callback(self, message):
         position = _xyz(message.pose.pose.position)
@@ -355,6 +380,8 @@ class SpeedAdapterNode:
             self._map_frame_mismatch = False
 
     def _mock_callback(self, message):
+        if self._policy_mode != "mock":
+            return
         try:
             self._policy.set_command(message.data)
         except ValueError as error:
@@ -415,6 +442,11 @@ class SpeedAdapterNode:
 
     def _policy_timer(self, _event):
         now_sec = rospy.Time.now().to_sec()
+        # Under /use_sim_time a timer can be dispatched while /clock is still
+        # zero.  Do not publish a value that downstream timestamp buffers
+        # would have to associate with an invalid epoch.
+        if now_sec <= 0.0:
+            return
         if self._last_policy_time is not None and now_sec < self._last_policy_time:
             self._filter.reset_time()
         self._last_policy_time = now_sec
@@ -469,7 +501,11 @@ class SpeedAdapterNode:
         status.name = rospy.get_name() + "/speed_adapter"
         status.hardware_id = "software"
         status.level = DiagnosticStatus.WARN if warnings else DiagnosticStatus.OK
-        status.message = "; ".join(warnings) if warnings else "mock speed chain healthy"
+        status.message = (
+            "; ".join(warnings)
+            if warnings
+            else "{} speed chain healthy".format(self._policy_mode)
+        )
         values = {
             "policy_mode": self._policy_mode,
             "raw_v_max_mps": "{:.6f}".format(raw_v_max),

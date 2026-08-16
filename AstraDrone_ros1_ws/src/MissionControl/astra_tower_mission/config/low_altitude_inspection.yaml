@@ -91,10 +91,9 @@ entry_gate:
   # EGO map is already inflated, so task-side map checks use the separate
   # 0.5 m margin below.
   minimum_clearance: 1.0
-  cloud_inflation: 0.4
   # The subscribed map is already EGO-inflated. Use only the same 0.5 m
-  # operational margin for map points; cloud_inflation remains available for
-  # a raw-cloud fallback and for non-map coarse geometry.
+  # operational margin for map points. A raw-cloud fallback uses the 1.0 m
+  # minimum directly; the task layer must not add a second inflation term.
   map_points_are_inflated: true
   map_additional_clearance: 0.5
   unknown_is_hard_constraint: false
@@ -147,7 +146,6 @@ candidate:
   radius_offsets_m: [0.0, 2.0, 4.0]
   height_offsets_m: [0.0]
   minimum_clearance: 1.0
-  cloud_inflation: 0.4
   map_points_are_inflated: true
   map_additional_clearance: 0.5
   corridor_sample_step: 0.4

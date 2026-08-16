@@ -1,5 +1,6 @@
 policy:
   mode: mock
+  fixed_v_max: 0.20
   mock_default_v_max: 0.20
   reviewed_model_path: ""
 

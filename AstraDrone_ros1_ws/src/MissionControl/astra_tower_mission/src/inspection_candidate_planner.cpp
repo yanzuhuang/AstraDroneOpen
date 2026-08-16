@@ -74,6 +74,43 @@ const char* sectorStateName(SectorState state) {
   return "UNKNOWN";
 }
 
+double mappedTaskClearance(double minimum_clearance,
+                           bool map_points_are_inflated,
+                           double map_additional_clearance) {
+  return map_points_are_inflated ? map_additional_clearance
+                                 : minimum_clearance;
+}
+
+double mappedTaskClearance(const CandidateFilterConfig& config) {
+  return mappedTaskClearance(config.minimum_clearance,
+                             config.map_points_are_inflated,
+                             config.map_additional_clearance);
+}
+
+double mappedTaskClearance(const EntryGateConfig& config) {
+  return mappedTaskClearance(config.minimum_clearance,
+                             config.map_points_are_inflated,
+                             config.map_additional_clearance);
+}
+
+bool mappedEndpointClear(
+    const CandidatePoint& target,
+    const std::vector<geometry_msgs::Point>& map_points,
+    double clearance) {
+  if (!std::isfinite(target.x) || !std::isfinite(target.y) ||
+      !std::isfinite(target.z) || !std::isfinite(clearance) ||
+      clearance < 0.0) {
+    return false;
+  }
+  for (const auto& occupied : map_points) {
+    if (distance3d(target.x, target.y, target.z,
+                   occupied.x, occupied.y, occupied.z) < clearance) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::vector<Sector> buildInspectionSectors(
     const RouteConfig& route, int sector_count, int layer_count,
     double angle_half_width_deg, double radius_half_width,
@@ -222,9 +259,8 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
   }
   for (const auto& obstacle : obstacles) {
     // StaticObstacle already describes the audited physical/coarse envelope.
-    // Apply minimum_clearance exactly once.  cloud_inflation belongs to raw
-    // point representations and must not silently turn a configured 1.0 m
-    // coarse-geometry clearance into 1.4 m.
+    // Apply minimum_clearance exactly once to the audited physical/coarse
+    // envelope supplied by the producer.
     const double clearance = obstacleClearance(target, obstacle, 0.0);
     if (config.known_obstacle_is_hard_constraint) {
       candidate->clearance = std::min(candidate->clearance, clearance);
@@ -238,15 +274,10 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       candidate->risk_reason = "COARSE_KNOWN_OBSTACLE_OVERLAP";
     }
   }
-  const double map_inflation =
-      config.map_points_are_inflated ? 0.0 : config.cloud_inflation;
-  const double map_required_clearance =
-      config.map_points_are_inflated ? config.map_additional_clearance
-                                     : config.minimum_clearance;
+  const double map_required_clearance = mappedTaskClearance(config);
   for (const auto& cloud : cloud_points) {
     const double clearance = distance3d(target.x, target.y, target.z,
-                                         cloud.x, cloud.y, cloud.z) -
-                             map_inflation;
+                                         cloud.x, cloud.y, cloud.z);
     candidate->clearance = std::min(candidate->clearance, clearance);
     if (clearance < map_required_clearance) {
       return reject("OCCUPANCY_OR_CLEARANCE");
@@ -260,7 +291,7 @@ bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
       config.corridor_sample_step);
   const bool map_corridor_safe = lineCorridorSafe(
       current_position, target, cloud_points, no_static_obstacles,
-      map_required_clearance + map_inflation,
+      map_required_clearance,
       config.corridor_sample_step);
   // Known world geometry is deterministic and already carries its audited
   // physical envelope.  Letting a fixed sector leg cross it and hoping for a
@@ -746,23 +777,17 @@ bool evaluateEntryGateCandidate(
   target.y = candidate->y;
   target.z = candidate->z;
   for (const auto& obstacle : obstacles) {
-    const double clearance = obstacleClearance(
-        target, obstacle, config.cloud_inflation);
+    const double clearance = obstacleClearance(target, obstacle, 0.0);
     candidate->clearance = std::min(candidate->clearance, clearance);
     if (clearance < config.minimum_clearance) {
       return reject("KNOWN_OBSTACLE_CLEARANCE");
     }
   }
-  const double map_inflation =
-      config.map_points_are_inflated ? 0.0 : config.cloud_inflation;
-  const double map_required_clearance =
-      config.map_points_are_inflated ? config.map_additional_clearance
-                                     : config.minimum_clearance;
+  const double map_required_clearance = mappedTaskClearance(config);
   for (const auto& map_point : map_points) {
     const double clearance = distance3d(target.x, target.y, target.z,
                                          map_point.x, map_point.y,
-                                         map_point.z) -
-                             map_inflation;
+                                         map_point.z);
     candidate->clearance = std::min(candidate->clearance, clearance);
     if (clearance < map_required_clearance) {
       return reject("OCCUPANCY_OR_CLEARANCE");
@@ -780,11 +805,11 @@ bool evaluateEntryGateCandidate(
   static const std::vector<StaticObstacle> no_static_obstacles;
   const bool static_corridor_safe = lineCorridorSafe(
       current_position, target, no_map_points, obstacles,
-      config.minimum_clearance + config.cloud_inflation,
+      config.minimum_clearance,
       config.corridor_sample_step);
   const bool map_corridor_safe = lineCorridorSafe(
       current_position, target, map_points, no_static_obstacles,
-      map_required_clearance + map_inflation,
+      map_required_clearance,
       config.corridor_sample_step);
   candidate->straight_corridor_blocked =
       !static_corridor_safe || !map_corridor_safe;
@@ -1214,7 +1239,8 @@ RecoveryAssessment assessRecoveryTargets(
     const RecoveryTargets& targets,
     const std::vector<geometry_msgs::Point>& cloud_points,
     const std::vector<StaticObstacle>& obstacles,
-    double inflation,
+    double map_clearance,
+    double static_clearance,
     double sample_step) {
   RecoveryAssessment result;
   const CandidatePoint candidates[] = {targets.r1, targets.r2, targets.reentry};
@@ -1224,11 +1250,11 @@ RecoveryAssessment assessRecoveryTargets(
     point.y = candidate.y;
     point.z = candidate.z;
     for (const auto& obstacle : obstacles) {
-      if (pointInObstacle(point, obstacle, inflation)) return result;
+      if (pointInObstacle(point, obstacle, static_clearance)) return result;
     }
     for (const auto& cloud : cloud_points) {
       if (distance3d(point.x, point.y, point.z,
-                     cloud.x, cloud.y, cloud.z) < inflation) {
+                     cloud.x, cloud.y, cloud.z) < map_clearance) {
         return result;
       }
     }
@@ -1242,8 +1268,15 @@ RecoveryAssessment assessRecoveryTargets(
   points[3].z = targets.reentry.z;
   double length = 0.0;
   for (int index = 0; index < 3; ++index) {
-    if (!lineCorridorSafe(points[index], points[index + 1], cloud_points,
-                          obstacles, inflation, sample_step)) {
+    static const std::vector<geometry_msgs::Point> no_map_points;
+    static const std::vector<StaticObstacle> no_static_obstacles;
+    const bool map_safe = lineCorridorSafe(
+        points[index], points[index + 1], cloud_points,
+        no_static_obstacles, map_clearance, sample_step);
+    const bool static_safe = lineCorridorSafe(
+        points[index], points[index + 1], no_map_points,
+        obstacles, static_clearance, sample_step);
+    if (!map_safe || !static_safe) {
       ++result.blocked_corridors;
     }
     length += distance3d(points[index].x, points[index].y, points[index].z,

@@ -15,11 +15,126 @@ EGO inflated occupancy + odometry + PositionCommand + local goal
   -> EGO dynamic velocity-limit interface
 ```
 
-The node only accepts `policy/mode: mock`. This is intentional: an untrained
-CNN/MLP is not permitted to affect flight. `policy/network_contract.py`
+The node only accepts the explicit, mutually exclusive `policy/mode: mock` or
+`policy/mode: fixed` sources.  It has no SAC/neural inference mode, so an
+untrained CNN/MLP cannot affect flight. `policy/network_contract.py`
 defines the stable four-channel map, 22-element low-dimensional vector,
 feature-fusion, and scalar-output contract that a future reviewed training and
 inference backend must implement.
+
+Observation v1 and v2 are independent backends. The v1 implementation above
+keeps its `[4,16,48,48]` categorical map contract. `observation/v2/` is a
+separate read-only Mid360 surrogate prototype; it never imports a policy or
+publishes `v_max`.
+
+## Observation v2: lidar surrogate
+
+Launch one explicitly namespaced instance only after FAST-LIO and the existing
+filtered cloud are available:
+
+```bash
+roslaunch learning_speed_rl observation_v2_lidar_surrogate.launch \
+  namespace:=uav1 \
+  cloud_topic:=/uav1/stage3/cloud_registered_filtered \
+  odom_topic:=/uav1/Odometry \
+  world_frame:=uav1/camera_init \
+  body_frame:=uav1/body \
+  sensor_frame:=uav1/mid360_link
+```
+
+Single-vehicle non-prefixed deployments use `camera_init`, `body` and
+`mid360_link`. Configuration is in
+`config/observation_v2_lidar_surrogate.yaml`; reference defaults are five
+frames, 10 Hz source rate, 0.05 m voxel size, 4.5 degree full-sphere bins,
+3200 values and 10 m clipping.
+
+The node matches every cloud's timestamp against a pose buffer. Exact matches
+are used when available; otherwise translation is interpolated and orientation
+uses quaternion SLERP between bracketing poses. It never substitutes the latest
+pose. Each registered cloud is transformed `camera_init -> body(cloud_stamp)`
+and fused at time `t` by:
+
+```text
+p_body(t) = inverse(T_world_body(t))
+            * T_world_body(cloud_stamp)
+            * p_body(cloud_stamp)
+```
+
+ROS time moving backward clears pose, pending-cloud and history buffers.
+Missing, stale, frame-mismatched or unbracketed poses make `valid=false`.
+
+The fixed flat order is elevation-major and azimuth-fast:
+
+```text
+flat_index = elevation_index * 80 + azimuth_index
+azimuth:  [-180,180) deg, atan2(+Y_left,+X_forward)
+elevation:[ -90, 90] deg, +Z_up
+body axes: ROS FLU (+X forward,+Y left,+Z up)
+```
+
+Per-bin semantics are `0=unknown`, `1=observed_free`,
+`2=known_obstacle`. Obstacle bins store nearest distance in `(0,10]`; observed
+free bins store `10`; unknown bins store `20-observed_free_range`, disjoint in
+`(10,20)`. Separate valid, unknown and semantic topics keep this auditable.
+
+The unknown estimator is explicitly an engineering approximation to the
+paper. It transforms calibrated historical Mid360 FoVs into the current body
+frame, samples current-bin rays, and caps visibility at the nearest historical
+return in the same angular cell. Filtered PointCloud2 has no per-ray miss
+records, so this does not claim bit-for-bit reproduction of the unpublished
+`20-d_unknown` algorithm.
+
+Read-only outputs (relative to the UAV namespace) are:
+
+- `learning_speed/observation_v2/surrogate`
+- `learning_speed/observation_v2/stamped`
+- `learning_speed/observation_v2/valid`
+- `learning_speed/observation_v2/lidar_valid_mask`
+- `learning_speed/observation_v2/unknown_mask`
+- `learning_speed/observation_v2/semantic`
+- `learning_speed/observation_v2/diagnostics`
+- `learning_speed/observation_v2/aligned_history`
+- `learning_speed/observation_v2/visualization`
+
+No v2 output is consumed by EGO, MAVROS, PX4, the Speed Adapter or a policy.
+The legacy array topics use standard ROS multi-arrays, which do not have headers;
+their authoritative sample timestamp and body frame are published in the
+diagnostic keys `observation_stamp_sec` and `output_frame`. The aligned cloud
+and RViz markers carry the same timestamp/frame in their ROS headers. The
+additive `LidarSurrogateStamped` mirror atomically carries the four policy-side
+v2 arrays with that exact timestamp/body frame; Observation C consumes this
+mirror and does not join latest-value multi-arrays by receipt time.
+
+## Observation C: EGO future-trajectory fusion
+
+Observation C is an independent, read-only feature contract. It subscribes to
+the same namespaced `planning/bspline` (`traj_utils/Bspline`) that EGO publishes
+to `traj_server`, evaluates its official control points/knots at the v2 sample
+timestamp, and transforms future positions into the same current body frame.
+It does not publish `v_max`, goals, trajectories, MAVROS or PX4 commands.
+
+```bash
+roslaunch learning_speed_rl observation_c_trajectory_fusion.launch \
+  namespace:=uav1 \
+  cloud_topic:=stage3/cloud_registered_filtered \
+  odom_topic:=Odometry \
+  trajectory_topic:=planning/bspline \
+  trajectory_sampling_mode:=distance
+```
+
+Current configurable experiment defaults are 20 samples, 0.25 m spacing and
+5.0 m maximum spatial horizon. `distance` uses an adaptive spatial polyline to
+approximate future B-spline arc length. `time` remains available for ablation;
+in that mode the same spacing parameter is interpreted as seconds while the
+maximum spatial horizon is retained.
+
+The atomic `learning_speed/observation_c` message contains v2 surrogate/masks,
+future body-frame positions and offsets, actual body-frame velocity, body-frame
+position tracking-error vector/norm, the last EGO-applied `v_max` at or before
+the observation stamp, trajectory id/start/frame/sampling metadata, and a
+strict validity result. Any missing/malformed input, frame/stamp mismatch,
+ended trajectory, unavailable velocity, or invalid speed state publishes an
+invalid packet and `learning_speed/observation_c/valid=false`.
 
 ## Run the adapter
 
@@ -34,6 +149,23 @@ The EGO launch must separately opt into its dynamic interface. The audited
 three-UAV launch does this when its `learning_speed_enabled` argument is true.
 The adapter maximum is always overridden from that launch's static `max_vel`,
 so the policy can reduce and restore the reviewed ceiling but cannot exceed it.
+
+For the single-UAV fixed-speed baseline, use the dedicated immutable `fixed`
+source.  It is mutually exclusive with the mock input and with any future RL
+backend, and it still passes through `SpeedSafetyFilter` before EGO:
+
+```bash
+# Preview is non-controlling.  --control is required for a real run.
+scripts/run_sh/fixed_speed_baseline.sh --v-max 0.12 --run-id preview_012
+scripts/run_sh/fixed_speed_baseline.sh --control --v-max 0.12 --run-id v012_r01
+```
+
+The audited levels are 0.08, 0.12, 0.16 and 0.20 m/s.  Every run keeps EGO's
+static ceiling at 0.20 m/s and changes only the fixed source.  Per-run JSON,
+CSV, bag and logs are written below
+`runtime_artifacts/fixed_speed_baseline/runs/<run_id>/`; the wrapper rebuilds
+`baseline_runs.csv`, `baseline_summary.csv`, `baseline_summary.json` and the
+training-data field-availability audit at the baseline root.
 
 ## ROS interface
 

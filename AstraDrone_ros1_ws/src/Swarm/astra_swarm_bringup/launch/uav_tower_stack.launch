@@ -29,6 +29,8 @@
   <arg name="learning_speed_enabled" default="false"/>
   <arg name="learning_speed_config"
        default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
+  <arg name="learning_speed_policy_mode" default="mock"/>
+  <arg name="learning_speed_fixed_v_max" default="$(arg max_vel)"/>
   <arg name="learning_speed_v_max_min" default="0.05"/>
   <arg name="learning_speed_replan_delta" default="0.03"/>
   <arg name="learning_speed_replan_cooldown" default="1.0"/>
@@ -182,7 +184,11 @@
           output="screen" required="true">
       <rosparam command="load" file="$(arg learning_speed_config)"/>
       <param name="safety/v_max_max" value="$(arg max_vel)"/>
-      <param name="safety/initial_v_max" value="$(arg max_vel)"/>
+      <param name="safety/initial_v_max"
+             value="$(arg learning_speed_fixed_v_max)"/>
+      <param name="policy/mode" value="$(arg learning_speed_policy_mode)"/>
+      <param name="policy/fixed_v_max"
+             value="$(arg learning_speed_fixed_v_max)"/>
       <param name="policy/mock_default_v_max" value="$(arg max_vel)"/>
       <param name="topics/odom" value="Odometry"/>
       <param name="topics/occupancy" value="stage3/occupancy_inflate"/>
@@ -328,6 +334,14 @@
              value="/$(arg uav_ns)/tower_mission/mission_route"/>
       <param name="outputs/altitude_policy"
              value="/$(arg uav_ns)/tower_mission/altitude_policy"/>
+      <param name="outputs/mission_success"
+             value="/$(arg uav_ns)/tower_mission/mission_success"/>
+      <param name="outputs/mission_failure"
+             value="/$(arg uav_ns)/tower_mission/mission_failure"/>
+      <param name="outputs/mission_done"
+             value="/$(arg uav_ns)/tower_mission/mission_done"/>
+      <param name="outputs/orbit_complete"
+             value="/$(arg uav_ns)/tower_mission/orbit_complete"/>
       <param name="services/tracking"
              value="/$(arg uav_ns)/ego_mavros_bridge/enable_tracking"/>
       <param name="services/cancel"

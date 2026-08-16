@@ -62,7 +62,6 @@ entry_gate:
   radial_sample_step: 1.0
   maximum_horizontal_distance: 60.0
   minimum_clearance: 2.0
-  cloud_inflation: 0.4
   # FAST-LIO publishes obstacle hits, not a persistent free/unknown voxel
   # state. The instantaneous MID360 field-of-view ratio is therefore a risk
   # diagnostic for sector endpoints, not a hard rejection. Fresh-map,
@@ -130,7 +129,6 @@ candidate:
   radius_offsets_m: [0.0, 2.0, 4.0]
   height_offsets_m: [0.0, -1.0, -2.0, -3.0]
   minimum_clearance: 2.0
-  cloud_inflation: 0.4
   corridor_sample_step: 0.5
   blocked_corridor_penalty: 6.0
   score_clearance_weight: 0.2

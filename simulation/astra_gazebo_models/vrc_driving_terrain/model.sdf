@@ -5,11 +5,14 @@
     <link name="link">
       <collision name="collision">
         <geometry>
-          <heightmap>
-            <uri>model://vrc_driving_terrain/materials/textures/heightmap.png</uri>
-            <size>500 500 118</size>
-            <pos>0 0 -15</pos>
-          </heightmap>
+          <!--
+            Keep the exact 129 x 129 height samples, but expose them to ODE as
+            triangles. Gazebo Classic's ODE heightfield / multi-ray path stalls
+            the 20,000-ray Mid360 sensor in this world.
+          -->
+          <mesh>
+            <uri>model://vrc_driving_terrain/meshes/heightmap_collision.obj</uri>
+          </mesh>
         </geometry>
       </collision>
       <visual name="visual">

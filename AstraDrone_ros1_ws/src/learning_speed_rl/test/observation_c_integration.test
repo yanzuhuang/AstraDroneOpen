@@ -1,0 +1,17 @@
+<launch>
+  <group ns="uav_test">
+    <node pkg="learning_speed_rl" type="observation_c_node.py"
+          name="observation_c" output="screen" required="true">
+      <rosparam command="load"
+                file="$(find learning_speed_rl)/config/observation_c_trajectory_fusion.yaml"/>
+      <param name="observation_c/expected_lidar_bins" value="16" type="int"/>
+      <param name="observation_c/timing/maximum_input_age_sec" value="2.0"/>
+      <param name="observation_c/timing/maximum_state_interpolation_gap_sec" value="0.20"/>
+      <param name="observation_c/system_state/velocity_filter_alpha" value="1.0"/>
+    </node>
+
+    <test test-name="observation_c_integration"
+          pkg="learning_speed_rl" type="observation_c_integration.py"
+          time-limit="30"/>
+  </group>
+</launch>

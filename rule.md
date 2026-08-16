@@ -139,8 +139,8 @@ inspection_height = 3.0 m
 | 输入表示 | 使用的任务层净空 | 说明 |
 |---|---:|---|
 | 已膨胀 occupied map | `map_additional_clearance=0.5 m` | EGO 已包含车辆包络，任务层只加操作余量 |
-| 未膨胀原始点云 | `minimum_clearance=1.0 m`，另按 `cloud_inflation` 处理 | 不得误认为已膨胀地图 |
-| 已知粗几何 | `minimum_clearance=1.0 m`，并使用配置的粗几何/点云膨胀 | 端点 keep-out 是硬条件；走廊风险按策略处理 |
+| 未膨胀原始/过滤点云 | `minimum_clearance=1.0 m`，且只应用一次 | 不得误认为已膨胀地图，也不得再叠加任务层 inflation |
+| 已知粗几何 | `minimum_clearance=1.0 m`，且只应用一次 | 端点 keep-out 是硬条件；走廊风险按策略处理 |
 
 其他约束：
 

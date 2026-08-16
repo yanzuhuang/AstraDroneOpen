@@ -1,0 +1,42 @@
+<launch>
+  <arg name="namespace" default="vehicle"/>
+  <arg name="start_observation_v2" default="true"/>
+  <arg name="observation_v2_config"
+       default="$(find learning_speed_rl)/config/observation_v2_lidar_surrogate.yaml"/>
+  <arg name="observation_c_config"
+       default="$(find learning_speed_rl)/config/observation_c_trajectory_fusion.yaml"/>
+  <arg name="cloud_topic" default="stage3/cloud_registered_filtered"/>
+  <arg name="odom_topic" default="Odometry"/>
+  <arg name="trajectory_topic" default="planning/bspline"/>
+  <arg name="ego_applied_v_max_topic" default="learning_speed/applied_v_max"/>
+  <arg name="world_frame" default="camera_init"/>
+  <arg name="body_frame" default="body"/>
+  <arg name="sensor_frame" default="mid360_link"/>
+  <arg name="trajectory_sampling_mode" default="distance"/>
+
+  <include if="$(arg start_observation_v2)"
+           file="$(find learning_speed_rl)/launch/observation_v2_lidar_surrogate.launch">
+    <arg name="namespace" value="$(arg namespace)"/>
+    <arg name="config_file" value="$(arg observation_v2_config)"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="odom_topic" value="$(arg odom_topic)"/>
+    <arg name="world_frame" value="$(arg world_frame)"/>
+    <arg name="body_frame" value="$(arg body_frame)"/>
+    <arg name="sensor_frame" value="$(arg sensor_frame)"/>
+  </include>
+
+  <group ns="$(arg namespace)">
+    <node pkg="learning_speed_rl" type="observation_c_node.py"
+          name="observation_c" output="screen" required="true">
+      <rosparam command="load" file="$(arg observation_c_config)"/>
+      <param name="observation_c/topics/odom" value="$(arg odom_topic)"/>
+      <param name="observation_c/topics/trajectory" value="$(arg trajectory_topic)"/>
+      <param name="observation_c/topics/ego_applied_v_max"
+             value="$(arg ego_applied_v_max_topic)"/>
+      <param name="observation_c/frames/world" value="$(arg world_frame)"/>
+      <param name="observation_c/frames/body" value="$(arg body_frame)"/>
+      <param name="observation_c/trajectory_sampling_mode"
+             value="$(arg trajectory_sampling_mode)"/>
+    </node>
+  </group>
+</launch>

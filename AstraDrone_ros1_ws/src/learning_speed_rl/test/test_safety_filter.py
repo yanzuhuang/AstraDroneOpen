@@ -7,6 +7,7 @@ from learning_speed_rl.policy.safety_filter import (
     SafetyFilterConfig,
     SpeedSafetyFilter,
 )
+from learning_speed_rl.policy import FixedSpeedPolicy
 
 
 def config():
@@ -23,6 +24,15 @@ def config():
 
 
 class SpeedSafetyFilterTest(unittest.TestCase):
+    def test_fixed_policy_is_immutable_and_finite(self):
+        policy = FixedSpeedPolicy(0.16)
+        self.assertAlmostEqual(policy.predict(None), 0.16)
+        self.assertAlmostEqual(policy.predict(object()), 0.16)
+        with self.assertRaises(ValueError):
+            FixedSpeedPolicy(math.nan)
+        with self.assertRaises(ValueError):
+            FixedSpeedPolicy(0.0)
+
     def test_clamps_and_limits_fall_rate(self):
         speed_filter = SpeedSafetyFilter(config())
         self.assertAlmostEqual(speed_filter.update(-5.0, 0.0), 0.8)

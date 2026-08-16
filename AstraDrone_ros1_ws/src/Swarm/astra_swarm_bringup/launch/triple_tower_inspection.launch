@@ -60,6 +60,8 @@
        default="$(arg learning_speed_enabled)"/>
   <arg name="learning_speed_config"
        default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
+  <arg name="learning_speed_policy_mode" default="mock"/>
+  <arg name="learning_speed_fixed_v_max" default="$(arg max_vel)"/>
   <arg name="uav1_entry_sector" default="7"/>
   <arg name="uav2_entry_sector" default="8"/>
   <arg name="uav3_entry_sector" default="1"/>
@@ -169,6 +171,10 @@
     <arg name="uav2_learning_speed_enabled"
          value="$(arg uav2_learning_speed_enabled)"/>
     <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
+    <arg name="learning_speed_policy_mode"
+         value="$(arg learning_speed_policy_mode)"/>
+    <arg name="learning_speed_fixed_v_max"
+         value="$(arg learning_speed_fixed_v_max)"/>
     <arg name="takeoff_delay" value="$(arg takeoff_interval_sec)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
@@ -376,6 +382,10 @@
     <arg name="learning_speed_enabled"
          value="$(arg uav3_learning_speed_enabled)"/>
     <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
+    <arg name="learning_speed_policy_mode"
+         value="$(arg learning_speed_policy_mode)"/>
+    <arg name="learning_speed_fixed_v_max"
+         value="$(arg learning_speed_fixed_v_max)"/>
     <arg name="entry_sector" value="$(arg uav3_entry_sector)"/>
     <arg name="entry_angle_deg" value="$(arg uav3_entry_angle_deg)"/>
     <arg name="pre_entry_radius" value="$(arg pre_entry_radius)"/>
