@@ -1,0 +1,14 @@
+<launch>
+  <group ns="action_test">
+    <node pkg="learning_speed_rl" type="speed_adapter_node.py"
+          name="speed_adapter" output="screen" required="true">
+      <rosparam command="load" file="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
+      <param name="policy/mode" value="fixed"/>
+      <param name="policy/fixed_v_max" value="0.12"/>
+      <param name="safety/initial_v_max" value="0.12"/>
+    </node>
+    <test test-name="speed_action_integration"
+          pkg="learning_speed_rl" type="speed_action_integration.py"
+          time-limit="15.0"/>
+  </group>
+</launch>

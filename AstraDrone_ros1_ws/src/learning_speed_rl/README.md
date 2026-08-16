@@ -187,6 +187,9 @@ Publications:
 
 - `learning_speed/raw_v_max`: raw policy request.
 - `learning_speed/v_max`: filtered request sent only to EGO.
+- `learning_speed/action_stamped`: additive atomic audit mirror of the raw and
+  filtered values with their policy-cycle ROS timestamp; it has no subscriber
+  in EGO or the control path.
 - `learning_speed/observation/low_dim`: normalized 22-element vector.
 - `learning_speed/observation_ready`: strict readiness for future RL.
 - `learning_speed/diagnostics`: source freshness, tensor contract, request and
@@ -250,3 +253,56 @@ runtime_artifacts/learning_speed/
 
 Only a separately reviewed, selected inference model may later be copied to
 `models/`. No model is shipped or selected by this integration.
+
+## Frozen SAC transition contract and manual calibration
+
+`training/data_contract.py` freezes `learning_speed_sac_transition_v1.0` as:
+
+```text
+state_t -> requested_v_max -> filtered_v_max -> applied_v_max
+        -> state_t+1 -> reward -> terminated/truncated
+```
+
+The v1 policy input contains exactly `lidar_surrogate[3200]`,
+`future_positions_body[20][3]`, `actual_velocity_body[3]`,
+`tracking_error_body[3]` and `previous_applied_v_max`. Mission/planner state,
+clearance/clutter metrics, lidar masks/semantic and diagnostics are provenance
+or calibration-only fields and are never returned by `PolicyStateV1.policy_input()`.
+
+A transition candidate is accepted only when `state_t` is a valid atomic
+Observation C received before the requested action and its trajectory
+id/start/frame equals the newest official `planning/bspline` received before
+that action. `state_t+1` is the first newer valid Observation C received after
+the EGO applied acknowledgement. The adapter publishes requested and filtered
+values atomically on the additive `learning_speed/action_stamped` audit topic;
+the EGO applied acknowledgement remains headerless and uses its local ROS
+callback receipt time. Calibration candidates keep `reward=null`,
+`reward_defined=false` and `training_ready=false`.
+
+Attach the read-only manual calibration recorder to an already running stack:
+
+```bash
+scripts/run_sh/learning_speed_calibration.sh --namespace uav1 --run-id manual_001
+```
+
+The stack must have been started with Learning Speed explicitly enabled; the
+project-wide default remains disabled. If Observation C is already running,
+add `--observation-c-running`. Output is written only below
+`runtime_artifacts/learning_speed/calibration/<run_id>/`:
+
+- `calibration_samples.csv`: Observation C validity, body speed/tracking,
+  action chain, obstacle/clutter diagnostics, planner/mission and safety state;
+- `observation_diagnostics.jsonl`: masks/semantic, diagnostics and the existing
+  raw/inflated clearance representations kept outside the policy input;
+- `transition_candidates.jsonl`: causally checked contract records with no
+  reward and therefore not training-ready;
+- `planner_failure_episodes.csv`: failure intervals and recovered/unrecovered;
+- `run_summary.json`: mission result, safety terminal and validity totals.
+
+The recorder finalizes one second after the latched mission-done signal, or on
+normal ROS shutdown/`Ctrl+C` for a deliberately truncated manual run.
+
+The obstacle density is the fraction of 3200 angular bins labelled known
+obstacle, and the clutter count is the corresponding occupied-bin count. They
+are diagnostic proxies, not object counts, physical volume, or a replacement
+for the project's existing clearance semantics.

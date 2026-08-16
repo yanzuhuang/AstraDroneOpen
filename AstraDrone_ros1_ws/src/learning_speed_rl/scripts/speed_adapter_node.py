@@ -14,6 +14,8 @@ from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, Float32MultiArray, Float64
 
+from learning_speed_rl.msg import SpeedActionStamped
+
 from learning_speed_rl.observation import (
     LOW_DIM_FIELDS,
     LowDimObservationBuilder,
@@ -144,6 +146,9 @@ class SpeedAdapterNode:
         self._topic_applied = topic(
             "ego_applied_v_max", "learning_speed/applied_v_max"
         )
+        self._topic_action_stamped = topic(
+            "action_stamped", "learning_speed/action_stamped"
+        )
         self._topic_ready = topic(
             "observation_ready", "learning_speed/observation_ready"
         )
@@ -173,6 +178,9 @@ class SpeedAdapterNode:
 
         self._raw_pub = rospy.Publisher(self._topic_raw, Float64, queue_size=1)
         self._safe_pub = rospy.Publisher(self._topic_safe, Float64, queue_size=1)
+        self._action_stamped_pub = rospy.Publisher(
+            self._topic_action_stamped, SpeedActionStamped, queue_size=1
+        )
         self._ready_pub = rospy.Publisher(
             self._topic_ready, Bool, queue_size=1, latch=True
         )
@@ -460,6 +468,13 @@ class SpeedAdapterNode:
             return
 
         self._raw_pub.publish(Float64(data=raw_v_max))
+        action = SpeedActionStamped()
+        action.header.stamp = rospy.Time.from_sec(now_sec)
+        action.version = "learning_speed_action_v1.0"
+        action.source_mode = self._policy_mode
+        action.requested_v_max = raw_v_max
+        action.filtered_v_max = safe_v_max
+        self._action_stamped_pub.publish(action)
         self._safe_pub.publish(Float64(data=safe_v_max))
         self._low_dim_pub.publish(
             Float32MultiArray(data=observation.normalized_low_dim.tolist())

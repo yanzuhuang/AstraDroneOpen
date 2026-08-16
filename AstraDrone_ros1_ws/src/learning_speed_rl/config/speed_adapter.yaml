@@ -45,6 +45,7 @@ topics:
   mock_v_max: learning_speed/mock_v_max
   raw_v_max: learning_speed/raw_v_max
   safe_v_max: learning_speed/v_max
+  action_stamped: learning_speed/action_stamped
   ego_applied_v_max: learning_speed/applied_v_max
   observation_ready: learning_speed/observation_ready
   low_dim_observation: learning_speed/observation/low_dim

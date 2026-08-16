@@ -21,6 +21,7 @@ add_message_files(
   FILES
   LidarSurrogateStamped.msg
   ObservationC.msg
+  SpeedActionStamped.msg
 )
 
 generate_messages(
@@ -42,6 +43,7 @@ catkin_install_python(PROGRAMS
   scripts/observation_c_node.py
   scripts/observation_c_offline_validation.py
   scripts/fixed_speed_baseline_recorder.py
+  scripts/calibration_data_recorder.py
   scripts/enrich_fixed_speed_baseline.py
   scripts/summarize_fixed_speed_baseline.py
   scripts/summarize_high_speed_exploration.py
@@ -59,5 +61,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_observation_c.py)
   catkin_add_nosetests(test/test_safety_filter.py)
   catkin_add_nosetests(test/test_training_artifacts.py)
+  catkin_add_nosetests(test/test_training_data_contract.py)
   add_rostest(test/observation_c_integration.test)
+  add_rostest(test/speed_action_integration.test)
 endif()

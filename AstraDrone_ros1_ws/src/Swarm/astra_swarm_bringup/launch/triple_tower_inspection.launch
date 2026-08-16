@@ -51,6 +51,9 @@
        default="$(arg low_altitude_enabled)"/>
   <arg name="uav3_orbit_speed_scale_enabled"
        default="$(arg low_altitude_enabled)"/>
+  <!-- Declare the reviewed ceiling before Learning Speed uses it as a
+       default; roslaunch resolves arg defaults in declaration order. -->
+  <arg name="max_vel" default="0.20"/>
   <arg name="learning_speed_enabled" default="false"/>
   <arg name="uav1_learning_speed_enabled"
        default="$(arg learning_speed_enabled)"/>
@@ -96,7 +99,6 @@
   <arg name="uav1_mission_minimum_height" default="1.0"/>
   <arg name="uav2_mission_minimum_height" default="2.0"/>
   <arg name="uav3_mission_minimum_height" default="2.0"/>
-  <arg name="max_vel" default="0.20"/>
   <arg name="max_acc" default="0.50"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
