@@ -1,0 +1,75 @@
+<launch>
+  <arg name="enable_control" default="false"/>
+  <arg name="fixed_v_max" default="0.30"/>
+  <arg name="speed_ceiling" default="1.50"/>
+  <arg name="max_acc" default="0.50"/>
+  <arg name="run_id" default="manual_preview"/>
+  <arg name="environment" default="B"/>
+  <arg name="output_dir"
+       default="$(find learning_speed_rl)/../../../../runtime_artifacts/learning_speed/calibration/manual_preview"/>
+  <arg name="world"
+       default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
+  <arg name="uav1_spawn_x" default="0.0"/>
+  <arg name="spawn_y" default="0.0"/>
+  <arg name="tower_center_x" default="-10.0551"/>
+  <arg name="tower_center_y" default="19.7104"/>
+  <arg name="crane_center_x" default="2.7535"/>
+  <arg name="task_config"
+       default="$(find astra_tower_mission)/config/low_altitude_inspection.yaml"/>
+  <arg name="mission_report_file" default="$(arg output_dir)/mission.csv"/>
+  <arg name="d435_enabled" default="false"/>
+  <arg name="lidar_downsample" default="1"/>
+
+  <!-- Manual calibration uses the reviewed fixed source.  No mock, learned,
+       SAC or model-inference source is started by this launch. -->
+  <include file="$(find astra_swarm_bringup)/launch/triple_tower_inspection.launch">
+    <arg name="enable_control" value="false"/>
+    <arg name="uav1_enable_control" value="$(arg enable_control)"/>
+    <arg name="uav2_enable_control" value="false"/>
+    <arg name="uav3_enable_control" value="false"/>
+    <arg name="uav1_enabled" value="true"/>
+    <arg name="uav2_enabled" value="false"/>
+    <arg name="uav3_enabled" value="false"/>
+    <arg name="uav1_mission_enabled" value="true"/>
+    <arg name="uav2_mission_enabled" value="false"/>
+    <arg name="uav3_mission_enabled" value="false"/>
+    <arg name="uav1_coordination_enabled" value="false"/>
+    <arg name="uav2_coordination_enabled" value="false"/>
+    <arg name="uav3_coordination_enabled" value="false"/>
+    <arg name="swarm_services_enabled" value="false"/>
+    <arg name="swarm_vehicle_namespaces" value="[/uav1]"/>
+    <arg name="uav1_orbit_permission_enabled" value="false"/>
+    <arg name="uav1_orbit_speed_scale_enabled" value="false"/>
+    <arg name="uav1_learning_speed_enabled" value="true"/>
+    <arg name="learning_speed_policy_mode" value="fixed"/>
+    <arg name="learning_speed_fixed_v_max" value="$(arg fixed_v_max)"/>
+    <arg name="max_vel" value="$(arg speed_ceiling)"/>
+    <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="planning_horizon" value="7.5"/>
+    <arg name="task_config" value="$(arg task_config)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
+    <arg name="spawn_y" value="$(arg spawn_y)"/>
+    <arg name="tower_center_x" value="$(arg tower_center_x)"/>
+    <arg name="tower_center_y" value="$(arg tower_center_y)"/>
+    <arg name="crane_center_x" value="$(arg crane_center_x)"/>
+    <arg name="mission_overall_timeout" value="900.0"/>
+    <arg name="gui" value="false"/>
+    <arg name="start_rviz" value="false"/>
+    <arg name="start_rviz_diagnostics" value="false"/>
+    <arg name="d435_enabled" value="$(arg d435_enabled)"/>
+    <arg name="lidar_downsample" value="$(arg lidar_downsample)"/>
+    <arg name="evidence_record_enabled" value="false"/>
+    <arg name="uav1_report_file" value="$(arg mission_report_file)"/>
+  </include>
+
+  <!-- Reuse the frozen Data Contract collector.  It starts the read-only
+       Observation C pipeline and finalizes after the latched mission terminal. -->
+  <include file="$(find learning_speed_rl)/launch/calibration_data_collection.launch">
+    <arg name="namespace" value="uav1"/>
+    <arg name="run_id" value="$(arg run_id)"/>
+    <arg name="environment" value="$(arg environment)"/>
+    <arg name="output_dir" value="$(arg output_dir)"/>
+    <arg name="start_observation_c" value="true"/>
+  </include>
+</launch>

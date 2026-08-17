@@ -3,6 +3,52 @@ string version
 bool valid
 string[] diagnostics
 
+# Per-sample read-only provenance. These fields are diagnostics only and are
+# deliberately excluded from the frozen five-item policy_input().
+time lookup_receipt_time
+float64 source_to_receipt_latency_sec
+string kinematic_lookup_result
+string kinematic_lookup_failure_reason
+bool state_before_missing
+time state_before_stamp
+bool state_after_missing
+time state_after_stamp
+float64 dt_before_sec
+float64 dt_after_sec
+float64 bracket_span_sec
+float64 nearest_state_dt_sec
+bool state_buffer_oldest_missing
+time state_buffer_oldest_stamp
+bool state_buffer_newest_missing
+time state_buffer_newest_stamp
+uint32 state_buffer_size
+float64 state_buffer_coverage_sec
+float64 latest_state_age_at_lookup_sec
+float64 fast_lio_source_rate_hz
+float64 fast_lio_state_insert_rate_hz
+uint64 state_insert_count
+uint64 out_of_order_state_count
+uint64 duplicate_state_stamp_count
+uint64 state_buffer_eviction_count
+
+string trajectory_lookup_result
+uint32 trajectory_history_size
+int64 selected_trajectory_id
+bool selected_trajectory_missing
+time selected_trajectory_start_stamp
+time selected_trajectory_end_stamp
+int64 latest_trajectory_id_at_lookup
+bool latest_trajectory_missing
+time latest_trajectory_start_stamp
+
+string lidar_invalid_reason
+uint32 lidar_input_points
+uint32 lidar_finite_points
+uint32 lidar_in_range_points
+uint32 lidar_history_frames
+float64 lidar_source_rate_hz
+float64 lidar_build_duration_ms
+
 float32[] lidar_surrogate
 float32[] lidar_valid_mask
 float32[] lidar_unknown_mask

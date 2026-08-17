@@ -17,6 +17,7 @@ from learning_speed_rl.observation.v2 import (
     LidarSurrogateConfig,
     Pose3D,
     PoseBuffer,
+    preserve_source_stamp,
 )
 
 
@@ -223,6 +224,12 @@ class SurrogateSemanticTest(unittest.TestCase):
             direction.reshape(1, 3), [frame], frame.pose_world_body
         )
         self.assertLess(observed_free_range[0], 2.5)
+
+
+class SourceTimestampPreservationTest(unittest.TestCase):
+    def test_node_preserves_original_ros_stamp_without_float_round_trip(self):
+        source_stamp = object()
+        self.assertIs(preserve_source_stamp(source_stamp), source_stamp)
 
 
 if __name__ == "__main__":

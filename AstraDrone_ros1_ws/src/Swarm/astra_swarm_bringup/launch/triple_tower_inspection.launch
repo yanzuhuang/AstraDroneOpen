@@ -28,8 +28,6 @@
   <!-- Mid360 plugin-level ray decimation.  Keep 1 as the validated default;
        larger integers are explicit simulation resource trade-offs. -->
   <arg name="lidar_downsample" default="1"/>
-  <arg name="world"
-       default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/low_altitude_inspection.yaml"/>
   <arg name="takeoff_interval_sec" default="0.0"/>
@@ -88,6 +86,9 @@
   <arg name="uav2_spawn_x" default="4.0"/>
   <arg name="uav3_spawn_x" default="8.0"/>
   <arg name="spawn_y" default="0.0"/>
+  <arg name="tower_center_x" default="-10.0551"/>
+  <arg name="tower_center_y" default="19.7104"/>
+  <arg name="crane_center_x" default="2.7535"/>
   <arg name="map_size_z" default="46.0"/>
   <!-- UAV3's local tower center is x=-18.0551.  A 16.5 m same-sector
        candidate plus the unchanged 7.5 m EGO horizon reaches x=-42.0551;
@@ -129,7 +130,6 @@
            file="$(find astra_swarm_bringup)/launch/triple_px4_mavros.launch">
     <arg name="gui" value="$(arg gui)"/>
     <arg name="use_sim_time" value="$(arg use_sim_time)"/>
-    <arg name="world" value="$(arg world)"/>
     <arg name="world" value="$(arg world)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
     <arg name="uav2_spawn_x" value="$(arg uav2_spawn_x)"/>
@@ -244,7 +244,11 @@
          value="[$(arg uav1_top_height), $(arg uav2_top_height), $(arg uav3_top_height)]"/>
     <arg name="swarm_phase_degrees"
          value="[$(arg uav1_entry_angle_deg), $(arg uav2_entry_angle_deg), $(arg uav3_entry_angle_deg)]"/>
-    <arg name="swarm_tower_center" value="[-10.0551, 19.7104]"/>
+    <arg name="tower_center_x" value="$(arg tower_center_x)"/>
+    <arg name="tower_center_y" value="$(arg tower_center_y)"/>
+    <arg name="crane_center_x" value="$(arg crane_center_x)"/>
+    <arg name="swarm_tower_center"
+         value="[$(arg tower_center_x), $(arg tower_center_y)]"/>
     <arg name="desired_phase_separation_degrees"
          value="$(arg target_phase_deg)"/>
     <arg name="formation_role_order" value="[3, 2, 1]"/>

@@ -69,11 +69,17 @@
   <arg name="uav1_spawn_x" default="0.0"/>
   <arg name="uav2_spawn_x" default="2.0"/>
   <arg name="spawn_y" default="0.0"/>
+  <!-- Global task geometry. Defaults preserve the reviewed worksite route;
+       callers may select a different fixed route for another world. -->
+  <arg name="tower_center_x" default="-10.0551"/>
+  <arg name="tower_center_y" default="19.7104"/>
+  <arg name="crane_center_x" default="2.7535"/>
   <arg name="swarm_uav_ids" default="[1, 2]"/>
   <arg name="swarm_vehicle_namespaces" default="[/uav1, /uav2]"/>
   <arg name="swarm_mission_heights" default="[34.0, 28.0]"/>
   <arg name="swarm_phase_degrees" default="[270.0, 45.0]"/>
-  <arg name="swarm_tower_center" default="[-10.0551, 19.7104]"/>
+  <arg name="swarm_tower_center"
+       default="[$(arg tower_center_x), $(arg tower_center_y)]"/>
   <arg name="desired_phase_separation_degrees" default="120.0"/>
   <arg name="phase_tolerance_degrees" default="15.0"/>
   <arg name="entry_nominal_speed" default="0.20"/>
@@ -391,11 +397,11 @@
     <arg name="swarm_origin_x" value="$(arg uav1_spawn_x)"/>
     <arg name="swarm_origin_y" value="$(arg spawn_y)"/>
     <arg name="tower_center_x"
-         value="$(eval -10.0551 - float(arg('uav1_spawn_x')))"/>
+         value="$(eval float(arg('tower_center_x')) - float(arg('uav1_spawn_x')))"/>
     <arg name="tower_center_y"
-         value="$(eval 19.7104 - float(arg('spawn_y')))"/>
+         value="$(eval float(arg('tower_center_y')) - float(arg('spawn_y')))"/>
     <arg name="crane_center_x"
-         value="$(eval 2.7535 - float(arg('uav1_spawn_x')))"/>
+         value="$(eval float(arg('crane_center_x')) - float(arg('uav1_spawn_x')))"/>
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
     <arg name="report_file" value="$(arg uav1_report_file)"/>
@@ -465,11 +471,11 @@
     <arg name="swarm_origin_x" value="$(arg uav2_spawn_x)"/>
     <arg name="swarm_origin_y" value="$(arg spawn_y)"/>
     <arg name="tower_center_x"
-         value="$(eval -10.0551 - float(arg('uav2_spawn_x')))"/>
+         value="$(eval float(arg('tower_center_x')) - float(arg('uav2_spawn_x')))"/>
     <arg name="tower_center_y"
-         value="$(eval 19.7104 - float(arg('spawn_y')))"/>
+         value="$(eval float(arg('tower_center_y')) - float(arg('spawn_y')))"/>
     <arg name="crane_center_x"
-         value="$(eval 2.7535 - float(arg('uav2_spawn_x')))"/>
+         value="$(eval float(arg('crane_center_x')) - float(arg('uav2_spawn_x')))"/>
     <arg name="bridge_config"
          value="$(find astra_swarm_bringup)/config/uav2_bridge.yaml"/>
     <arg name="report_file" value="$(arg uav2_report_file)"/>

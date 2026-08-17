@@ -302,6 +302,23 @@ add `--observation-c-running`. Output is written only below
 The recorder finalizes one second after the latched mission-done signal, or on
 normal ROS shutdown/`Ctrl+C` for a deliberately truncated manual run.
 
+For the controlled UAV1 two-environment fixed-speed calibration matrix, the
+batch wrapper uses the same task configuration within each environment and
+changes only the immutable fixed source value:
+
+```bash
+scripts/run_sh/learning_speed_manual_batch.sh
+```
+
+It runs `0.30, 0.50, 0.75, 1.00, 1.25, 1.50 m/s` once in environment A
+(`outdoor_village.world`, UAV1 spawn `(-14, 0)`) and once in environment B
+(`worksite.world`, UAV1 spawn `(0, 0)`).  A second attempt is allowed only when
+the first attempt ended without a mission/safety terminal or planner/safety
+failure evidence.  Experimental failures are retained without retry.  The
+result table and data-quality-only analysis are written to
+`runtime_artifacts/learning_speed/calibration/manual_calibration_runs.csv` and
+`manual_calibration_report.md`; neither script defines a reward or starts SAC.
+
 The obstacle density is the fraction of 3200 angular bins labelled known
 obstacle, and the clutter count is the corresponding occupied-bin count. They
 are diagnostic proxies, not object counts, physical volume, or a replacement

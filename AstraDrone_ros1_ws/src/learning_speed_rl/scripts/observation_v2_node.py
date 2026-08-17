@@ -32,6 +32,7 @@ from learning_speed_rl.observation.v2 import (
     LidarSurrogateConfig,
     Pose3D,
     PoseBuffer,
+    preserve_source_stamp,
 )
 from learning_speed_rl.observation.v2.lidar_surrogate import voxel_downsample
 
@@ -134,12 +135,14 @@ class ObservationV2Node:
         self._visualization_pub = rospy.Publisher(topic("visualization", "learning_speed/observation_v2/visualization"), MarkerArray, queue_size=1)
 
         self._last_cloud_stamp = None
+        self._last_input_stamp = None
         self._last_odom_stamp = None
         self._last_pose_receive_sec = None
         self._last_cloud_receive_sec = None
         self._last_observation = None
         self._last_failure = "waiting_for_data"
         self._cloud_intervals = deque(maxlen=100)
+        self._input_source_intervals = deque(maxlen=100)
         self._output_stamp_intervals = deque(maxlen=100)
         self._output_wall_intervals = deque(maxlen=100)
         self._pending_clouds = deque(maxlen=max(10, 2 * self._history_frames))
@@ -174,6 +177,9 @@ class ObservationV2Node:
     def _clear_for_time_reset(self, reason):
         self._pose_buffer.clear()
         self._cloud_history.clear()
+        self._input_source_intervals.clear()
+        self._last_input_stamp = None
+        self._last_cloud_stamp = None
         self._last_observation = None
         self._last_failure = reason
         self._reset_count += 1
@@ -230,14 +236,57 @@ class ObservationV2Node:
     def _cloud_callback(self, message):
         self._process_cloud(message, allow_pending=True)
 
+    def _lidar_source_rate(self):
+        return self._frequency(self._input_source_intervals)
+
+    def _publish_invalid_packet(
+        self, stamp, frame, reason, cycle_start,
+        input_points=0, finite_points=0, in_range_points=0,
+        history_frames=0, source_stamp=None,
+    ):
+        packet = LidarSurrogateStamped()
+        packet.header.stamp = (
+            preserve_source_stamp(source_stamp)
+            if source_stamp is not None
+            else rospy.Time.from_sec(max(0.0, float(stamp)))
+        )
+        packet.header.frame_id = frame or self._expected_body_frame
+        packet.version = "lidar_surrogate_v2.0"
+        packet.valid = False
+        packet.diagnostics = [str(reason)]
+        packet.input_points = int(max(0, input_points))
+        packet.finite_points = int(max(0, finite_points))
+        packet.in_range_points = int(max(0, in_range_points))
+        packet.history_frames = int(max(0, history_frames))
+        packet.lidar_source_rate_hz = self._lidar_source_rate()
+        packet.build_duration_ms = (perf_counter() - cycle_start) * 1000.0
+        self._stamped_pub.publish(packet)
+        self._valid_pub.publish(Bool(data=False))
+
     def _process_cloud(self, message, allow_pending):
         cycle_start = perf_counter()
         stamp = message.header.stamp.to_sec()
         cloud_frame = message.header.frame_id.lstrip("/")
+        input_points = int(message.width * message.height)
+        with self._lock:
+            if self._last_input_stamp is not None and stamp > self._last_input_stamp:
+                self._input_source_intervals.append(stamp - self._last_input_stamp)
+            if self._last_input_stamp is None or stamp >= self._last_input_stamp:
+                self._last_input_stamp = stamp
         if stamp <= 0.0 or cloud_frame != self._expected_world_frame:
+            reason = (
+                "timestamp_invalid" if stamp <= 0.0
+                else "frame_invalid:{}!={}".format(
+                    cloud_frame, self._expected_world_frame
+                )
+            )
             with self._lock:
-                self._last_failure = "cloud_stamp_invalid" if stamp <= 0.0 else "cloud_frame_mismatch:{}!= {}".format(cloud_frame, self._expected_world_frame)
-            self._valid_pub.publish(Bool(data=False))
+                self._last_failure = reason
+            self._publish_invalid_packet(
+                stamp, cloud_frame, reason, cycle_start,
+                input_points=input_points,
+                source_stamp=message.header.stamp,
+            )
             return
         with self._lock:
             if self._last_cloud_stamp is not None and stamp < self._last_cloud_stamp - 1.0e-9:
@@ -253,24 +302,42 @@ class ObservationV2Node:
                     self._last_failure = "waiting_for_timestamped_pose"
                 else:
                     self._last_failure = pose_mode
-            self._valid_pub.publish(Bool(data=False))
+            self._publish_invalid_packet(
+                stamp, self._expected_body_frame,
+                "timestamp_sync:{}".format(pose_mode), cycle_start,
+                input_points=input_points,
+                history_frames=self._cloud_history.size,
+                source_stamp=message.header.stamp,
+            )
             return
         if newest_pose_stamp is None or newest_pose_stamp - stamp > self._maximum_cloud_pose_delta + 1.0e-9:
             with self._lock:
                 self._last_failure = "cloud_pose_timestamp_mismatch"
-            self._valid_pub.publish(Bool(data=False))
+            self._publish_invalid_packet(
+                stamp, self._expected_body_frame,
+                "timestamp_sync:cloud_pose_timestamp_mismatch", cycle_start,
+                input_points=input_points,
+                history_frames=self._cloud_history.size,
+                source_stamp=message.header.stamp,
+            )
             return
 
         decode_start = perf_counter()
         try:
             points_world = self._decode_points(message)
         except (KeyError, ValueError, TypeError) as error:
+            reason = "pointcloud_decode_failed:{}".format(error)
             with self._lock:
-                self._last_failure = "pointcloud_decode_failed:{}".format(error)
-            self._valid_pub.publish(Bool(data=False))
+                self._last_failure = reason
+            self._publish_invalid_packet(
+                stamp, self._expected_body_frame, reason, cycle_start,
+                input_points=input_points,
+                history_frames=self._cloud_history.size,
+                source_stamp=message.header.stamp,
+            )
             return
         decode_ms = (perf_counter() - decode_start) * 1000.0
-        input_points = int(message.width * message.height)
+        finite_points = int(points_world.shape[0])
         points_body = pose.world_to_body(points_world)
         ranges = np.linalg.norm(points_body, axis=1)
         valid = (
@@ -279,6 +346,7 @@ class ObservationV2Node:
             & (ranges > self._minimum_range)
             & (ranges <= self._distance_clip)
         )
+        in_range_points = int(np.count_nonzero(valid))
         downsample_start = perf_counter()
         points_body = voxel_downsample(points_body[valid], self._voxel_size)
         per_frame_downsample_ms = (perf_counter() - downsample_start) * 1000.0
@@ -304,15 +372,34 @@ class ObservationV2Node:
                 self._last_failure = "warming_history:{}/{}".format(len(frames), self._minimum_history_frames)
                 self._input_points = input_points
                 self._frame_points = int(points_body.shape[0])
-            self._valid_pub.publish(Bool(data=False))
+            self._publish_invalid_packet(
+                stamp, self._expected_body_frame,
+                "insufficient_history:{}/{}".format(
+                    len(frames), self._minimum_history_frames
+                ),
+                cycle_start,
+                input_points=input_points,
+                finite_points=finite_points,
+                in_range_points=in_range_points,
+                history_frames=len(frames),
+                source_stamp=message.header.stamp,
+            )
             return
 
         try:
             observation, aligned, timings = self._builder.build(frames, self._expected_body_frame)
         except (RuntimeError, ValueError) as error:
+            reason = "build_failed:{}".format(error)
             with self._lock:
-                self._last_failure = "build_failed:{}".format(error)
-            self._valid_pub.publish(Bool(data=False))
+                self._last_failure = reason
+            self._publish_invalid_packet(
+                stamp, self._expected_body_frame, reason, cycle_start,
+                input_points=input_points,
+                finite_points=finite_points,
+                in_range_points=in_range_points,
+                history_frames=len(frames),
+                source_stamp=message.header.stamp,
+            )
             return
         total_ms = (perf_counter() - cycle_start) * 1000.0
         timings.update(
@@ -320,7 +407,15 @@ class ObservationV2Node:
             per_frame_downsample_ms=per_frame_downsample_ms,
             callback_total_ms=total_ms,
         )
-        self._publish_observation(observation, aligned)
+        self._publish_observation(
+            observation, aligned,
+            source_stamp=message.header.stamp,
+            input_points=input_points,
+            finite_points=finite_points,
+            in_range_points=in_range_points,
+            history_frames=len(frames),
+            build_duration_ms=total_ms,
+        )
         wall_now = perf_counter()
         with self._lock:
             if self._last_cloud_stamp is not None and stamp > self._last_cloud_stamp:
@@ -346,7 +441,10 @@ class ObservationV2Node:
         _array_layout(message, label, len(message.data))
         publisher.publish(message)
 
-    def _publish_observation(self, observation, aligned):
+    def _publish_observation(
+        self, observation, aligned, source_stamp, input_points, finite_points,
+        in_range_points, history_frames, build_duration_ms,
+    ):
         self._publish_float_array(self._surrogate_pub, observation.lidar_surrogate, observation.version)
         self._publish_float_array(self._valid_mask_pub, observation.lidar_valid_mask, "lidar_valid_mask")
         self._publish_float_array(self._unknown_mask_pub, observation.unknown_mask, "unknown_mask")
@@ -354,18 +452,32 @@ class ObservationV2Node:
         _array_layout(semantic, "semantic:0_unknown,1_free,2_obstacle", observation.number_of_bins)
         self._semantic_pub.publish(semantic)
         stamped = LidarSurrogateStamped()
-        stamped.header.stamp = rospy.Time.from_sec(observation.stamp_sec)
+        # Preserve the original ROS sec/nsec pair. A float to_sec()/from_sec()
+        # round trip was observed to subtract exactly 1 ns in worksite, turning
+        # a same-scan FAST-LIO state into a false 0.10 s interpolation gap.
+        stamped.header.stamp = preserve_source_stamp(source_stamp)
         stamped.header.frame_id = observation.frame_id
         stamped.version = observation.version
+        stamped.valid = True
+        stamped.diagnostics = []
         stamped.lidar_surrogate = observation.lidar_surrogate.astype(np.float32).tolist()
         stamped.lidar_valid_mask = observation.lidar_valid_mask.astype(np.float32).tolist()
         stamped.unknown_mask = observation.unknown_mask.astype(np.float32).tolist()
         stamped.semantic = observation.semantic.astype(np.uint8).tolist()
+        stamped.input_points = int(input_points)
+        stamped.finite_points = int(finite_points)
+        stamped.in_range_points = int(in_range_points)
+        stamped.history_frames = int(history_frames)
+        stamped.lidar_source_rate_hz = self._lidar_source_rate()
+        stamped.build_duration_ms = float(build_duration_ms)
         self._stamped_pub.publish(stamped)
         if aligned.shape[0] > self._maximum_aligned_points:
             stride = int(math.ceil(float(aligned.shape[0]) / self._maximum_aligned_points))
             aligned = aligned[::stride]
-        header = Header(stamp=rospy.Time.from_sec(observation.stamp_sec), frame_id=observation.frame_id)
+        header = Header(
+            stamp=preserve_source_stamp(source_stamp),
+            frame_id=observation.frame_id,
+        )
         self._aligned_pub.publish(point_cloud2.create_cloud_xyz32(header, aligned.tolist()))
         if self._visualization_enabled:
             self._visualization_pub.publish(self._make_markers(observation))

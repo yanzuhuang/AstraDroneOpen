@@ -1,8 +1,9 @@
 """Timestamped FAST-LIO kinematic state with fail-closed interpolation."""
 
 from bisect import bisect_left, bisect_right
+from collections import deque
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Deque, List, Optional, Tuple
 
 import numpy as np
 
@@ -22,6 +23,31 @@ class KinematicState:
         object.__setattr__(self, "velocity_world", velocity)
 
 
+@dataclass(frozen=True)
+class KinematicLookupDiagnostics:
+    target_stamp_sec: float
+    receipt_stamp_sec: Optional[float]
+    before_stamp_sec: Optional[float]
+    after_stamp_sec: Optional[float]
+    dt_before_sec: Optional[float]
+    dt_after_sec: Optional[float]
+    bracket_span_sec: Optional[float]
+    nearest_state_dt_sec: Optional[float]
+    oldest_stamp_sec: Optional[float]
+    newest_stamp_sec: Optional[float]
+    buffer_size: int
+    buffer_coverage_sec: float
+    latest_state_age_at_lookup_sec: Optional[float]
+    source_rate_hz: float
+    insert_rate_hz: float
+    insert_count: int
+    out_of_order_state_count: int
+    duplicate_state_stamp_count: int
+    eviction_count: int
+    result: str
+    failure_reason: str
+
+
 class KinematicStateBuffer:
     def __init__(
         self, capacity: int, maximum_interpolation_gap_sec: float,
@@ -39,21 +65,57 @@ class KinematicStateBuffer:
         self.velocity_filter_alpha = float(velocity_filter_alpha)
         self.maximum_velocity_dt_sec = float(maximum_velocity_dt_sec)
         self._states: List[KinematicState] = []
+        self._source_intervals: Deque[float] = deque(maxlen=100)
+        self._receipt_intervals: Deque[float] = deque(maxlen=100)
+        self._last_receipt_sec: Optional[float] = None
+        self._insert_count = 0
+        self._out_of_order_state_count = 0
+        self._duplicate_state_stamp_count = 0
+        self._eviction_count = 0
 
     def clear(self) -> None:
         self._states = []
+        self._source_intervals.clear()
+        self._receipt_intervals.clear()
+        self._last_receipt_sec = None
+
+    @property
+    def size(self) -> int:
+        return len(self._states)
+
+    @property
+    def oldest_stamp(self) -> Optional[float]:
+        return None if not self._states else self._states[0].pose.stamp_sec
 
     @property
     def newest_stamp(self) -> Optional[float]:
         return None if not self._states else self._states[-1].pose.stamp_sec
 
-    def add_pose(self, pose: Pose3D) -> bool:
+    @staticmethod
+    def _rate(intervals: Deque[float]) -> float:
+        return 0.0 if not intervals else 1.0 / (sum(intervals) / len(intervals))
+
+    def add_pose(self, pose: Pose3D, receipt_sec: Optional[float] = None) -> bool:
         reset = bool(
             self._states
             and pose.stamp_sec < self._states[-1].pose.stamp_sec - 1.0e-9
         )
         if reset:
+            self._out_of_order_state_count += 1
             self.clear()
+        self._insert_count += 1
+        if self._states:
+            source_dt = pose.stamp_sec - self._states[-1].pose.stamp_sec
+            if source_dt > 1.0e-9:
+                self._source_intervals.append(source_dt)
+            elif abs(source_dt) <= 1.0e-9:
+                self._duplicate_state_stamp_count += 1
+        if receipt_sec is not None and np.isfinite(receipt_sec):
+            if self._last_receipt_sec is not None:
+                receipt_dt = float(receipt_sec) - self._last_receipt_sec
+                if receipt_dt > 1.0e-9:
+                    self._receipt_intervals.append(receipt_dt)
+            self._last_receipt_sec = float(receipt_sec)
         velocity = np.zeros(3, dtype=np.float64)
         valid = False
         if self._states:
@@ -74,28 +136,109 @@ class KinematicStateBuffer:
             self._states[-1] = state
         else:
             self._states.append(state)
+        if len(self._states) > self.capacity:
+            self._eviction_count += len(self._states) - self.capacity
         self._states = self._states[-self.capacity :]
         return reset
 
     def lookup(self, stamp_sec: float) -> Tuple[Optional[KinematicState], str]:
-        if not self._states:
-            return None, "kinematic_buffer_empty"
+        state, result, _ = self.lookup_with_diagnostics(stamp_sec)
+        return state, result
+
+    def lookup_with_diagnostics(
+        self, stamp_sec: float, receipt_sec: Optional[float] = None,
+    ) -> Tuple[Optional[KinematicState], str, KinematicLookupDiagnostics]:
         stamps = [state.pose.stamp_sec for state in self._states]
+        oldest = None if not stamps else stamps[0]
+        newest = None if not stamps else stamps[-1]
+        coverage = 0.0 if oldest is None else max(0.0, newest - oldest)
+        latest_age = (
+            None
+            if receipt_sec is None or newest is None
+            else float(receipt_sec) - newest
+        )
+
+        def finish(
+            state, result, failure, before=None, after=None,
+        ):
+            dt_before = None if before is None else stamp_sec - before
+            dt_after = None if after is None else after - stamp_sec
+            bracket = (
+                None if before is None or after is None else after - before
+            )
+            candidates = [
+                value for value in (dt_before, dt_after)
+                if value is not None and value >= -1.0e-9
+            ]
+            nearest = None if not candidates else min(abs(value) for value in candidates)
+            diagnostic = KinematicLookupDiagnostics(
+                target_stamp_sec=float(stamp_sec),
+                receipt_stamp_sec=(
+                    None if receipt_sec is None else float(receipt_sec)
+                ),
+                before_stamp_sec=before,
+                after_stamp_sec=after,
+                dt_before_sec=dt_before,
+                dt_after_sec=dt_after,
+                bracket_span_sec=bracket,
+                nearest_state_dt_sec=nearest,
+                oldest_stamp_sec=oldest,
+                newest_stamp_sec=newest,
+                buffer_size=len(stamps),
+                buffer_coverage_sec=coverage,
+                latest_state_age_at_lookup_sec=latest_age,
+                source_rate_hz=self._rate(self._source_intervals),
+                insert_rate_hz=self._rate(self._receipt_intervals),
+                insert_count=self._insert_count,
+                out_of_order_state_count=self._out_of_order_state_count,
+                duplicate_state_stamp_count=self._duplicate_state_stamp_count,
+                eviction_count=self._eviction_count,
+                result=result,
+                failure_reason=failure,
+            )
+            return state, result, diagnostic
+
+        if not self._states:
+            return finish(None, "kinematic_buffer_empty", "kinematic_buffer_empty")
         index = bisect_left(stamps, stamp_sec)
         if index < len(stamps) and abs(stamps[index] - stamp_sec) <= 1.0e-9:
             state = self._states[index]
-            return (state, "exact") if state.velocity_valid else (None, "velocity_unavailable")
+            if state.velocity_valid:
+                return finish(state, "exact", "", stamps[index], stamps[index])
+            return finish(
+                None, "velocity_unavailable", "velocity_unavailable",
+                stamps[index], stamps[index],
+            )
         if index == 0:
-            return None, "observation_precedes_kinematic_history"
+            return finish(
+                None,
+                "observation_precedes_kinematic_history",
+                "observation_precedes_kinematic_history",
+                after=stamps[0],
+            )
         if index == len(stamps):
-            return None, "observation_newer_than_kinematic_history"
+            return finish(
+                None,
+                "observation_newer_than_kinematic_history",
+                "observation_newer_than_kinematic_history",
+                before=stamps[-1],
+            )
         before = self._states[index - 1]
         after = self._states[index]
         gap = after.pose.stamp_sec - before.pose.stamp_sec
-        if gap <= 0.0 or gap > self.maximum_interpolation_gap_sec:
-            return None, "kinematic_interpolation_gap_too_large"
+        if gap <= 0.0 or gap > self.maximum_interpolation_gap_sec + 1.0e-9:
+            return finish(
+                None,
+                "kinematic_interpolation_gap_too_large",
+                "kinematic_interpolation_gap_too_large",
+                before.pose.stamp_sec,
+                after.pose.stamp_sec,
+            )
         if not before.velocity_valid or not after.velocity_valid:
-            return None, "velocity_unavailable"
+            return finish(
+                None, "velocity_unavailable", "velocity_unavailable",
+                before.pose.stamp_sec, after.pose.stamp_sec,
+            )
         ratio = (stamp_sec - before.pose.stamp_sec) / gap
         pose = Pose3D(
             stamp_sec=stamp_sec,
@@ -107,7 +250,10 @@ class KinematicStateBuffer:
         velocity = (
             (1.0 - ratio) * before.velocity_world + ratio * after.velocity_world
         )
-        return KinematicState(pose, velocity, True), "interpolated"
+        return finish(
+            KinematicState(pose, velocity, True), "interpolated", "",
+            before.pose.stamp_sec, after.pose.stamp_sec,
+        )
 
 
 class TimestampedScalarBuffer:

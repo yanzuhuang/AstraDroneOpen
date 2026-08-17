@@ -1,6 +1,7 @@
 <launch>
   <arg name="namespace" default="uav1"/>
   <arg name="run_id" default="manual"/>
+  <arg name="environment" default=""/>
   <arg name="output_dir"
        default="$(find learning_speed_rl)/../../../runtime_artifacts/learning_speed/calibration/manual"/>
   <arg name="start_observation_c" default="true"/>
@@ -33,6 +34,7 @@
           required="true">
       <rosparam command="load" file="$(arg config_file)"/>
       <param name="run_id" value="$(arg run_id)"/>
+      <param name="environment" value="$(arg environment)"/>
       <param name="output_dir" value="$(arg output_dir)"/>
       <rosparam subst_value="true">
         tracking_safety:

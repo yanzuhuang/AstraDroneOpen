@@ -3,8 +3,13 @@
 from .bspline import EgoBsplineTrajectory
 from .builder import ObservationCBuilder
 from .sampling import TrajectorySampler, TrajectorySamplingConfig
-from .state_buffer import KinematicState, KinematicStateBuffer, TimestampedScalarBuffer
-from .trajectory_store import ActiveTrajectoryStore
+from .state_buffer import (
+    KinematicLookupDiagnostics,
+    KinematicState,
+    KinematicStateBuffer,
+    TimestampedScalarBuffer,
+)
+from .trajectory_store import ActiveTrajectoryStore, TrajectoryLookupDiagnostics
 from .types import (
     OBSERVATION_C_VERSION,
     FutureTrajectoryFeature,
@@ -16,10 +21,12 @@ from .types import (
 __all__ = [
     "OBSERVATION_C_VERSION",
     "ActiveTrajectoryStore",
+    "TrajectoryLookupDiagnostics",
     "EgoBsplineTrajectory",
     "FutureTrajectoryFeature",
     "KinematicState",
     "KinematicStateBuffer",
+    "KinematicLookupDiagnostics",
     "LidarSurrogateFeature",
     "ObservationC",
     "ObservationCBuilder",

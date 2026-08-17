@@ -150,7 +150,109 @@ class ObservationCNode:
             rospy.resolve_name(topic("lidar_stamped", "learning_speed/observation_v2/stamped")),
         )
 
-    def _set_invalid(self, reason, stamp_sec=None, publish_packet=True):
+    @staticmethod
+    def _set_time(message, field, value):
+        if value is not None and math.isfinite(value) and value > 0.0:
+            setattr(message, field, rospy.Time.from_sec(value))
+
+    def _populate_lookup_diagnostics(
+        self, packet, kinematic=None, trajectory=None, lidar_message=None,
+        receipt_sec=None,
+    ):
+        packet.state_before_missing = True
+        packet.state_after_missing = True
+        packet.state_buffer_oldest_missing = True
+        packet.state_buffer_newest_missing = True
+        packet.selected_trajectory_missing = True
+        packet.latest_trajectory_missing = True
+        packet.selected_trajectory_id = -1
+        packet.latest_trajectory_id_at_lookup = -1
+        packet.dt_before_sec = -1.0
+        packet.dt_after_sec = -1.0
+        packet.bracket_span_sec = -1.0
+        packet.nearest_state_dt_sec = -1.0
+        packet.latest_state_age_at_lookup_sec = -1.0
+        packet.source_to_receipt_latency_sec = -1.0
+        if receipt_sec is not None and math.isfinite(receipt_sec):
+            self._set_time(packet, "lookup_receipt_time", receipt_sec)
+            source_stamp = packet.header.stamp.to_sec()
+            if source_stamp > 0.0:
+                packet.source_to_receipt_latency_sec = receipt_sec - source_stamp
+        if kinematic is not None:
+            packet.kinematic_lookup_result = kinematic.result
+            packet.kinematic_lookup_failure_reason = kinematic.failure_reason
+            packet.state_before_missing = kinematic.before_stamp_sec is None
+            packet.state_after_missing = kinematic.after_stamp_sec is None
+            packet.state_buffer_oldest_missing = kinematic.oldest_stamp_sec is None
+            packet.state_buffer_newest_missing = kinematic.newest_stamp_sec is None
+            self._set_time(packet, "state_before_stamp", kinematic.before_stamp_sec)
+            self._set_time(packet, "state_after_stamp", kinematic.after_stamp_sec)
+            self._set_time(
+                packet, "state_buffer_oldest_stamp", kinematic.oldest_stamp_sec
+            )
+            self._set_time(
+                packet, "state_buffer_newest_stamp", kinematic.newest_stamp_sec
+            )
+            for field in (
+                "dt_before_sec", "dt_after_sec", "bracket_span_sec",
+                "nearest_state_dt_sec", "latest_state_age_at_lookup_sec",
+            ):
+                value = getattr(kinematic, field)
+                if value is not None and math.isfinite(value):
+                    setattr(packet, field, value)
+            packet.state_buffer_size = kinematic.buffer_size
+            packet.state_buffer_coverage_sec = kinematic.buffer_coverage_sec
+            packet.fast_lio_source_rate_hz = kinematic.source_rate_hz
+            packet.fast_lio_state_insert_rate_hz = kinematic.insert_rate_hz
+            packet.state_insert_count = kinematic.insert_count
+            packet.out_of_order_state_count = kinematic.out_of_order_state_count
+            packet.duplicate_state_stamp_count = (
+                kinematic.duplicate_state_stamp_count
+            )
+            packet.state_buffer_eviction_count = kinematic.eviction_count
+        if trajectory is not None:
+            packet.trajectory_lookup_result = trajectory.result
+            packet.trajectory_history_size = trajectory.history_size
+            packet.selected_trajectory_missing = (
+                trajectory.selected_trajectory_id is None
+            )
+            if trajectory.selected_trajectory_id is not None:
+                packet.selected_trajectory_id = trajectory.selected_trajectory_id
+                self._set_time(
+                    packet, "selected_trajectory_start_stamp",
+                    trajectory.selected_start_stamp_sec,
+                )
+                self._set_time(
+                    packet, "selected_trajectory_end_stamp",
+                    trajectory.selected_end_stamp_sec,
+                )
+            packet.latest_trajectory_missing = (
+                trajectory.latest_trajectory_id is None
+            )
+            if trajectory.latest_trajectory_id is not None:
+                packet.latest_trajectory_id_at_lookup = (
+                    trajectory.latest_trajectory_id
+                )
+                self._set_time(
+                    packet, "latest_trajectory_start_stamp",
+                    trajectory.latest_start_stamp_sec,
+                )
+        if lidar_message is not None:
+            packet.lidar_invalid_reason = (
+                "" if lidar_message.valid
+                else ";".join(lidar_message.diagnostics) or "unspecified"
+            )
+            packet.lidar_input_points = lidar_message.input_points
+            packet.lidar_finite_points = lidar_message.finite_points
+            packet.lidar_in_range_points = lidar_message.in_range_points
+            packet.lidar_history_frames = lidar_message.history_frames
+            packet.lidar_source_rate_hz = lidar_message.lidar_source_rate_hz
+            packet.lidar_build_duration_ms = lidar_message.build_duration_ms
+
+    def _set_invalid(
+        self, reason, stamp_sec=None, publish_packet=True,
+        kinematic=None, trajectory=None, lidar_message=None, receipt_sec=None,
+    ):
         rospy.logwarn_throttle(1.0, "Observation C invalid: %s", reason)
         with self._lock:
             self._last_failure = str(reason)
@@ -164,6 +266,9 @@ class ObservationCNode:
             packet.version = OBSERVATION_C_VERSION
             packet.valid = False
             packet.diagnostics = [str(reason)]
+            self._populate_lookup_diagnostics(
+                packet, kinematic, trajectory, lidar_message, receipt_sec
+            )
             self._observation_pub.publish(packet)
 
     def _clear_for_time_reset(self):
@@ -176,6 +281,7 @@ class ObservationCNode:
         self._set_invalid("ros_time_reset")
 
     def _odom_callback(self, message):
+        receipt_sec = rospy.Time.now().to_sec()
         stamp = message.header.stamp.to_sec()
         world = message.header.frame_id.lstrip("/")
         body = message.child_frame_id.lstrip("/")
@@ -204,7 +310,7 @@ class ObservationCNode:
             return
         pending = []
         with self._lock:
-            if self._state_buffer.add_pose(pose):
+            if self._state_buffer.add_pose(pose, receipt_sec):
                 self._clear_for_time_reset()
                 return
             while (
@@ -247,8 +353,6 @@ class ObservationCNode:
     def _lidar_valid_callback(self, message):
         with self._lock:
             self._lidar_valid = bool(message.data)
-        if not message.data:
-            self._set_invalid("lidar_surrogate_invalid")
 
     def _v_max_callback(self, message):
         value = float(message.data)
@@ -262,32 +366,74 @@ class ObservationCNode:
         self._process_lidar(message, allow_pending=True)
 
     def _process_lidar(self, message, allow_pending):
+        receipt_sec = rospy.Time.now().to_sec()
         stamp = message.header.stamp.to_sec()
         frame = message.header.frame_id.lstrip("/")
         if stamp <= 0.0 or frame != self._body_frame:
-            self._set_invalid("lidar_stamp_or_frame_invalid", stamp)
+            detail = ";".join(message.diagnostics) or "stamp_or_frame_invalid"
+            reason = (
+                "lidar_surrogate_invalid:{}".format(detail)
+                if not message.valid else "lidar_stamp_or_frame_invalid"
+            )
+            self._set_invalid(
+                reason, stamp, lidar_message=message, receipt_sec=receipt_sec
+            )
             return
         with self._lock:
-            lidar_valid = self._lidar_valid
-            state, lookup = self._state_buffer.lookup(stamp)
-            trajectory = self._trajectory_store.current
+            state, lookup, kinematic_diagnostics = (
+                self._state_buffer.lookup_with_diagnostics(stamp, receipt_sec)
+            )
+            trajectory, trajectory_diagnostics = (
+                self._trajectory_store.lookup_with_diagnostics(stamp)
+            )
             previous_v_max, v_max_lookup = self._v_max_buffer.lookup(stamp)
-        if not lidar_valid:
-            self._set_invalid("lidar_surrogate_invalid", stamp)
+        if not message.valid:
+            detail = ";".join(message.diagnostics) or "unspecified"
+            self._set_invalid(
+                "lidar_surrogate_invalid:{}".format(detail), stamp,
+                kinematic=kinematic_diagnostics,
+                trajectory=trajectory_diagnostics,
+                lidar_message=message,
+                receipt_sec=receipt_sec,
+            )
             return
         if state is None:
             if allow_pending and lookup == "observation_newer_than_kinematic_history":
                 with self._lock:
                     self._pending_lidar.append(message)
-                self._set_invalid("waiting_for_timestamped_kinematic_state", stamp)
+                self._set_invalid(
+                    "waiting_for_timestamped_kinematic_state", stamp,
+                    kinematic=kinematic_diagnostics,
+                    trajectory=trajectory_diagnostics,
+                    lidar_message=message,
+                    receipt_sec=receipt_sec,
+                )
                 return
-            self._set_invalid(lookup, stamp)
+            self._set_invalid(
+                lookup, stamp,
+                kinematic=kinematic_diagnostics,
+                trajectory=trajectory_diagnostics,
+                lidar_message=message,
+                receipt_sec=receipt_sec,
+            )
             return
         if trajectory is None:
-            self._set_invalid("trajectory_unavailable", stamp)
+            self._set_invalid(
+                "trajectory_unavailable", stamp,
+                kinematic=kinematic_diagnostics,
+                trajectory=trajectory_diagnostics,
+                lidar_message=message,
+                receipt_sec=receipt_sec,
+            )
             return
         if previous_v_max is None:
-            self._set_invalid(v_max_lookup, stamp)
+            self._set_invalid(
+                v_max_lookup, stamp,
+                kinematic=kinematic_diagnostics,
+                trajectory=trajectory_diagnostics,
+                lidar_message=message,
+                receipt_sec=receipt_sec,
+            )
             return
         try:
             semantic = (
@@ -309,23 +455,39 @@ class ObservationCNode:
                 lidar, trajectory, state, previous_v_max
             )
         except ValueError as error:
-            self._set_invalid("fusion_invalid:{}".format(error), stamp)
+            self._set_invalid(
+                "fusion_invalid:{}".format(error), stamp,
+                kinematic=kinematic_diagnostics,
+                trajectory=trajectory_diagnostics,
+                lidar_message=message,
+                receipt_sec=receipt_sec,
+            )
             return
-        self._publish_observation(observation)
+        self._publish_observation(
+            observation, kinematic_diagnostics, trajectory_diagnostics,
+            message, receipt_sec,
+        )
         with self._lock:
             self._last_observation = observation
-            self._last_observation_receive_sec = rospy.Time.now().to_sec()
+            self._last_observation_receive_sec = receipt_sec
             self._last_failure = ""
             self._pose_lookup_mode = lookup
         self._valid_pub.publish(Bool(data=True))
 
-    def _publish_observation(self, observation):
+    def _publish_observation(
+        self, observation, kinematic_diagnostics, trajectory_diagnostics,
+        lidar_message, receipt_sec,
+    ):
         message = ObservationCMessage()
         message.header.stamp = rospy.Time.from_sec(observation.stamp_sec)
         message.header.frame_id = observation.frame_id
         message.version = observation.version
         message.valid = True
         message.diagnostics = list(observation.diagnostics)
+        self._populate_lookup_diagnostics(
+            message, kinematic_diagnostics, trajectory_diagnostics,
+            lidar_message, receipt_sec,
+        )
         lidar = observation.lidar_surrogate
         message.lidar_surrogate = lidar.surrogate.tolist()
         message.lidar_valid_mask = lidar.valid_mask.tolist()

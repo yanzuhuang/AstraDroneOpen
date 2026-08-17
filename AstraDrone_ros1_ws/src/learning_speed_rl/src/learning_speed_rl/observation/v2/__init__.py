@@ -4,6 +4,7 @@ from .angular_partition import AngularPartition, AngularPartitionSpec
 from .frame_transform import Pose3D, PoseBuffer
 from .history_buffer import CloudFrame, CloudHistoryBuffer
 from .lidar_surrogate import LidarSurrogateBuilder, LidarSurrogateConfig
+from .timestamp import preserve_source_stamp
 from .types import (
     BIN_SEMANTIC_NAMES,
     BinSemantic,
@@ -27,4 +28,5 @@ __all__ = [
     "ObservationV2",
     "Pose3D",
     "PoseBuffer",
+    "preserve_source_stamp",
 ]

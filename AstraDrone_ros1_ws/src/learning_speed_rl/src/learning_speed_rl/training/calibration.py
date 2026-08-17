@@ -12,7 +12,13 @@ KNOWN_OBSTACLE = 2
 
 def lidar_clutter_metrics(lidar_surrogate, semantic) -> Dict[str, object]:
     surrogate = np.asarray(lidar_surrogate, dtype=np.float64)
-    labels = np.asarray(semantic, dtype=np.uint8)
+    # rospy deserializes uint8[] as bytes while unit/offline callers commonly
+    # provide a list or ndarray.  Both are the same frozen 3200-bin contract.
+    labels = (
+        np.frombuffer(semantic, dtype=np.uint8)
+        if isinstance(semantic, (bytes, bytearray, memoryview))
+        else np.asarray(semantic, dtype=np.uint8)
+    )
     if surrogate.shape != labels.shape or surrogate.ndim != 1 or surrogate.size == 0:
         raise ValueError("surrogate and semantic must be equal non-empty vectors")
     if not np.all(np.isfinite(surrogate)):

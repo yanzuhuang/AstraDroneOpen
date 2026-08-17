@@ -43,6 +43,20 @@ def _finite_array(values, shape, name):
     return result
 
 
+def causal_observation_receipt_time(
+    callback_ros_time_sec, producer_receive_sec, source_stamp_sec,
+):
+    """Return a causal receipt lower bound across independently delivered /clock."""
+    values = (
+        float(callback_ros_time_sec),
+        float(producer_receive_sec),
+        float(source_stamp_sec),
+    )
+    if not all(math.isfinite(value) and value >= 0.0 for value in values):
+        raise ValueError("observation receipt times must be finite and non-negative")
+    return max(values)
+
+
 @dataclass(frozen=True)
 class OfficialTrajectoryIdentity:
     trajectory_id: int

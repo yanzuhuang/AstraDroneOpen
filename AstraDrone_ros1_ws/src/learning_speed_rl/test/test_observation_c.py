@@ -182,11 +182,99 @@ class TimestampReplanningAndStateTest(unittest.TestCase):
         self.assertTrue(store.update(old))
         self.assertTrue(store.update(new))
         self.assertIs(store.current, new)
+        self.assertIs(store.lookup(10.5), old)
+        self.assertIs(store.lookup(11.5), new)
         self.assertFalse(store.update(old))
         self.assertIs(store.current, new)
         current = new.evaluate_elapsed(0.0)
         observation = builder().build(lidar(11.0), store.current, state(11.0, current), 0.2)
         self.assertEqual(observation.future_trajectory.trajectory_id, 5)
+
+    def test_trajectory_history_is_bounded_and_fails_closed_outside_coverage(self):
+        store = ActiveTrajectoryStore(capacity=1)
+        old = make_trajectory(start=10.0, trajectory_id=4)
+        new = make_trajectory(start=11.0, trajectory_id=5)
+        self.assertTrue(store.update(old))
+        self.assertTrue(store.update(new))
+        self.assertIsNone(store.lookup(10.5))
+        self.assertIs(store.lookup(11.5), new)
+        self.assertIsNone(store.lookup(20.0))
+
+    def test_future_trajectory_is_never_selected(self):
+        store = ActiveTrajectoryStore()
+        future = make_trajectory(start=11.0, trajectory_id=5)
+        self.assertTrue(store.update(future))
+        selected, diagnostic = store.lookup_with_diagnostics(10.9)
+        self.assertIsNone(selected)
+        self.assertEqual(diagnostic.result, "before_first_trajectory")
+
+    def test_delayed_lookup_retains_exact_state_history(self):
+        buffer = KinematicStateBuffer(10, 0.05, 1.0, 0.5)
+        for stamp in (1.0, 1.1, 1.2):
+            buffer.add_pose(
+                Pose3D(stamp, [stamp, 0, 0], yaw_quaternion(0)),
+                receipt_sec=stamp + 0.01,
+            )
+        delayed, result, diagnostic = buffer.lookup_with_diagnostics(1.1, 1.25)
+        self.assertIsNotNone(delayed)
+        self.assertEqual(result, "exact")
+        self.assertEqual(diagnostic.before_stamp_sec, 1.1)
+        self.assertEqual(diagnostic.after_stamp_sec, 1.1)
+        self.assertAlmostEqual(diagnostic.nearest_state_dt_sec, 0.0)
+
+    def test_interpolation_boundary_and_gap_failure_diagnostics(self):
+        buffer = KinematicStateBuffer(10, 0.05, 1.0, 0.5)
+        buffer.add_pose(Pose3D(0.95, [-0.05, 0, 0], yaw_quaternion(0)), 0.96)
+        buffer.add_pose(Pose3D(1.0, [0, 0, 0], yaw_quaternion(0)), 1.01)
+        buffer.add_pose(Pose3D(1.05, [0.05, 0, 0], yaw_quaternion(0)), 1.06)
+        state_at_boundary, result, diagnostic = buffer.lookup_with_diagnostics(
+            1.025, 1.07
+        )
+        self.assertIsNotNone(state_at_boundary)
+        self.assertEqual(result, "interpolated")
+        self.assertAlmostEqual(diagnostic.bracket_span_sec, 0.05)
+
+        too_wide = KinematicStateBuffer(10, 0.05, 1.0, 0.5)
+        too_wide.add_pose(Pose3D(0.9, [-0.1, 0, 0], yaw_quaternion(0)))
+        too_wide.add_pose(Pose3D(1.0, [0, 0, 0], yaw_quaternion(0)))
+        too_wide.add_pose(
+            Pose3D(1.050002, [0.05, 0, 0], yaw_quaternion(0))
+        )
+        missing, result, diagnostic = too_wide.lookup_with_diagnostics(1.025)
+        self.assertIsNone(missing)
+        self.assertEqual(result, "kinematic_interpolation_gap_too_large")
+        self.assertGreater(diagnostic.bracket_span_sec, 0.05)
+        self.assertFalse(diagnostic.before_stamp_sec is None)
+        self.assertFalse(diagnostic.after_stamp_sec is None)
+
+    def test_before_after_missing_eviction_and_out_of_order_evidence(self):
+        buffer = KinematicStateBuffer(2, 0.05, 1.0, 0.5)
+        buffer.add_pose(Pose3D(1.0, [0, 0, 0], yaw_quaternion(0)))
+        buffer.add_pose(Pose3D(1.1, [0.1, 0, 0], yaw_quaternion(0)))
+        before_missing, result, diagnostic = buffer.lookup_with_diagnostics(0.9)
+        self.assertIsNone(before_missing)
+        self.assertEqual(result, "observation_precedes_kinematic_history")
+        self.assertIsNone(diagnostic.before_stamp_sec)
+        self.assertEqual(diagnostic.after_stamp_sec, 1.0)
+
+        after_missing, result, diagnostic = buffer.lookup_with_diagnostics(1.2)
+        self.assertIsNone(after_missing)
+        self.assertEqual(result, "observation_newer_than_kinematic_history")
+        self.assertEqual(diagnostic.before_stamp_sec, 1.1)
+        self.assertIsNone(diagnostic.after_stamp_sec)
+
+        buffer.add_pose(Pose3D(1.2, [0.2, 0, 0], yaw_quaternion(0)))
+        evicted, _, diagnostic = buffer.lookup_with_diagnostics(1.0)
+        self.assertIsNone(evicted)
+        self.assertEqual(diagnostic.eviction_count, 1)
+        self.assertEqual(diagnostic.oldest_stamp_sec, 1.1)
+
+        self.assertTrue(
+            buffer.add_pose(Pose3D(0.5, [0, 0, 0], yaw_quaternion(0)))
+        )
+        _, _, diagnostic = buffer.lookup_with_diagnostics(0.5)
+        self.assertEqual(diagnostic.out_of_order_state_count, 1)
+        self.assertEqual(diagnostic.buffer_size, 1)
 
     def test_fast_lio_position_difference_and_interpolation(self):
         buffer = KinematicStateBuffer(10, 0.15, 1.0, 0.5)

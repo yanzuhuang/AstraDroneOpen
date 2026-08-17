@@ -14,6 +14,7 @@ from learning_speed_rl.training import (
     PolicyStateV1,
     SacTransitionV1,
     TrackingSafetyMirror,
+    causal_observation_receipt_time,
     lidar_clutter_metrics,
 )
 
@@ -36,6 +37,14 @@ class TrainingDataContractTest(unittest.TestCase):
         state = self._state(10.0, 10.01)
         self.assertEqual(tuple(state.policy_input().keys()), POLICY_INPUT_FIELDS)
         self.assertTrue(set(DIAGNOSTIC_ONLY_FIELDS).isdisjoint(state.policy_input()))
+
+    def test_causal_receipt_survives_per_process_sim_clock_lag(self):
+        self.assertAlmostEqual(
+            causal_observation_receipt_time(11962.528, 11962.532, 11962.530),
+            11962.532,
+        )
+        with self.assertRaises(ValueError):
+            causal_observation_receipt_time(float("nan"), 1.0, 1.0)
 
     def test_shapes_are_frozen(self):
         with self.assertRaises(ValueError):
@@ -113,6 +122,12 @@ class TrainingDataContractTest(unittest.TestCase):
         self.assertEqual(metrics["known_obstacle_bin_count"], 2)
         self.assertAlmostEqual(metrics["known_obstacle_bin_fraction"], 0.5)
         self.assertAlmostEqual(metrics["nearest_obstacle_distance_m"], 0.8)
+
+    def test_lidar_clutter_metrics_accepts_rospy_uint8_bytes(self):
+        surrogate = np.asarray([2.0, 10.0, 13.0, 0.8])
+        metrics = lidar_clutter_metrics(surrogate, bytes([2, 1, 0, 2]))
+        self.assertEqual(metrics["known_obstacle_bin_count"], 2)
+        self.assertAlmostEqual(metrics["known_obstacle_bin_fraction"], 0.5)
 
     def test_planner_failure_episode_records_recovery(self):
         tracker = PlannerFailureEpisodeTracker()

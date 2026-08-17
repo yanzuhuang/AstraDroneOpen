@@ -1,0 +1,18 @@
+<launch>
+  <group ns="v2_test">
+    <node pkg="learning_speed_rl" type="observation_v2_node.py"
+          name="observation_v2" output="screen" required="true">
+      <param name="observation_v2/history_frames" value="1"/>
+      <param name="observation_v2/minimum_history_frames" value="1"/>
+      <param name="observation_v2/frames/world" value="camera_init"/>
+      <param name="observation_v2/frames/body" value="body"/>
+      <param name="observation_v2/frames/sensor" value="mid360_link"/>
+      <param name="observation_v2/topics/cloud" value="cloud"/>
+      <param name="observation_v2/topics/odom" value="Odometry"/>
+      <param name="observation_v2/visualization/enabled" value="false"/>
+    </node>
+    <test test-name="observation_v2_stamp_integration"
+          pkg="learning_speed_rl" type="observation_v2_stamp_integration.py"
+          time-limit="20.0"/>
+  </group>
+</launch>

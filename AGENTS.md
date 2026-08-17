@@ -1,212 +1,376 @@
-# AstraDroneOpen 项目协作总览
+# AstraDroneOpen 项目核心记忆与 AI 协作入口
 
-本文件供后续 GPT/Codex 在几分钟内建立共同事实。它是项目导航，不替代源码、launch、配置、测试证据或详细学习路线。
+> 最近事实审计：2026-08-17
+>
+> 审计分支：`scene01-3uav-circuit-mission`
+>
+> 审计 HEAD：`bdeff9cd613482bb422bf9c887c1fb3a25828603`
 
-## 1. 项目目标与当前范围
+本文件面向进入仓库的 Codex、ChatGPT 和新协作者，记录项目当前架构、已验证能力、研究边界与长期规则。它不是 changelog，也不替代源码、运行配置、`rule.md` 或实验工件。开始任务时必须重新检查 Git 状态；上面的分支和 HEAD 只是最近一次审计快照。
 
-AstraDroneOpen 正在把已有无人机学习代码整理成可复现、可维护的工程基线。当前只验收单机 Gazebo/PX4 SITL 仿真，主线是 ROS1 Noetic、Gazebo Classic、PX4、MAVROS、FAST-LIO 与 EGO-Planner。核心任务、规划、安全和执行模块不得写死 Gazebo 接口，以便后续迁移真机。
+## 1. 如何判断项目事实
 
-当前重点是先稳定单机的定位、规划、控制和安全契约，再按阶段完成固定高度绕塔、EGO 静态避障、工程安全状态机、动态障碍和多机。相机检测、QGIS/Cloud、真机和集群仍属于后续范围，不能写成已完成。
+发生冲突时按以下原则处理：
 
-事实冲突时按以下顺序判断：
+1. 当前源码、`package.xml`、`CMakeLists.txt`、launch、YAML、消息定义和测试决定“代码现在做什么”。
+2. 当前 Git 分支、HEAD、工作区 diff 和 `runtime_artifacts/` 中可复核的运行结果决定“本次工作基于什么、实际验证到哪里”。
+3. `rule.md` 是八扇区、航点候选、ENTRY/EXIT、净空与重定位语义的设计基准；若实现与它不一致，应报告冲突并做专项修复，不能自行选择一套新语义。
+4. 根目录专题报告记录相应功能的审计与验收边界；优先阅读报告最后的当前结论，不能把同一报告中的历史失败段落误当最终状态。
+5. `ego_planner_工程落地学习.md`、`legacy_ego_integration.md`、教程和论文笔记包含历史路线与学习材料，不代表当前完成度。
 
-1. 当前源码、`package.xml`、`CMakeLists.txt`、launch、配置和测试；
-2. 当前分支、HEAD、工作区、历史和运行证据；
-3. `CODE_AUDIT_REPORT.md`；
-4. README、教程和学习笔记；
-5. 未来规划或口头设想。
+“文件存在”“能编译”“dry-run 通过”“真实飞行通过”是不同证据等级。没有运行证据时写“待验证”，不要推断为已完成。
 
-“文件存在”不等于能编译、启动或通过飞行验收；没有当前证据时标记“待验证”。
+### 当前工作区特别说明
 
-## 2. 基线、环境与版本边界
+2026-08-17 审计时，分支相对远端领先 5，工作区不是干净状态。已有用户修改集中在：
 
-- 已确认的学习和 Gazebo 开发基线：`ego-project@498c7c6`。
-- 2026-07-21 阶段1开始时实际 HEAD：`dcd5bd5697ae141712df43766e9a0483e912a294`（提交主题“前置优化”）。开始时工作区干净，先前的 `forest.world` 默认值修改和前置优化已进入 HEAD。每个新任务仍须重新检查，不能假定 HEAD 不变。
-- 2026-07-21 阶段2开始时实际 HEAD：`85dc37b1d32233cec69abf237083d0e6fdbe772e`，分支 `ego-project` 跟踪 `origin/ego-project`，工作区干净；这说明阶段1成果已进入当前 HEAD，不能再按旧文档假定其未提交。
-- 2026-07-21 最近塔/30-16 m/yaw增量开始时实际 HEAD：`988e75a73375bb9c19d94ea98edf976ee74b5744`（阶段2成果已由负责人提交），分支相对远端领先1。开始时工作区仅有受保护的 `FAST_LIO/Log/mat_pre.txt` 修改；后续代理必须保护并先查看 diff。
-- 2026-07-22 `worksite.world` 迁移开始时实际 HEAD：`2c8f3223920afabbc1d0f1a8b67e568e1fbe216c`，分支相对远端领先3，工作区干净。Gazebo Classic 实测加载 `<state>` 中的 `radio_tower=(-10.0551,19.7104)`，不是world前部模型声明里的旧坐标。
-- 已观察技术栈：Ubuntu 20.04.6、ROS1 Noetic、Gazebo Classic 11.15.1、MAVROS 1.20.1、CMake 3.16.3、GCC 9.4、Python 3.8。
-- 外部 PX4 位于 `/home/yanzu/PX4-Autopilot`，只读审计为 detached `99c40407ffd7ac184e2d7b4b293f36f10fe561ef`、`v1.15.4-dirty`。未经批准不得修改、清理、切换或升级。
-- 当前 ROS、MAVROS、Gazebo、PX4、EGO 和 FAST-LIO 版本全部锁定；无项目负责人批准不升级。
+- `learning_speed_rl` 的 Observation C、时间戳、训练数据合同与人工标定链；
+- 单机固定速度人工标定 launch/脚本及汇总工具；
+- `dual_tower_inspection.launch`、`triple_tower_inspection.launch` 的场景参数化/冲突残余修复；
+- `FAST_LIO/Log/mat_pre.txt` 运行写入；
+- 一个用户未跟踪说明文档。
 
-该基线是受审计的学习/仿真开发基线，不是正式生产或真机基线。
+这些都属于用户资产。不得恢复、覆盖、清理、暂存或提交。尤其不能擅自还原 `FAST_LIO/Log/mat_pre.txt`。
 
-## 3. 仓库与主线包
+## 2. 项目简介与当前研究位置
 
-| 路径 | 用途与状态 |
+AstraDroneOpen 是一个以 ROS1 为核心的无人机自主巡检研究工程。当前主要在 Gazebo Classic + PX4 SITL 中研究：
+
+- Livox Mid-360 + FAST-LIO 定位与注册点云；
+- EGO-Swarm 局部规划、静态避障、在线重规划和多机轨迹避碰；
+- 任务层八扇区绕塔、动态进场、候选航点、安全返航与受控降落；
+- 三机任务协调、状态/轨迹共享、机间安全和可视化；
+- D435 RGB-D 仿真接口与独立 PPE YOLO 感知；
+- Learning Speed：在不改变任务目标和安全边界的前提下，研究 EGO 最大速度约束的自适应。
+
+当前工程阶段可概括为：**三机低空绕塔工程基线已完成并有真实 SITL 闭环证据；当前活跃研究转向 Learning Speed 的 pre-reward / pre-training 数据与 Observation C 质量闭环。** 真机、正式 SAC 训练、动态障碍预测和三机视觉巡检业务闭环仍未完成。
+
+核心任务、规划、安全和 Learning Speed 接口不得写死 Gazebo API；仿真假设和真机契约必须分开描述。
+
+## 3. 已确认技术栈与版本边界
+
+当前验证环境：
+
+| 组件 | 当前事实 |
+|---|---|
+| OS | Ubuntu 20.04.6 LTS |
+| ROS | ROS1 Noetic |
+| 仿真 | Gazebo Classic 11.15.1 |
+| 飞控链 | PX4 SITL + MAVROS 1.20.1 + OFFBOARD |
+| 定位/点云 | FAST-LIO + Livox Mid-360 仿真插件 |
+| 规划 | 项目适配的 EGO-Swarm 核心；包/节点仍沿用 `ego_planner` / `ego_planner_node` 名称 |
+| 相机 | 三机各一套 D435 RGB-D 仿真接口，默认启用 |
+| 视觉检测 | ROS1 `yolo_detect` + Ultralytics YOLO，模型权重由外部路径显式提供 |
+| Learning Speed | Python/ROS 节点 + EGO 动态 `v_max` 小接口；当前只有 fixed/mock source，无 SAC policy |
+| 构建 | catkin、CMake 3.16.3、GCC 9.4、Python 3.8 |
+
+外部 PX4 位于 `/home/yanzu/PX4-Autopilot`，当前为 detached `99c40407ffd7ac184e2d7b4b293f36f10fe561ef`、`v1.15.4-dirty`。仓库只保存定制 PX4/Gazebo 资产，不包含完整 PX4 源码。未经项目负责人批准，不得修改、清理、切换、升级外部 PX4，也不得升级 ROS、MAVROS、Gazebo、EGO-Swarm、FAST-LIO 或第三方依赖。
+
+## 4. 重要目录与职责
+
+| 路径 | 当前职责 |
 |---|---|
 | `AstraDrone_ros1_ws/` | 主 ROS1 catkin 工作空间；`build/`、`devel/` 是生成物，禁止手改 |
-| `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/` | 既有起飞、悬停、多航点、连续轨迹、返航和降落 |
-| `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/` | 阶段1独立固定航线；阶段2新增逐目标EGO任务节点、分级场景和CSV证据 |
-| `AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/` | EGO 到 MAVROS/PX4 的安全桥；默认 dry-run |
-| `AstraDrone_ros1_ws/src/Planner/ego-planner/` | EGO vendor 源码及上游模拟工具；存在项目历史修改 |
-| `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/` | MID360 激光雷达-惯性里程计和注册点云 |
-| `AstraDrone_ros1_ws/src/Utils/astra_custom_msgs/` | 项目消息/服务；尚不是统一 Cloud/QGIS 接口 |
-| `simulation/sim_workspace/` | Gazebo 传感器和仿真插件的下层 catkin 工作空间 |
-| `simulation/px4_sim_files/` | 仓库内保存的 PX4 SITL airframe、SDF 和 launch 部署资产 |
-| `simulation/astra_gazebo_worlds/` | `example`、`forest`、`dynamic_avoidance` 等 world |
-| `simulation/astra_gazebo_models/` | Gazebo 模型资源；存在模型不代表算法已接入 |
-| `scripts/run_sh/` | 旧基础演示与 Stage 6 tmux 编排入口 |
-| `third_party/` | 第三方源码；不得随意升级或大改 |
-| `Detection/`、`Track/`、`Control/`、`Land/`、`Exploration/`、`Swarm/` | 候选、禁用或占位方向，不是当前主链 |
+| `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/` | 单机巡塔任务层：八扇区、候选、ENTRY/EXIT、多层、HOLD/重试/返航与任务证据 |
+| `AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/` | `PositionCommand` 到 MAVROS raw-local 的安全执行桥、控制权检查和飞行状态机 |
+| `AstraDrone_ros1_ws/src/Planner/ego-planner/` | 当前 EGO-Swarm vendor-derived 规划核心、B 样条、traj_server 和共享轨迹接口 |
+| `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/` | Mid-360 激光惯性里程计、注册点云和 `camera_init -> body` |
+| `AstraDrone_ros1_ws/src/Swarm/` | 三机 bringup、manager、safety、TF、感知过滤和多机消息 |
+| `AstraDrone_ros1_ws/src/learning_speed_rl/` | Observation v1/v2/C、fixed/mock speed adapter、数据合同、标定记录与未来推理边界 |
+| `AstraDrone_ros1_ws/src/Detection/yolo_detect/` | 参数化、只读的单机/三机 PPE YOLO 推理节点 |
+| `AstraDrone_ros1_ws/src/Utils/astra_custom_msgs/` | 项目消息，包括 YOLO 检测消息；不是完整 Cloud/QGIS 业务接口 |
+| `simulation/sim_workspace/` | 下层传感器/Gazebo 插件工作空间，含 Mid-360 与 RealSense 插件 |
+| `simulation/px4_sim_files/` | PX4 SITL airframe、SDF 和 launch 部署资产 |
+| `simulation/astra_gazebo_worlds/` | `worksite.world`、`outdoor_village.world`、Learning Speed 验证场景等 |
+| `simulation/astra_gazebo_models/` | 仿真模型与 PPE 人物/平台资源 |
+| `scripts/run_sh/` | 面向操作者的 bringup、实验和录制入口；默认入口应无控制或显式要求 `--control` |
+| `runtime_artifacts/` | 唯一运行产物根目录，永不提交 Git |
+| `docs/`、根目录专题报告、`essay/` | 使用说明、验收报告和论文学习资料；详细事实需回到源码/工件复核 |
 
-README 中的 ROS2、完整实机、探索和蜂群描述超前于当前代码；仓库当前没有 `AstraDrone_ros2_ws/`，必须以 ROS1 仿真源码为准。
+`Detection/`、`Control/`、`Land/`、`Track/` 中除上表明确进入当前主链的包外，仍有历史、候选或独立模块；目录存在不表示已接入三机主任务。
 
-## 4. 已具备能力与验收状态
+根目录当前没有 `README.md`；项目入口应使用本文件，专题说明则查看 `docs/`、各 ROS 包 README 和根目录报告。不要继续引用历史根 README 中超前的 ROS2、真机或完整蜂群描述。
 
-已实现并有一定历史/当前证据：
+## 5. 当前主链与坐标契约
 
-- PX4 SITL、Gazebo、MAVROS、MID360、FAST-LIO 基础链；
-- `offboard` 起飞、悬停、多航点、yaw、返航和 OFFBOARD 受控降落状态机；
-- 圆、方形、8 字、椭圆轨迹生成、真实 `speed * dt` 推进、误差暂停和 rosbag 分析；
-- EGO odom、点云、目标、B 样条、`PositionCommand` 与 bridge 的代码链路；
-- bridge 默认 dry-run，dry-run 不创建或发布任何 MAVROS 控制 Topic；
-- 2026-07-20 当前源码目标构建通过；`offboard` 7/7、bridge 9/9 单测通过，其中包含五类 MAVROS 控制出口冲突检查；隔离 dry-run 验证了全 preflight 健康和 raw-local 冲突阻断。
-- 2026-07-21 阶段1新增独立 `astra_tower_mission`：固定高度N点加闭环、朝塔yaw、限速/限加速度、到达保持、超时、进度/CSV、返航和OFFBOARD受控降落；preview不创建控制publisher。最终目标包回归为新包6/6、offboard 7/7、bridge 9/9，共22/22。
-- 阶段1按悬停→1点→4点→8点→第二次8点完成 `forest.world`/`radio_tower_0` 实测；两次完整任务均518 s，最终 `SUCCESS`、`armed=false`、`ON_GROUND`，控制图上唯一发布者为 `/tower_mission`。详细误差见 `fixed_orbit_inspection学习.md`。
-- 2026-07-21 阶段2实现 FAST-LIO→过滤点云→EGO→traj_server→raw-local `PositionTarget` 闭环；`type_mask=0` 保留p/v/a/yaw/yaw_rate，raw唯一发布者为 `/ego_mavros_bridge`。任务逐目标等待新trajectory id和实际odom到达；HOLD锁存并有限时间降落。
-- 阶段2按dry-run→控制冲突/指令断流故障注入→单目标→双目标→8个唯一点加首点闭环的低速绕塔完成验证。最终闭环653.900 s，任务最大跟踪误差0.295 m，最终`SUCCESS`、`armed=false`、`ON_GROUND`。详细证据见 `ego_waypoint_inspection学习.md`。
-- 2026-07-22 当前未提交增量将主仿真和阶段1/2默认world改为 `worksite.world`；两阶段统一为 `radio_tower=(-10.0551,19.7104)`、10 m半径、8 m单层。阶段2任务层发布闭合全局参考，EGO逐段生成局部避障/重规划轨迹；圆周段朝塔，进场/返航沿水平速度前向。三包构建、39个本轮目标单测、launch参数展开和阶段1无控制preview通过；未启动 `--control` 或飞行。
-
-仍未完成运行验收：
-
-- 专门静态障碍、最小净空、不可达目标和规划失败场景；阶段2绕塔成功不能替代阶段3验收；
-- `worksite.world` 8 m整圈、FAST-LIO/EGO局部轨迹、实际净空和分段yaw尚未从dry-run开始重新飞行验收；通用目标z仍受`manual_target_height`覆盖；
-- 动态障碍预测、多机、相机检测主链接入、QGIS/Cloud、真机和干净 clone 交付。
-
-## 5. 节点、数据流、frame 与重要 Topic
-
-核心节点：
-
-| 节点 | 职责 |
-|---|---|
-| `laserMapping` / `fastlio_mapping` | `/livox/lidar` + `/livox/imu` → `/Odometry`、`/cloud_registered`、`camera_init -> body` TF |
-| `ego_planner_node` | 局部占据地图、搜索、B 样条优化和重规划 FSM |
-| `traj_server` | `/planning/bspline` → `quadrotor_msgs/PositionCommand` |
-| `waypoint_generator` | 规划目标 → EGO 使用的 `nav_msgs/Path` |
-| `ego_mavros_bridge` | 目标/TF 适配、preflight、状态门禁、MAVROS 服务与 position setpoint |
-| `autoarming_control` | 不经 EGO 的基础 OFFBOARD 飞行、航点/轨迹、返航和降落 |
-| `tower_mission` | launch中的阶段1或阶段2任务节点名；阶段2只发EGO目标，不创建MAVROS控制publisher |
-
-主数据流：
+每架无人机的主执行链是：
 
 ```text
-Gazebo iris_mid360
-  -> /livox/lidar + /livox/imu
-  -> FAST-LIO
-  -> /Odometry + /cloud_registered
-  -> EGO-Planner -> /planning/bspline
-  -> traj_server -> /planning/pos_cmd
-  -> ego_mavros_bridge
-  -> /mavros/setpoint_position/local
+Gazebo iris_mid360_d435
+  -> /uavN/livox/lidar + /uavN/livox/imu
+  -> FAST-LIO raw odom/cloud
+  -> frame adapter + teammate/self cloud filter
+  -> /uavN/Odometry + /uavN/stage3/cloud_registered_filtered
+  -> 本机 EGO-Swarm -> /uavN/planning/bspline
+  -> traj_server -> /uavN/planning/pos_cmd
+  -> ego_gazebo_bridge -> /uavN/mavros/setpoint_raw/local
   -> MAVROS -> PX4 OFFBOARD -> Gazebo
 ```
 
-目标链：`/move_base_simple/goal -> bridge -> /planning/goal -> waypoint_generator -> /waypoint_generator/waypoints -> EGO FSM`。
+三机横向链：本机 EGO-Swarm 把带绝对时间的 B 样条转换到公共 `world` 后共享；各规划器消费队友轨迹做时空避碰。`astra_swarm_manager` 负责联合进场、角色放行、相位与退出/落地许可，`astra_swarm_safety` 负责心跳、定位、状态时效和机间安全门。队友点云过滤用于避免机体残影成为静态障碍，不替代共享轨迹避碰。
 
-当前约定与待落实契约：
+坐标约定：
 
-- 继续使用 FAST-LIO；统一契约覆盖 `map/camera_init/body/base_link/sensor`。
-- 塔和任务航点使用 `map` 绝对坐标；home 只用于起飞点、返航和降落。
-- 当前 EGO 规划 frame 默认 `camera_init`，MAVROS 本地 frame 默认 `map`；launch 中单位 `map -> camera_init` 只是仿真假设，不是标定结果。
-- EGO 点云回调不做 TF 转换，`/cloud_registered` 必须已经在规划 frame。
-- `iris_mid360` 的 D435i 相机朝机体前方，但当前 Stage 6 规划使用 MID360/FAST-LIO 点云，不使用 D435 深度图。
+- `world`：三机公共坐标、共享轨迹、协调、安全和 RViz；
+- `uavN/map`：第 N 架机 MAVROS/任务局部参考，通过出生点平移接入 `world`；
+- `uavN/camera_init`：FAST-LIO/EGO-Swarm 规划 frame；仿真中与本机 `map` 使用已验证的单位对齐假设；
+- `uavN/body`、`base_link`、`mid360_link`、D435 optical frames：机体/传感器分支。
 
-bridge 在 EGO 控制启用前监控的 MAVROS 控制类别包括 position、raw local、velocity、attitude 和 thrust。正常情况下任意时刻只能有一个控制出口。
+仿真静态 TF 不是实测外参，不能直接写成真机已标定。EGO 地图回调不替输入点云自动做任意 TF 修正，frame/stamp 错误必须 fail closed。
 
-阶段1数据流独立于EGO：`YAML -> tower_mission -> position setpoint（飞行）/raw local（下降）-> MAVROS -> PX4`；MAVROS local pose/velocity反馈用于到达和接地判断。脚本同时启动FAST-LIO并等待 `/Odometry` 健康，但任务节点不订阅EGO轨迹。
+D435 不参与当前 Mid-360 → FAST-LIO → EGO-Swarm 规划链。YOLO 只消费 D435 彩色图像并发布检测消息，不控制任务、规划或飞行。
 
-阶段2数据流：`YAML -> stage2任务逐目标 -> EGO -> traj_server PositionCommand -> bridge raw PositionTarget -> MAVROS/PX4`。内部`/stage2/cloud_registered_filtered`移除`camera_init`中低于0.2 m的地面带；阶段3前须复核低矮障碍风险。
+## 6. 已完成并有验证证据的核心能力
 
-## 6. 启动、构建与测试入口
+### 6.1 基础单机飞行与 EGO 执行
 
-| 用途 | 入口 |
-|---|---|
-| PX4 SITL + Gazebo + MAVROS | `simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch` |
-| FAST-LIO MID360 | `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/launch/mapping_mid360.launch` |
-| 基础多航点 | `offboard/launch/autoarming_control.launch` + `offboard/config/relative_waypoint_mission.yaml` |
-| 连续轨迹 | `offboard/launch/continuous_trajectory.launch` |
-| 阶段1预览/控制 | `scripts/run_sh/fixed_orbit_inspection.sh`；默认preview，`--control`才允许自动飞行 |
-| 阶段2EGO接入 | `scripts/run_sh/ego_waypoint_inspection.sh`；默认dry-run，控制必须显式`--control --scenario single|dual|tower` |
-| EGO/PX4 通用集成 | `ego_gazebo_bridge/launch/ego_gazebo_bridge.launch` + `config/ego_gazebo_bridge.yaml` |
-| EGO规划栈通用编排 | `scripts/run_sh/ego_planner_stack.sh`；默认 dry-run，`--control` 才允许自动控制 |
+- PX4 SITL、Gazebo、MAVROS、Mid-360、FAST-LIO 基础链已经多轮运行。
+- 既有 offboard 能力覆盖起飞、悬停、多航点/连续轨迹、yaw、返航、OFFBOARD 受控降落和解除武装。
+- EGO-Swarm 轨迹经 `traj_server` 输出 p/v/a/yaw/yaw-rate，再由 bridge 以 raw-local `PositionTarget` 执行；bridge 默认关闭控制并检查五类 MAVROS 控制出口，任一时刻只允许一个控制发布者。
+- 单机巡塔任务已具备八扇区、正式闭环、候选换点、EGO 不可达有限重试、HOLD、ENTRY/EXIT、逆进场返航和明确任务终态。
 
-两个工作空间按下层仿真、上层主工作区顺序构建。阶段1与既有包回归可使用：
+### 6.2 八扇区、低空避障和多高度
 
-```bash
-source /opt/ros/noetic/setup.bash
-cd /home/yanzu/AstraDroneOpen/AstraDrone_ros1_ws
-catkin_make -DCATKIN_WHITELIST_PACKAGES='offboard;astra_tower_mission;ego_gazebo_bridge' -j2
-catkin_make -DCATKIN_WHITELIST_PACKAGES='offboard;astra_tower_mission;ego_gazebo_bridge' \
-  run_tests_offboard run_tests_astra_tower_mission run_tests_ego_gazebo_bridge -j2
-catkin_test_results build/test_results
+- 八个固定扇区中心为 `0/45/90/135/180/225/270/315°`，覆盖/编号不随入口角改变。
+- `worksite.world` 单机低空 EGO 巡塔、候选净空和安全返航已在当前实验链重复运行；Learning Speed 两环境固定速度矩阵中的 6 次 worksite 正式 run 均完成 mission success。
+- 高空任务代码支持多层巡塔、层间分段过渡和高度候选；Git 历史已有“两层绕塔”及 `34→30→26→22 m` 高度参数化验证。它不是当前三机默认配置，修改后需要单独回归；连续螺旋不是已验收能力。
+- 当前三机默认是 **3.0 m 等高、单层、`height_offsets=[0]`**，不得把高空下降候选带入低空任务。
+
+### 6.3 三机低空绕塔
+
+三机 `worksite.world` 最终 SITL 闭环已经通过：
+
+- UAV3 leader、UAV2 middle、UAV1 trailing，逆时针；
+- 动态 `PRE_ENTRY -> ENTRY_GATE -> ORBIT_STAGING` 联合候选；
+- UAV3 先放行，随后按前机领先 `65°～70°` 依次放行 UAV2、UAV1，目标相邻相位为 `67.5°`；
+- 三机均完成独立 360°、8 扇区、独立 EXIT_GATE、实际进场路线逆序且按最新地图重规划、HOME、落地与解除武装；
+- 最终三机均为 `armed=false`、`ON_GROUND`、bridge/task/flight `DONE`；全任务实测最小机间距离高于 3.0 m 门限。
+
+详细最终结论见 `ego_swarm_three_uav_integration_report.md` 最后一节。该报告前部保留了修复前失败过程，不能据此否定后部最终 PASS，也不能把历史 `test_evidence/stage*` 路径继续用于新实验。
+
+### 6.4 三机传感器、场景与可视化
+
+- 三机模型均有独立 PX4/MAVROS、Mid-360、D435、FAST-LIO、TF、局部 EGO-Swarm 和命名空间隔离。
+- `triple_tower.rviz` 能显示三机姿态、点云、占据地图、目标、轨迹、任务/编队/安全状态；Gazebo GUI 与 RViz 可同时启动，但会竞争 GPU/CPU，GUI FPS 不等于仿真 RTF。
+- `outdoor_village.world` 已有三机**初始化专用**入口：保留 Gazebo/PX4/MAVROS、传感器、FAST-LIO、EGO 和 RViz，硬关闭任务/控制；已验证三机连接、在地面未解锁且无 raw setpoint publisher。
+- `outdoor_village.world` 也已用于 UAV1 Learning Speed 环境 A 的 6 次正式飞行；这不等于“三机 outdoor_village 巡塔闭环已验收”。
+
+### 6.5 YOLO 接口
+
+- `yolo_detect` 已进入 catkin，支持三架机各自订阅 `/uavN/d435/color/image_raw`，发布 `/uavN/yolo/detections` 和可选标注图像。
+- 三路节点已验证模型加载、CPU/GPU 推理、命名空间隔离和结构化 `AstraDetection2DArray` 输出；节点是只读感知模块，不依赖任务状态机。
+- 权重不随仓库交付，必须显式传入并包含预期 PPE 类别。
+- 尚未完成“三机稳定绕塔过程中产生非空违规检测并形成业务结果”的联合验收。因此 YOLO 接口完成，不等于视觉巡检任务闭环完成。
+
+## 7. 任务层与 EGO-Swarm 的关键设计决策
+
+### 7.1 八扇区与候选选择
+
+任务层决定“去哪一个正式目标”，EGO-Swarm 决定“怎样安全到达”。普通扇区和第一巡塔点共用候选网格：名义半径 `12.5 m`，再考虑 `14.5/16.5 m` 外圈与同扇区角度偏移；低空高度不变。
+
+选择顺序是硬约束优先：
+
+```text
+扇区/高度包络、塔体 keep-out、地图/粗几何净空、方向进度
+  -> 第一个仍有安全候选的半径层
+  -> 保持仍安全的锁定候选
+  -> 若中心角名义点安全，直接选名义点
+  -> 否则只在同一半径层按评分选候选
+  -> EGO 不可达时有限重试，再切同扇区下一 candidate ID
+  -> 候选耗尽才 fail closed
 ```
 
-构建会写 `build/`、`devel/`。不要编辑生成物；`.bin` 构建器可能清理构建目录，安装器和环境脚本可能改系统，未经明确批准不得运行。
+外圈高分点不能替代安全的内圈名义点；评分不能绕过硬约束。锁存用于防止地图抖动导致逐帧跳点。
 
-## 7. 当前阶段与下一步
+### 7.2 净空与安全优先级
 
-2026-07-20 已完成“阶段1开始前的最小前置优化”：
+- 已膨胀 EGO occupied map：任务层只加 `map_additional_clearance=0.5 m`；
+- 原始/过滤点云和已知粗几何：使用 `minimum_clearance=1.0 m`，只应用一次；
+- 塔体 keep-out、frame/stamp/freshness、任务包络、控制权和机间距离都是硬门；
+- EGO `obstacles_inflation`、优化器 `dist0`、任务层 additional clearance 与 `swarm_clearance` 含义不同，禁止叠加、互换或把软代价写成硬保证；
+- 三机最小 3D 距离为 `3.0 m`，EGO `swarm_clearance=1.5 m`；不能为通过实验而降低。
 
-- 将确属 PX4 `MPC_LAND_SPEED` 的要求从非法 0.30 改为 v1.15.4 支持的 0.60 m/s；OFFBOARD 下降 setpoint 速度没有重新设计；
-- EGO bridge 增加五类控制 Topic 唯一发布者检查；
-- EGO dry-run/preflight 增加 MAVROS、odom、点云、goal、command 的 frame/时戳/有限值、TF、对齐、任务包络和控制权诊断；
-- 完成 EGO、外部 PX4、`forest.world` 两座塔和相机方向的只读审计。
+具体公式、边界和重试语义以 `rule.md` 为准。
 
-2026-07-21 已完成阶段1和阶段2。阶段2没有修改EGO C++核心或外部PX4，新增外部适配、任务节点和必要launch参数；固定高度单机Gazebo EGO闭环通过。下一步只等待项目负责人检查并亲自提交；不自动进入阶段3静态障碍。
+### 7.3 ENTRY_GATE / EXIT_GATE
 
-## 8. 已确认的架构决策
+- `PRE_ENTRY` 是进入正式任务通道前的外围参考点；
+- `ENTRY_GATE` 是正式入口与三机联合放行锚点；
+- `ORBIT_STAGING` 是第一个普通扇区候选，仍须走统一候选/EGO 状态机；
+- `EXIT_GATE` 提供独立、已检查的离场锚点；正常返航沿本机真实进场采样反向、用最新地图重新规划，再回 HOME；
+- 任一地图、定位、轨迹、协调或安全门失败时优先 HOLD、有限重试、返航或受控降落，不能包装为任务成功。
 
-1. 使用 `ego-project@498c7c6` 作为学习和 Gazebo 仿真开发基线。
-2. 当前只验收 Gazebo 仿真，核心模块不能写死 Gazebo 接口。
-3. 阶段1新建独立任务管理器；不继续扩展大型 offboard 状态机，不把任务逻辑写进 EGO 核心。
-4. 阶段2已通过 `/mavros/setpoint_raw/local` 的 `PositionTarget` 执行完整 EGO p/v/a/yaw/yaw_rate；`type_mask=0`，ROS字段为ENU、MAVROS转换到PX4 NED。
-5. 继续使用 FAST-LIO，并建立统一 `map/camera_init/body/base_link/sensor` 坐标契约。
-6. 铁塔和任务航点使用 `map` 绝对坐标；home 只用于起飞点、返航和降落。
-7. 阶段1采用固定高度8航点，按单点→4点→8点验证；yaw 朝塔；方向参数化、默认逆时针。
-8. 任务目标 z 必须保留并受高度上下限约束，禁止 EGO 静默覆盖。
-9. EGO 优先通过外部适配层扩展；必要核心修改须先批准并形成独立 vendor patch。
-10. 大型状态机随阶段增量拆分，不一次性重写。
-11. 正常起飞、悬停、任务、返航和受控降落均使用 PX4 OFFBOARD。
-12. 任意时刻只允许一个 MAVROS 控制出口；严重 OFFBOARD 断流时允许 PX4 failsafe 接管。
-13. 当前不做动态障碍预测，阶段6再决策。
-14. 先完成单机；单机稳定后再做集群，阶段8再决定是否使用 EGO-Swarm。
-15. 锁定当前 ROS、MAVROS、Gazebo、PX4、EGO 和 FAST-LIO 版本，无批准不升级。
-16. Codex 不得 commit 或 push，所有提交由项目负责人亲自完成。
+### 7.4 EGO-Swarm 核心边界
 
-## 9. 风险、禁止事项与工作纪律
+当前规划核心不是未修改的单机 EGO-Planner：仓库已经迁入 EGO-Swarm 的共享 B 样条/机间优化能力，并增加项目 frame 适配、状态接口和动态 `v_max` 接口。稳定搜索、碰撞、B 样条优化和重规划逻辑属于受控 vendor-derived 核心：
 
-主要遗留风险：
+- 新任务逻辑、候选策略、业务状态优先放在任务层/适配层；
+- 不为某次实验随意修改成熟 EGO 核心、关闭安全检查或改 world 迎合算法；
+- 确需修改核心时，先说明必要性、接口边界和回归范围，保持改动最小且可审计。
 
-- 当前 EGO vendor 没有可识别的精确上游 commit，直接修改尚未形成可重放 patch；`manual_target_height` 仍覆盖目标 z。当前增量只允许固定8 m并在启动时严格匹配；通用多高度前仍需适配层方案或批准vendor patch。
-- traj_server仍生成轨迹前视航向，不消费任务目标orientation；当前增量已在外部bridge按任务模式重算圆周朝塔yaw并限速，进场/返航保留前视yaw，但尚无飞行证据。
-- bridge 仍是位置跟随器，不是完整 EGO 动态轨迹执行器；不得把它描述成避障闭环已验收。
-- 已确认的正常降落架构是 OFFBOARD 受控降落，但 bridge 现有异常/land 状态仍会请求 `AUTO.LAND`；本轮明确不重设计降落控制，后续须按批准阶段消除该差异。
-- `map -> camera_init`、`body -> base_link` 和传感器外参尚未形成实测正式契约。
-- `autoarming_control.cpp`、bridge 状态机仍较大；只允许随阶段增量拆分。
-- 外部 PX4 dirty、detached；仓库部署资产与外部树尚无可复现同步机制。
-- `forest.world/radio_tower_0` 的阶段1固定航线和阶段2 EGO闭环只是历史证据。当前 `worksite.world/radio_tower` 8 m方案只完成静态几何复核和无控制验证，没有专门静态障碍最小净空或飞行证据。
-- bridge阶段2新增有限超时、锁存HOLD、跟踪误差和断流/控制冲突证据；完整不可达目标、全部服务失败、长期稳定性仍未验收。
+## 8. Learning Speed / 强化学习当前状态
 
-任何 GPT/Codex 开始任务前必须只读执行并报告 `git branch --show-current`、`git rev-parse HEAD`、`git status --short --branch`、相关 diff；现有修改、删除、未跟踪文件均视为用户资产。
+### 8.1 它负责什么
 
-未经明确授权禁止：
+Learning Speed 只研究一个受限动作：EGO 的最大速度约束 `v_max`。动作链为：
 
-- 恢复、覆盖、清理、暂存、提交或 push 用户工作区；切分支或改 Git 历史；
-- 修改或升级外部 PX4、第三方依赖、ROS/MAVROS/Gazebo/EGO/FAST-LIO；
-- 编辑 `build/`、`devel/`、生成消息、日志或缓存；
-- 改公共 Topic/消息/TF 契约，或直接修改 EGO 核心；
-- 移除 `/use_sim_time` 保护，把仿真参数当真机参数；
-- 在控制权、preflight 和明确批准不足时使用 `--control`、解锁、起飞或飞行。
+```text
+fixed/mock request
+  -> SpeedSafetyFilter（clamp、hysteresis、slew、低通）
+  -> /uavN/learning_speed/v_max
+  -> EGO 动态速度上限 + 必要时连续重规划
+  -> /uavN/learning_speed/applied_v_max 回执
+```
 
-正常任务的目标架构保持 PX4 OFFBOARD。`MPC_LAND_SPEED` 是 PX4 降落参数；OFFBOARD 受控降落的下降 setpoint 速度是另一概念。本轮只修复前者的非法要求，没有重设计现有降落状态或 setpoint。
+它不选择 waypoint，不生成轨迹，不负责碰撞检查、三机协调、MAVROS/PX4 控制或安全状态机。默认关闭；启用后也只能在 launch 审核过的静态上限内降低/恢复速度。
 
-## 10. 详细资料索引
+### 8.2 Observation 状态
 
-- `CODE_AUDIT_REPORT.md`：`498c7c6` 基线的完整代码、构建、依赖和风险审计；它是历史快照，当前结论须与源码复核。
-- `ego_planner_工程落地学习.md`：详细数据流、基础知识、决策门、阶段1至阶段9路线、验收标准和本轮前置优化记录。
-- `fixed_orbit_inspection学习.md`：阶段1实现、参数、Topic/TF、真实分级仿真证据和新手重启/排障手册。
-- `ego_waypoint_inspection学习.md`：阶段2 raw/type mask/ENU语义、TF契约、逐目标任务、安全监控、分级飞行与CSV证据。
-- `legacy_ego_integration.md`：旧0–6路线的EGO/PX4/FAST-LIO集成历史记录，不代表当前阶段编号。
-- `offboard/include/offboard/trajectory_reference.h`、`landing_profile.h`：连续轨迹与 OFFBOARD 软降落数学。
-- `ego_gazebo_bridge/config/ego_gazebo_bridge.yaml`：EGO bridge 通用安全、Topic、frame 和任务包络参数；原旧路线名称 `stage6_gazebo.yaml` 已停用，避免与当前阶段编号混淆。
+- Observation v1：保留 `[4,16,48,48]` 地图张量 + 22 维低维向量合同，但当前 EGO 导出不能完整区分 free/unknown，完整轨迹通道也不足，所以 `observation_ready=false`。
+- Observation v2：只读 Mid-360 球面 surrogate，80×40=3200 bins，区分 obstacle/free/unknown；使用带时间戳的 FAST-LIO pose 历史，输出不被 policy/EGO/控制链消费。
+- Observation C：把原子 v2 surrogate、EGO 官方 `/planning/bspline` 未来位置、时间对齐的 FAST-LIO 实际速度、tracking error 和 previous applied `v_max` 融合到同一 body frame/stamp。任何缺失、越界、frame/stamp 不一致或未来数据都会 fail closed。
+
+Observation C 的五项 policy input 已冻结为：
+
+1. `lidar_surrogate[3200]`；
+2. `future_positions_body[20][3]`；
+3. `actual_velocity_body[3]`；
+4. `tracking_error_body[3]`；
+5. `previous_applied_v_max`。
+
+mission/planner 状态、clearance、clutter/density、lidar masks 和 diagnostics 只作审计，不进入 policy input。
+
+### 8.3 Training Data Contract
+
+`learning_speed_sac_transition_v1.0` 已冻结：
+
+```text
+state_t -> requested_v_max -> filtered_v_max -> applied_v_max
+        -> state_t+1 -> reward -> terminated/truncated
+```
+
+采集器检查 Observation C、正式 B 样条、action 和 applied acknowledgement 的因果顺序；真实任务/规划/安全失败必须保留，只有基础设施失败允许重试。当前每条候选仍是：
+
+```text
+reward = null
+reward_defined = false
+training_ready = false
+```
+
+仓库没有 SAC actor/critic、replay/PER、训练循环或已选模型；`inference/model_runner.py` 只是未来 reviewed model 的 fail-closed 边界。**Reward stage 1 / stage 2 当前均未定义、未实现、未开始，不得猜测 φ1/φ2 或权重。**
+
+### 8.4 Environment A/B 与数据质量
+
+已完成 UAV1 固定速度人工标定：每个环境使用固定且各自一致的路线，速度为 `0.30/0.50/0.75/1.00/1.25/1.50 m/s`，共 12 个正式 run：
+
+- Environment A：`outdoor_village.world`，spawn `(-14,0)`，较开放路线；
+- Environment B：`worksite.world`，spawn `(0,0)`，较密集塔区路线。
+
+12/12 均有正式 terminal、mission PASS、完整指标、有效 requested/filtered/applied 链和合法 null-reward 边界。首轮 Observation C 单 run valid ratio 为 `0.545～0.834`，高速度下 tracking error 明显变差；少量恢复后的 planner `CANCELLED` 被保留为真实结果。
+
+首轮低 valid ratio 的两项根因已经审计：重规划后的旧 lidar 需要按 source stamp 选择因果轨迹历史；大 sim time 下 ROS `sec/nsec -> float -> sec/nsec` 会损失 1 ns。当前工作区已做最小时间戳/轨迹历史修复，0.05 s 同步门限未放宽。环境 A post-fix 实飞通过；环境 B 定向实飞定位根因，同源因果 replay 的 training-active valid ratio 为 `0.995863`，最终数据质量门结论为 PASS。**修复后没有重跑完整 12 次矩阵**，不能把首轮 12 次历史数据改写成全量 post-fix 结果。
+
+权威工件：
+
+- `runtime_artifacts/learning_speed/calibration/manual_calibration_report.md`；
+- `runtime_artifacts/learning_speed/calibration/manual_calibration_analysis.json`；
+- `runtime_artifacts/learning_speed/calibration/observation_c_final_data_quality_report.md`。
+
+### 8.5 下一步边界
+
+当前允许的自然下一步仍是 pre-reward 数据审计：复核 post-fix 样本质量、环境覆盖、action 可辨识性、terminal/collision provenance 和训练/验证划分需求。除非项目负责人另行明确授权，不开始 SAC、不定义 reward/φ1/φ2/权重，也不让任何未审查模型进入控制链。
+
+## 9. 已实现但仍属部分验证 / 待验证
+
+- YOLO：三路推理接口已通过；三机绕塔中的非空 PPE 检测、覆盖率和业务告警闭环待验证。
+- outdoor_village：三机初始化和 UAV1 Learning Speed 飞行已通过；三机任务闭环待验证。
+- Observation C：接口与定向数据质量门通过；修复后的完整 12-run A/B 矩阵未重跑。
+- Learning Speed：fixed/mock 动态限速链和固定速度标定已通过；安全 action range、reward、SAC、模型推理与泛化均未完成。
+- D435：三机 RGB-D topics/TF 和 YOLO 彩色输入已接通；不参与当前规划，真实硬件外参/同步待验证。
+- 动态障碍：没有可靠目标跟踪、未来状态预测和时空动态避障闭环；静态占据更新不能称为动态避障。
+- 连续螺旋、QGIS/Cloud、ROS2、真机、集群部署和干净 clone 复现不属于当前已验收能力。
+
+## 10. 主要入口
+
+| 用途 | 入口与安全语义 |
+|---|---|
+| 三机 worksite 巡塔 | `scripts/run_sh/three_uav_inspection.sh`；默认无控制，自动飞行必须显式 `--control` |
+| 三机 outdoor 初始化 | `scripts/run_sh/three_uav_outdoor_village.sh`；专用入口拒绝 `--control`，不得启动任务/飞行 |
+| 单机八扇区 | `scripts/run_sh/sector_inspection.sh`；控制需显式授权 |
+| 单机 EGO waypoint | `scripts/run_sh/ego_waypoint_inspection.sh`；默认 dry-run |
+| 固定航线环塔 | `scripts/run_sh/fixed_orbit_inspection.sh`；默认 preview |
+| Learning Speed 固定速度矩阵 | `scripts/run_sh/learning_speed_manual_batch.sh`；真实飞行前检查场景、路线指纹和进程 |
+| 单次固定速度标定 | `scripts/run_sh/learning_speed_manual_run.sh`；Environment A/B 与允许速度为显式参数 |
+| 三路 YOLO | `AstraDrone_ros1_ws/src/Detection/yolo_detect/launch/ppe_yolo_three_uav.launch`；必须显式给模型路径/Python/设备 |
+
+`three_uav_inspection.sh` 的 `light/full` 录制写入 `runtime_artifacts/`，`none` 不创建正式结果目录。不要仅相信 wrapper 的“started/success”文字；应检查 `roslaunch.log`、`gzserver/gzclient`、MAVROS 状态、任务节点和 setpoint publisher。
+
+两个 catkin 工作空间按 `simulation/sim_workspace` 后 `AstraDrone_ros1_ws` 的顺序构建。安装器和 `.bin` 构建器可能修改系统或清理构建目录，未经明确批准不得运行。
+
+## 11. 长期开发规则
+
+### 11.1 运行产物与命名
+
+- 所有 rosbag、ROS/Gazebo/PX4 日志、CSV/JSON、轨迹图、截图、视频、临时报告、调试输出和验证结果统一写入根目录 `runtime_artifacts/<功能名>_<时间戳>/`。
+- `runtime_artifacts/` 已被 `.gitignore` 忽略，任何内容都不得加入 Git。
+- 禁止重新创建、使用或向 `test_evidence/`、`trc_picture/` 写入数据；报告里的这些路径只是历史证据。
+- 新文件、脚本、目录和运行结果禁止以 `stage1/stage2/stage3/stage5/stageX` 命名，应使用稳定功能名。现存 `/stage3/...`、`/stage5/...` Topic 和历史源码名称属于兼容遗留，未经接口迁移评审不要顺手重命名，也不得据此继续制造新阶段式名称。
+
+### 11.2 修改纪律
+
+- 修改前先理解现有实现、调用链、frame/topic 和已有测试；优先最小、局部、可回归的变化。
+- 稳定工作的单机/三机、候选、净空、EGO、bridge、FAST-LIO、D435、YOLO 与 Learning Speed 默认关闭行为不得为新实验随意破坏。
+- 任务语义优先在任务层/适配层解决，不轻易修改成熟 EGO-Swarm 核心；不得通过关闭安全门、降低净空/机间距离、放宽 tracking gate 或修改 world 来制造 PASS。
+- 正常起飞、任务、返航和受控降落保持 PX4 OFFBOARD；严重断流可由 PX4 failsafe 接管。`MPC_LAND_SPEED` 与 OFFBOARD 下降 setpoint 速度不是同一参数。
+- 任意时刻只允许一个 MAVROS 控制出口。无明确控制授权、preflight 或用户许可时，禁止 `--control`、解锁、起飞或飞行。
+- 保留 `/use_sim_time` 保护；仿真参数、单位 TF 和外参不得冒充真机配置。
+- 不编辑 `build/`、`devel/`、生成消息、缓存或外部 PX4；不升级锁定依赖。
+- Codex 不得 commit 或 push；提交由项目负责人完成。
+
+### 11.3 验证与结论
+
+- 明确区分：代码完成、静态检查、构建/单测、dry-run、SITL 飞行、真机验证。
+- 实验失败若来自真实 tracking/planner/safety 行为，应保留为结果；只重试基础设施失败，不覆盖原结果。资格验证需标记 `qualification_only=true`，不混入正式计数。
+- 比较实验必须保证同环境内路线和配置一致，并记录 obstacle、speed request/filter/applied、planner、terminal、Observation C 和 route fingerprint。
+- 不确定内容写“待验证”；一次成功、合成输入或离线 replay 不得扩大解释范围。
+
+## 12. AI / Codex 启动与收尾规则
+
+每次开始任务必须先只读执行并报告：
+
+```bash
+git branch --show-current
+git rev-parse HEAD
+git status --short --branch
+git diff -- <相关文件>
+```
+
+所有现有修改、删除和未跟踪文件均视为用户资产。若任务涉及 `rule.md` 语义，必须同时核对对应 YAML、实现、测试和专题报告。
+
+每完成一个**真正的新功能或重要架构修改**并完成必要验证后，都必须检查根目录 `AGENTS.md`。若变化影响以下任一当前事实，应同步更新本文件：
+
+- 当前能力或验证等级；
+- 架构、数据流、Topic/消息/TF 接口；
+- 重要参数或安全契约；
+- 目录、启动入口或稳定基线；
+- 开发规则或当前研究阶段。
+
+更新时只改“当前事实”，删除失效描述，并链接详细报告；不要追加流水账。普通小 bug、一次性实验、临时参数和每次运行数据无需写入。若功能未完成真实飞行验证，必须保留“代码完成/待飞行验证”的边界。
+
+## 13. 详细资料索引
+
+- `rule.md`：八扇区、候选、净空、ENTRY/EXIT、重试和三机角色规则。
+- `studynote.md`：当前三机任务、EGO-Swarm 五层主链、Topic/TF 和 RViz 解释。
+- `ego_swarm_three_uav_integration_report.md`：三机动态进场、协同规划、安全和最终闭环验收；以最后的最终结论为准。
+- `三机绕塔项目依赖与目录说明.md`：环境依赖、外部 PX4 和三机包职责。
+- `docs/05-三机YOLO部署与交接说明.md`：YOLO 接口、模型要求和验证边界；其中三机绕塔失败描述已被后续三机最终 PASS 取代，但 YOLO 非空联合验收仍未完成。
+- `learning_speed_adapter_integration_report.md`：动态 `v_max` 接口、默认关闭和 Mock/fixed 验证边界。
+- `learning_speed_observation_v2_report.md`：Mid-360 surrogate、时间对齐与 PARTIAL 历史边界。
+- `scheme_c_trajectory_fusion_report.md`：Observation C 特征和官方 B 样条融合合同。
+- `learning_speed_training_data_contract_report.md`：SAC transition 合同与 null-reward 边界；“尚未在线标定”已被后续 12-run 工件取代。
+- `fixed_speed_baseline_report.md`：固定速度基线和 mission completion 记账。
+- `runtime_artifacts/learning_speed/calibration/manual_calibration_report.md`：当前两环境 12-run 正式结果。
+- `runtime_artifacts/learning_speed/calibration/observation_c_final_data_quality_report.md`：Observation C 时间戳根因、修复边界与最终数据质量门。
+- `clearance_semantics_cleanup_report.md`、`pre_entry_clearance_root_cause_report.md`：净空语义与历史残余清理。
+- `worksite_mid360_startup_root_cause_report.md`：worksite terrain collision、Mid-360 和 1/2/3 机启动根因。
+- `ego_planner_工程落地学习.md`、`legacy_ego_integration.md`：历史学习路线，仅作背景，不作为当前完成度入口。

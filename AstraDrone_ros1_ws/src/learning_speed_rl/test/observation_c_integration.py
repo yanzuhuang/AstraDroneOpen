@@ -99,10 +99,32 @@ class ObservationCIntegrationTest(unittest.TestCase):
         message.header.stamp = stamp
         message.header.frame_id = "body"
         message.version = "lidar_surrogate_v2.0"
+        message.valid = True
         message.lidar_surrogate = [5.0] * 16
         message.lidar_valid_mask = [1.0] * 16
         message.unknown_mask = [0.0] * 16
         message.semantic = [1] * 16
+        message.input_points = 16
+        message.finite_points = 16
+        message.in_range_points = 16
+        message.history_frames = 5
+        message.lidar_source_rate_hz = 10.0
+        message.build_duration_ms = 2.0
+        return message
+
+    @staticmethod
+    def _invalid_lidar(stamp, reason="insufficient_history:1/5"):
+        message = LidarSurrogateStamped()
+        message.header.stamp = stamp
+        message.header.frame_id = "body"
+        message.version = "lidar_surrogate_v2.0"
+        message.valid = False
+        message.diagnostics = [reason]
+        message.input_points = 16
+        message.finite_points = 16
+        message.in_range_points = 16
+        message.history_frames = 1
+        message.lidar_source_rate_hz = 10.0
         return message
 
     def _publish_repeated(self, publisher, message, count=3):
@@ -138,6 +160,11 @@ class ObservationCIntegrationTest(unittest.TestCase):
         self.assertGreater(first.future_positions_body[0].x, 0.0)
         self.assertAlmostEqual(first.actual_velocity_body.x, 1.0, places=4)
         self.assertAlmostEqual(first.previous_v_max, 0.20, places=5)
+        self.assertEqual(first.kinematic_lookup_result, "exact")
+        self.assertFalse(first.state_before_missing)
+        self.assertFalse(first.state_after_missing)
+        self.assertEqual(first.trajectory_lookup_result, "selected")
+        self.assertEqual(first.selected_trajectory_id, 1)
 
         start_two = base + rospy.Duration(0.2)
         self._publish_repeated(
@@ -152,6 +179,21 @@ class ObservationCIntegrationTest(unittest.TestCase):
             lambda: any(message.valid and message.trajectory_id == 2 for message in self._observations)
         ))
 
+        # Observation v2 can finish an older stamped lidar packet after EGO has
+        # already published a replan.  It must still fuse against trajectory 1,
+        # which was the latest formal trajectory at that source timestamp.
+        old_count = sum(
+            message.valid and message.trajectory_id == 1
+            for message in self._observations
+        )
+        self._publish_repeated(self._lidar_pub, self._lidar(stamp_one))
+        self.assertTrue(self._wait_for(
+            lambda: sum(
+                message.valid and message.trajectory_id == 1
+                for message in self._observations
+            ) > old_count
+        ))
+
         # Re-delivery of the older formal trajectory must not restore the cache.
         self._publish_repeated(self._trajectory_pub, self._trajectory(base, 1))
         stamp_three = start_two + rospy.Duration(0.2)
@@ -163,11 +205,22 @@ class ObservationCIntegrationTest(unittest.TestCase):
         ))
 
         self._lidar_valid_pub.publish(Bool(data=False))
+        invalid_stamp = stamp_three + rospy.Duration(0.1)
+        self._publish_repeated(
+            self._lidar_pub, self._invalid_lidar(invalid_stamp)
+        )
         self.assertTrue(self._wait_for(
             lambda: bool(self._valid_values) and not self._valid_values[-1]
             and bool(self._observations) and not self._observations[-1].valid
         ))
-        self.assertIn("lidar_surrogate_invalid", self._observations[-1].diagnostics)
+        self.assertIn(
+            "lidar_surrogate_invalid:insufficient_history:1/5",
+            self._observations[-1].diagnostics,
+        )
+        self.assertEqual(
+            self._observations[-1].lidar_invalid_reason,
+            "insufficient_history:1/5",
+        )
 
 
 if __name__ == "__main__":

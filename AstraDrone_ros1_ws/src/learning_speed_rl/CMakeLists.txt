@@ -47,6 +47,8 @@ catkin_install_python(PROGRAMS
   scripts/enrich_fixed_speed_baseline.py
   scripts/summarize_fixed_speed_baseline.py
   scripts/summarize_high_speed_exploration.py
+  scripts/summarize_manual_calibration.py
+  scripts/summarize_observation_c_final.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -63,5 +65,6 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_training_artifacts.py)
   catkin_add_nosetests(test/test_training_data_contract.py)
   add_rostest(test/observation_c_integration.test)
+  add_rostest(test/observation_v2_stamp_integration.test)
   add_rostest(test/speed_action_integration.test)
 endif()

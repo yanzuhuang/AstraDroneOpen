@@ -10,6 +10,7 @@ import json
 import math
 import os
 import threading
+from collections import Counter, defaultdict
 
 import numpy as np
 import rospy
@@ -23,6 +24,7 @@ from learning_speed_rl.training import (
     PolicyStateV1,
     SacTransitionV1,
     TrackingSafetyMirror,
+    causal_observation_receipt_time,
     lidar_clutter_metrics,
     validate_artifact_root,
 )
@@ -34,13 +36,56 @@ from traj_utils.msg import Bspline
 
 
 SAMPLE_FIELDS = (
+    "environment",
+    "training_active",
     "observation_stamp_sec",
+    "observation_source_stamp_sec",
+    "lidar_source_stamp_sec",
+    "lookup_target_stamp_sec",
+    "recorder_callback_ros_time_sec",
+    "recorder_clock_lag_sec",
     "observation_receive_sec",
     "observation_latency_sec",
     "observation_version",
     "observation_valid",
     "observation_invalid_reasons",
     "observation_frame",
+    "kinematic_lookup_result",
+    "kinematic_lookup_failure_reason",
+    "state_before_missing",
+    "state_before_stamp_sec",
+    "state_after_missing",
+    "state_after_stamp_sec",
+    "dt_before_sec",
+    "dt_after_sec",
+    "bracket_span_sec",
+    "nearest_state_dt_sec",
+    "state_buffer_oldest_stamp_sec",
+    "state_buffer_newest_stamp_sec",
+    "state_buffer_size",
+    "state_buffer_coverage_sec",
+    "latest_state_age_at_lookup_sec",
+    "fast_lio_source_rate_hz",
+    "fast_lio_state_insert_rate_hz",
+    "state_insert_count",
+    "out_of_order_state_count",
+    "duplicate_state_stamp_count",
+    "state_buffer_eviction_count",
+    "source_to_receipt_latency_sec",
+    "trajectory_lookup_result",
+    "trajectory_history_size",
+    "selected_trajectory_id",
+    "selected_trajectory_start_stamp_sec",
+    "selected_trajectory_end_stamp_sec",
+    "latest_trajectory_id_at_lookup",
+    "latest_trajectory_start_stamp_sec",
+    "lidar_invalid_reason",
+    "lidar_input_points",
+    "lidar_finite_points",
+    "lidar_in_range_points",
+    "lidar_history_frames",
+    "lidar_source_rate_hz",
+    "lidar_build_duration_ms",
     "trajectory_id",
     "trajectory_start_time_sec",
     "trajectory_source_frame",
@@ -85,10 +130,24 @@ SAMPLE_FIELDS = (
 )
 
 
+TRAINING_ACTIVE_STATES = frozenset((
+    "STAGING_POINT",
+    "ENTRY_GATE_TRANSIT",
+    "NAVIGATING",
+    "RELOCATING",
+    "RECOVERING",
+    "LAYER_TRANSITION",
+    "GO_TO_EXIT_GATE",
+    "NORMAL_RETURN",
+    "RETURN_EGRESS",
+))
+
+
 class CalibrationDataRecorder:
     def __init__(self):
         self._lock = threading.RLock()
         self._run_id = str(rospy.get_param("~run_id", "manual")).strip()
+        self._environment = str(rospy.get_param("~environment", "")).strip()
         output_dir = str(rospy.get_param("~output_dir", "")).strip()
         if not self._run_id or not output_dir:
             raise rospy.ROSInitException("run_id and output_dir are required")
@@ -128,6 +187,7 @@ class CalibrationDataRecorder:
         self._ended_sec = None
 
         self._mission_state = ""
+        self._mission_started = False
         self._mission_success = False
         self._mission_failure = False
         self._mission_done = False
@@ -157,6 +217,10 @@ class CalibrationDataRecorder:
 
         self._observation_messages = 0
         self._valid_observations = 0
+        self._training_active_messages = 0
+        self._training_active_valid = 0
+        self._invalid_reason_counts = Counter()
+        self._invalid_reason_by_phase = defaultdict(Counter)
         self._transition_candidates = 0
         self._skipped_action_no_state = 0
         self._skipped_action_stale_trajectory = 0
@@ -476,8 +540,23 @@ class CalibrationDataRecorder:
     def _pair_stamp(sample):
         return "" if sample is None else sample[0]
 
+    @staticmethod
+    def _message_time(message, field, missing_field=None):
+        if missing_field is not None and getattr(message, missing_field):
+            return ""
+        value = getattr(message, field).to_sec()
+        return value if value > 0.0 else ""
+
     def _observation(self, message):
-        receive_sec = self._now()
+        callback_ros_time = self._now()
+        source_stamp = message.header.stamp.to_sec()
+        producer_receive = message.lookup_receipt_time.to_sec()
+        # /clock callbacks are delivered independently to each process. The
+        # collector can therefore observe a slightly older ROS time even though
+        # this message was causally received after Observation C produced it.
+        receive_sec = causal_observation_receipt_time(
+            callback_ros_time, producer_receive, source_stamp
+        )
         with self._lock:
             if self._finalized:
                 return
@@ -497,16 +576,106 @@ class CalibrationDataRecorder:
             if state_error:
                 reasons.append(state_error)
             row = {field: "" for field in SAMPLE_FIELDS}
-            stamp = message.header.stamp.to_sec()
+            stamp = source_stamp
+            training_active = self._mission_state in TRAINING_ACTIVE_STATES
+            if training_active:
+                self._training_active_messages += 1
+                if state is not None:
+                    self._training_active_valid += 1
+            if state is None:
+                reason_key = ";".join(reasons) or "unspecified_invalid"
+                self._invalid_reason_counts[reason_key] += 1
+                self._invalid_reason_by_phase[self._mission_state or "<empty>"][reason_key] += 1
             row.update(
                 {
+                    "environment": self._environment,
+                    "training_active": int(training_active),
                     "observation_stamp_sec": stamp,
+                    "observation_source_stamp_sec": stamp,
+                    "lidar_source_stamp_sec": stamp,
+                    "lookup_target_stamp_sec": stamp,
+                    "recorder_callback_ros_time_sec": callback_ros_time,
+                    "recorder_clock_lag_sec": receive_sec - callback_ros_time,
                     "observation_receive_sec": receive_sec,
                     "observation_latency_sec": max(0.0, receive_sec - stamp),
                     "observation_version": message.version,
                     "observation_valid": int(state is not None),
                     "observation_invalid_reasons": ";".join(reasons),
                     "observation_frame": message.header.frame_id,
+                    "kinematic_lookup_result": message.kinematic_lookup_result,
+                    "kinematic_lookup_failure_reason": message.kinematic_lookup_failure_reason,
+                    "state_before_missing": int(message.state_before_missing),
+                    "state_before_stamp_sec": self._message_time(
+                        message, "state_before_stamp", "state_before_missing"
+                    ),
+                    "state_after_missing": int(message.state_after_missing),
+                    "state_after_stamp_sec": self._message_time(
+                        message, "state_after_stamp", "state_after_missing"
+                    ),
+                    "dt_before_sec": (
+                        "" if message.state_before_missing else message.dt_before_sec
+                    ),
+                    "dt_after_sec": (
+                        "" if message.state_after_missing else message.dt_after_sec
+                    ),
+                    "bracket_span_sec": (
+                        "" if message.state_before_missing or message.state_after_missing
+                        else message.bracket_span_sec
+                    ),
+                    "nearest_state_dt_sec": (
+                        "" if message.state_before_missing and message.state_after_missing
+                        else message.nearest_state_dt_sec
+                    ),
+                    "state_buffer_oldest_stamp_sec": self._message_time(
+                        message, "state_buffer_oldest_stamp",
+                        "state_buffer_oldest_missing",
+                    ),
+                    "state_buffer_newest_stamp_sec": self._message_time(
+                        message, "state_buffer_newest_stamp",
+                        "state_buffer_newest_missing",
+                    ),
+                    "state_buffer_size": message.state_buffer_size,
+                    "state_buffer_coverage_sec": message.state_buffer_coverage_sec,
+                    "latest_state_age_at_lookup_sec": (
+                        "" if message.state_buffer_newest_missing
+                        else message.latest_state_age_at_lookup_sec
+                    ),
+                    "fast_lio_source_rate_hz": message.fast_lio_source_rate_hz,
+                    "fast_lio_state_insert_rate_hz": message.fast_lio_state_insert_rate_hz,
+                    "state_insert_count": message.state_insert_count,
+                    "out_of_order_state_count": message.out_of_order_state_count,
+                    "duplicate_state_stamp_count": message.duplicate_state_stamp_count,
+                    "state_buffer_eviction_count": message.state_buffer_eviction_count,
+                    "source_to_receipt_latency_sec": message.source_to_receipt_latency_sec,
+                    "trajectory_lookup_result": message.trajectory_lookup_result,
+                    "trajectory_history_size": message.trajectory_history_size,
+                    "selected_trajectory_id": (
+                        "" if message.selected_trajectory_missing
+                        else message.selected_trajectory_id
+                    ),
+                    "selected_trajectory_start_stamp_sec": self._message_time(
+                        message, "selected_trajectory_start_stamp",
+                        "selected_trajectory_missing",
+                    ),
+                    "selected_trajectory_end_stamp_sec": self._message_time(
+                        message, "selected_trajectory_end_stamp",
+                        "selected_trajectory_missing",
+                    ),
+                    "latest_trajectory_id_at_lookup": (
+                        "" if message.latest_trajectory_missing
+                        else message.latest_trajectory_id_at_lookup
+                    ),
+                    "latest_trajectory_start_stamp_sec": self._message_time(
+                        message, "latest_trajectory_start_stamp",
+                        "latest_trajectory_missing",
+                    ),
+                    "lidar_invalid_reason": message.lidar_invalid_reason,
+                    "lidar_input_points": message.lidar_input_points,
+                    "lidar_finite_points": message.lidar_finite_points,
+                    "lidar_in_range_points": message.lidar_in_range_points,
+                    "lidar_history_frames": message.lidar_history_frames,
+                    "lidar_source_rate_hz": message.lidar_source_rate_hz,
+                    "lidar_build_duration_ms": message.lidar_build_duration_ms,
                     "mission_state": self._mission_state,
                     "planner_state": self._planner_state,
                     "planner_failure_active": int(self._planner_failure_active),
@@ -573,11 +742,63 @@ class CalibrationDataRecorder:
             self._sample_writer.writerow(row)
             self._sample_stream.flush()
             diagnostic_record = {
+                "environment": self._environment,
+                "training_active": training_active,
                 "observation_stamp_sec": stamp,
+                "observation_source_stamp_sec": stamp,
+                "lidar_source_stamp_sec": stamp,
+                "lookup_target_stamp_sec": stamp,
+                "recorder_callback_ros_time_sec": callback_ros_time,
+                "recorder_clock_lag_sec": receive_sec - callback_ros_time,
                 "observation_receive_sec": receive_sec,
                 "version": message.version,
                 "valid": state is not None,
                 "diagnostics": reasons,
+                "kinematic_lookup": {
+                    "result": message.kinematic_lookup_result,
+                    "failure_reason": message.kinematic_lookup_failure_reason,
+                    "before_missing": bool(message.state_before_missing),
+                    "before_stamp_sec": row["state_before_stamp_sec"],
+                    "after_missing": bool(message.state_after_missing),
+                    "after_stamp_sec": row["state_after_stamp_sec"],
+                    "dt_before_sec": row["dt_before_sec"],
+                    "dt_after_sec": row["dt_after_sec"],
+                    "bracket_span_sec": row["bracket_span_sec"],
+                    "nearest_state_dt_sec": row["nearest_state_dt_sec"],
+                    "buffer_oldest_stamp_sec": row["state_buffer_oldest_stamp_sec"],
+                    "buffer_newest_stamp_sec": row["state_buffer_newest_stamp_sec"],
+                    "buffer_size": message.state_buffer_size,
+                    "buffer_coverage_sec": message.state_buffer_coverage_sec,
+                    "latest_state_age_at_lookup_sec": row["latest_state_age_at_lookup_sec"],
+                    "fast_lio_source_rate_hz": message.fast_lio_source_rate_hz,
+                    "state_insert_rate_hz": message.fast_lio_state_insert_rate_hz,
+                    "insert_count": message.state_insert_count,
+                    "out_of_order_state_count": message.out_of_order_state_count,
+                    "duplicate_state_stamp_count": message.duplicate_state_stamp_count,
+                    "eviction_count": message.state_buffer_eviction_count,
+                    "receipt_stamp_sec": self._message_time(
+                        message, "lookup_receipt_time"
+                    ),
+                    "source_to_receipt_latency_sec": message.source_to_receipt_latency_sec,
+                },
+                "trajectory_lookup": {
+                    "result": message.trajectory_lookup_result,
+                    "history_size": message.trajectory_history_size,
+                    "selected_trajectory_id": row["selected_trajectory_id"],
+                    "selected_start_stamp_sec": row["selected_trajectory_start_stamp_sec"],
+                    "selected_end_stamp_sec": row["selected_trajectory_end_stamp_sec"],
+                    "latest_trajectory_id_at_lookup": row["latest_trajectory_id_at_lookup"],
+                    "latest_start_stamp_sec": row["latest_trajectory_start_stamp_sec"],
+                },
+                "lidar_source": {
+                    "invalid_reason": message.lidar_invalid_reason,
+                    "input_points": message.lidar_input_points,
+                    "finite_points": message.lidar_finite_points,
+                    "in_range_points": message.lidar_in_range_points,
+                    "history_frames": message.lidar_history_frames,
+                    "source_rate_hz": message.lidar_source_rate_hz,
+                    "build_duration_ms": message.lidar_build_duration_ms,
+                },
                 "lidar_valid_mask": list(message.lidar_valid_mask),
                 "lidar_unknown_mask": list(message.lidar_unknown_mask),
                 "lidar_semantic": list(message.lidar_semantic),
@@ -661,8 +882,19 @@ class CalibrationDataRecorder:
             self._planner_consecutive_failures = int(
                 message.consecutive_plan_failures
             )
+            # Ground/startup occupancy and planner warm-up are not part of a
+            # flight episode.  Keep their latest diagnostics visible, but do
+            # not turn them into calibration terminals or failure episodes
+            # until the mission has actually left WAIT_INPUTS.
+            if not self._mission_started or self._mission_done:
+                return
+            # The EGO map legitimately contains the grounded vehicle before
+            # control hand-off.  The bridge's TRACK_EGO state is the existing
+            # boundary at which this occupancy flag becomes a flight-safety
+            # collision proxy; the collector remains read-only.
             self._collision_terminal = self._collision_terminal or bool(
                 message.current_position_in_collision
+                and self._bridge_state == "TRACK_EGO"
             )
             self._emergency_terminal = self._emergency_terminal or bool(
                 message.emergency_stop_active
@@ -677,6 +909,8 @@ class CalibrationDataRecorder:
     def _state(self, message):
         with self._lock:
             self._mission_state = message.data
+            if message.data not in ("", "WAIT_INPUTS"):
+                self._mission_started = True
 
     def _success(self, message):
         with self._lock:
@@ -790,6 +1024,21 @@ class CalibrationDataRecorder:
                         if self._observation_messages
                         else None
                     ),
+                    "training_active_messages": self._training_active_messages,
+                    "training_active_valid": self._training_active_valid,
+                    "training_active_valid_ratio": (
+                        float(self._training_active_valid)
+                        / float(self._training_active_messages)
+                        if self._training_active_messages else None
+                    ),
+                    "training_active_states": sorted(TRAINING_ACTIVE_STATES),
+                    "invalid_reasons": dict(self._invalid_reason_counts),
+                    "invalid_reasons_by_mission_phase": {
+                        phase: dict(counts)
+                        for phase, counts in sorted(
+                            self._invalid_reason_by_phase.items()
+                        )
+                    },
                 },
                 "transitions": {
                     "candidates": self._transition_candidates,

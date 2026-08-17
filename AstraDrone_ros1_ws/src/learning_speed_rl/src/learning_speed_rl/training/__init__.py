@@ -18,6 +18,7 @@ from .data_contract import (
     PolicyStateProvenance,
     PolicyStateV1,
     SacTransitionV1,
+    causal_observation_receipt_time,
 )
 from .environment_interface import SpeedTrainingEnvironment, validate_artifact_root
 
@@ -39,4 +40,5 @@ __all__ = [
     "TrackingSafetyMirror",
     "lidar_clutter_metrics",
     "validate_artifact_root",
+    "causal_observation_receipt_time",
 ]
