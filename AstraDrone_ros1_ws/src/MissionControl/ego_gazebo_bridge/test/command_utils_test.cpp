@@ -128,6 +128,36 @@ TEST(RawCommandConversion, RejectsTiltedWorldFrames) {
   EXPECT_NE(std::string::npos, reason.find("gravity-aligned"));
 }
 
+TEST(RawCommandConversion, HighSpeedNormEnvelopeDoesNotClipEgoAxisLimits) {
+  quadrotor_msgs::PositionCommand command;
+  command.header.frame_id = "camera_init";
+  command.velocity.x = 4.0001;
+  command.velocity.y = 4.0001;
+  command.velocity.z = 4.0001;
+  command.acceleration.x = 3.0001;
+  command.acceleration.y = 3.0001;
+  command.acceleration.z = 3.0001;
+
+  geometry_msgs::TransformStamped transform;
+  transform.header.frame_id = "map";
+  transform.child_frame_id = "camera_init";
+  transform.transform.rotation.w = 1.0;
+
+  RawCommandLimits limits;
+  limits.max_velocity = std::sqrt(3.0) * 4.0001;
+  limits.max_acceleration = std::sqrt(3.0) * 3.0001;
+  mavros_msgs::PositionTarget target;
+  std::string reason;
+  ASSERT_TRUE(commandToRawTarget(command, transform, limits, ros::Time(5.0),
+                                 &target, &reason)) << reason;
+  EXPECT_NEAR(4.0001, target.velocity.x, 1e-9);
+  EXPECT_NEAR(4.0001, target.velocity.y, 1e-9);
+  EXPECT_NEAR(4.0001, target.velocity.z, 1e-9);
+  EXPECT_NEAR(3.0001, target.acceleration_or_force.x, 1e-9);
+  EXPECT_NEAR(3.0001, target.acceleration_or_force.y, 1e-9);
+  EXPECT_NEAR(3.0001, target.acceleration_or_force.z, 1e-9);
+}
+
 TEST(CommandBoundsTest, EnforcesHeightAndHorizontalEnvelope) {
   const auto home = makePose(0.0, 0.0, 0.0, 0.0);
   CommandBounds bounds;

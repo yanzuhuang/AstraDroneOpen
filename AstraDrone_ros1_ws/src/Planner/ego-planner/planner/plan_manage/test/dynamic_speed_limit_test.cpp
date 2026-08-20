@@ -33,6 +33,16 @@ TEST(DynamicSpeedLimitGate, SeparatesApplyAndReplanThresholds)
   EXPECT_TRUE(gate.requiresReplan(0.6, 0.8));
 }
 
+TEST(DynamicSpeedLimitGate, AcceptsReviewedHighSpeedQualificationRequests)
+{
+  const DynamicSpeedLimitGate gate(0.05, 4.0, 0.03);
+  EXPECT_TRUE(gate.validConfiguration());
+  for (const double requested : {1.75, 2.0, 2.5, 3.0, 3.5})
+    EXPECT_TRUE(gate.accepts(requested));
+  EXPECT_TRUE(gate.accepts(4.0));
+  EXPECT_FALSE(gate.accepts(4.000001));
+}
+
 }  // namespace
 }  // namespace ego_planner
 

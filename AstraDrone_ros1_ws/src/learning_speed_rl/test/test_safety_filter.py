@@ -54,6 +54,21 @@ class SpeedSafetyFilterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             speed_filter.update(math.nan, 0.0)
 
+    def test_high_speed_fixed_requests_are_not_clamped(self):
+        for requested in (1.75, 2.0, 2.5, 3.0, 3.5):
+            speed_filter = SpeedSafetyFilter(SafetyFilterConfig(
+                v_max_min=0.05,
+                v_max_max=4.0,
+                initial_v_max=requested,
+                rise_rate_mps2=0.08,
+                fall_rate_mps2=0.12,
+                maximum_step_mps=0.02,
+                low_pass_alpha=0.45,
+                hysteresis_mps=0.005,
+            ))
+            self.assertAlmostEqual(
+                speed_filter.update(requested, 1.0), requested)
+
 
 if __name__ == "__main__":
     unittest.main()

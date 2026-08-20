@@ -49,6 +49,8 @@ catkin_install_python(PROGRAMS
   scripts/summarize_high_speed_exploration.py
   scripts/summarize_manual_calibration.py
   scripts/summarize_observation_c_final.py
+  scripts/high_speed_parameter_preflight.py
+  scripts/summarize_high_speed_progressive_qualification.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -64,6 +66,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_safety_filter.py)
   catkin_add_nosetests(test/test_training_artifacts.py)
   catkin_add_nosetests(test/test_training_data_contract.py)
+  catkin_add_nosetests(test/test_high_speed_parameter_chain.py)
   add_rostest(test/observation_c_integration.test)
   add_rostest(test/observation_v2_stamp_integration.test)
   add_rostest(test/speed_action_integration.test)

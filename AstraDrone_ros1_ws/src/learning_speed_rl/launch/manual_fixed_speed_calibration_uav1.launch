@@ -1,8 +1,13 @@
 <launch>
   <arg name="enable_control" default="false"/>
   <arg name="fixed_v_max" default="0.30"/>
-  <arg name="speed_ceiling" default="1.50"/>
-  <arg name="max_acc" default="0.50"/>
+  <arg name="speed_ceiling" default="4.00"/>
+  <arg name="max_acc" default="3.00"/>
+  <arg name="planning_horizon" default="7.5"/>
+  <arg name="feasibility_tolerance" default="0.0"/>
+  <arg name="bridge_config"
+       default="$(find astra_swarm_bringup)/config/uav1_high_speed_bridge.yaml"/>
+  <arg name="record_control_chain" default="false"/>
   <arg name="run_id" default="manual_preview"/>
   <arg name="environment" default="B"/>
   <arg name="output_dir"
@@ -45,7 +50,8 @@
     <arg name="learning_speed_fixed_v_max" value="$(arg fixed_v_max)"/>
     <arg name="max_vel" value="$(arg speed_ceiling)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
-    <arg name="planning_horizon" value="7.5"/>
+    <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+    <arg name="uav1_bridge_config" value="$(arg bridge_config)"/>
     <arg name="task_config" value="$(arg task_config)"/>
     <arg name="world" value="$(arg world)"/>
     <arg name="uav1_spawn_x" value="$(arg uav1_spawn_x)"/>
@@ -62,6 +68,50 @@
     <arg name="evidence_record_enabled" value="false"/>
     <arg name="uav1_report_file" value="$(arg mission_report_file)"/>
   </include>
+
+  <!-- The shared EGO launch allows 5% feasibility tolerance.  For this
+       qualification the reviewed 4.0/3.0 values are exact effective limits,
+       so override only this isolated UAV1 planner instance. -->
+  <param name="/uav1/drone_0_ego_planner_node/manager/feasibility_tolerance"
+         value="$(arg feasibility_tolerance)" type="double"/>
+  <!-- Hold before arming until the existing PX4 guard has also checked the
+       high-speed horizontal velocity/acceleration envelope. -->
+  <param name="/uav1/ego_mavros_bridge/require_start_permission"
+         value="true" type="bool"/>
+  <param name="/uav1/ego_mavros_bridge/start_permission_topic"
+         value="/swarm/px4_params_ready"/>
+  <param name="/astra_swarm_px4_param_guard/check_high_speed_limits"
+         value="true" type="bool"/>
+  <param name="/astra_swarm_px4_param_guard/minimum_mpc_xy_vel_max"
+         value="5.656854249492381" type="double"/>
+  <param name="/astra_swarm_px4_param_guard/minimum_mpc_acc_hor_max"
+         value="4.242640687119286" type="double"/>
+  <param name="/astra_swarm_px4_param_guard/minimum_mpc_acc_up_max"
+         value="3.0" type="double"/>
+  <param name="/astra_swarm_px4_param_guard/minimum_mpc_acc_down_max"
+         value="3.0" type="double"/>
+  <param name="/astra_swarm_px4_param_guard/output_file"
+         value="$(arg output_dir)/live_px4_preflight.json"/>
+
+  <node if="$(arg record_control_chain)" pkg="rosbag" type="record"
+        name="high_speed_qualification_rosbag" output="log"
+        args="--lz4 -O $(arg output_dir)/control_chain.bag
+              /clock /rosout /diagnostics
+              /uav1/Odometry /uav1/planning/bspline /uav1/planning/pos_cmd
+              /uav1/mavros/setpoint_raw/local
+              /uav1/mavros/local_position/pose_framed
+              /uav1/ego_mavros_bridge/tracking_error
+              /uav1/ego_mavros_bridge/state /uav1/planner/status
+              /uav1/tower_mission/state /uav1/tower_mission/current_target
+              /uav1/tower_mission/mission_success
+              /uav1/tower_mission/mission_failure
+              /uav1/tower_mission/mission_done
+              /uav1/tower_mission/orbit_complete
+              /uav1/learning_speed/raw_v_max
+              /uav1/learning_speed/v_max
+              /uav1/learning_speed/applied_v_max
+              /uav1/learning_speed/action_stamped
+              /uav1/mavros/state /uav1/mavros/extended_state"/>
 
   <!-- Reuse the frozen Data Contract collector.  It starts the read-only
        Observation C pipeline and finalizes after the latched mission terminal. -->

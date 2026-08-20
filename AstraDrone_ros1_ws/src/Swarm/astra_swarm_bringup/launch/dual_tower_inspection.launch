@@ -39,6 +39,8 @@
        default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
   <arg name="learning_speed_policy_mode" default="mock"/>
   <arg name="learning_speed_fixed_v_max" default="$(arg max_vel)"/>
+  <arg name="uav1_bridge_config"
+       default="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
   <arg name="takeoff_delay" default="6.0"/>
   <arg name="uav1_top_height" default="34.0"/>
   <arg name="uav2_top_height" default="28.0"/>
@@ -403,7 +405,7 @@
     <arg name="crane_center_x"
          value="$(eval float(arg('crane_center_x')) - float(arg('uav1_spawn_x')))"/>
     <arg name="bridge_config"
-         value="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
+         value="$(arg uav1_bridge_config)"/>
     <arg name="report_file" value="$(arg uav1_report_file)"/>
     <arg name="trajectory_color_r" value="1.0"/>
     <arg name="trajectory_color_g" value="0.55"/>

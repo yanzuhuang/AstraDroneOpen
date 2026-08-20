@@ -268,7 +268,9 @@ training_ready = false
 
 12/12 均有正式 terminal、mission PASS、完整指标、有效 requested/filtered/applied 链和合法 null-reward 边界。首轮 Observation C 单 run valid ratio 为 `0.545～0.834`，高速度下 tracking error 明显变差；少量恢复后的 planner `CANCELLED` 被保留为真实结果。
 
-首轮低 valid ratio 的两项根因已经审计：重规划后的旧 lidar 需要按 source stamp 选择因果轨迹历史；大 sim time 下 ROS `sec/nsec -> float -> sec/nsec` 会损失 1 ns。当前工作区已做最小时间戳/轨迹历史修复，0.05 s 同步门限未放宽。环境 A post-fix 实飞通过；环境 B 定向实飞定位根因，同源因果 replay 的 training-active valid ratio 为 `0.995863`，最终数据质量门结论为 PASS。**修复后没有重跑完整 12 次矩阵**，不能把首轮 12 次历史数据改写成全量 post-fix 结果。
+首轮低 valid ratio 的两项根因已经审计：重规划后的旧 lidar 需要按 source stamp 选择因果轨迹历史；大 sim time 下 ROS `sec/nsec -> float -> sec/nsec` 会损失 1 ns。0.05 s 同步门限未放宽。后续已经完成独立的 14 条件 post-fix 矩阵（A/B，`0.30–1.75 m/s`，统一 `2.00 m/s` ceiling）：A 七档均成功；B 到 1.50 成功，B/1.75 保留为真实 mission failure。该代际与首轮 `1.50 m/s` ceiling 数据保持隔离，不得混池。
+
+高速 qualification 独立代际使用 EGO static `max_vel=4.0 m/s`、`max_acc=3.0 m/s²`、`feasibility_tolerance=0.0` 和 `planning_horizon=7.5 m`，UAV1 专用 bridge 以三维范数包络覆盖 EGO 逐轴约束。Environment B progressive qualification 已按每档一次、真实 failure 即停执行：1.75 和 2.0 m/s PASS；2.5 m/s 虽最终 mission success、disarmed、ON_GROUND，但过程中触发 `CURRENT_POSITION_IN_OCCUPANCY` 并锁存 collision/dangerous proxy，qualification FAIL；3.0/3.5 未运行。当前最高稳定 qualification 速度为 2.0 m/s。三档 unexplained invalid、trajectory timestamp mismatch 和 kinematic gap 均为 0，但 2.5 training-active valid ratio 降至约 0.836。最终 bag/ULog 速度链审计确认三档无 bridge velocity saturation，raw→PX4 input 原生时间戳对齐误差低于 `1.2e-7 m/s`，2.5 failure 前也无 acceleration saturation；configured 高于 sustained actual 来自轨迹/转弯/加减速与跟踪，而不是隐藏速度 ceiling。PX4 Z 速度 `3.0/1.5 m/s` 仍不构成完整 3D 4.0 m/s 合同。
 
 权威工件：
 
@@ -278,14 +280,14 @@ training_ready = false
 
 ### 8.5 下一步边界
 
-当前允许的自然下一步仍是 pre-reward 数据审计：复核 post-fix 样本质量、环境覆盖、action 可辨识性、terminal/collision provenance 和训练/验证划分需求。除非项目负责人另行明确授权，不开始 SAC、不定义 reward/φ1/φ2/权重，也不让任何未审查模型进入控制链。
+velocity execution chain 排查已经闭环，可以进入 Stage 1 Reward 的独立设计/审计阶段；2.5 collision-proxy FAIL、actual speed、tracking、terminal 与 obstacle context 必须作为真实边界输入，不能重标或被 configured `v_max` 代替。该结论只授权设计/审计：在项目负责人进一步明确 Reward 语义前，不实现 Reward、不开始 SAC、不定义 φ1/φ2/权重，也不让任何未审查模型进入控制链。
 
 ## 9. 已实现但仍属部分验证 / 待验证
 
 - YOLO：三路推理接口已通过；三机绕塔中的非空 PPE 检测、覆盖率和业务告警闭环待验证。
 - outdoor_village：三机初始化和 UAV1 Learning Speed 飞行已通过；三机任务闭环待验证。
 - Observation C：接口与定向数据质量门通过；修复后的完整 12-run A/B 矩阵未重跑。
-- Learning Speed：fixed/mock 动态限速链和固定速度标定已通过；安全 action range、reward、SAC、模型推理与泛化均未完成。
+- Learning Speed：fixed/mock 动态限速链和固定速度标定已通过；4.0/3.0 高速代际在 Environment B 验证到 2.0 m/s，2.5 collision-proxy FAIL 后停止；最终速度执行链排查已闭环，可进入 Stage 1 Reward 设计/审计，但 Reward/SAC 尚未实现，模型推理与泛化也未完成。
 - D435：三机 RGB-D topics/TF 和 YOLO 彩色输入已接通；不参与当前规划，真实硬件外参/同步待验证。
 - 动态障碍：没有可靠目标跟踪、未来状态预测和时空动态避障闭环；静态占据更新不能称为动态避障。
 - 连续螺旋、QGIS/Cloud、ROS2、真机、集群部署和干净 clone 复现不属于当前已验收能力。
@@ -300,7 +302,7 @@ training_ready = false
 | 单机 EGO waypoint | `scripts/run_sh/ego_waypoint_inspection.sh`；默认 dry-run |
 | 固定航线环塔 | `scripts/run_sh/fixed_orbit_inspection.sh`；默认 preview |
 | Learning Speed 固定速度矩阵 | `scripts/run_sh/learning_speed_manual_batch.sh`；真实飞行前检查场景、路线指纹和进程 |
-| 单次固定速度标定 | `scripts/run_sh/learning_speed_manual_run.sh`；Environment A/B 与允许速度为显式参数 |
+| 单次固定速度标定/qualification | `scripts/run_sh/learning_speed_manual_run.sh`；Environment A/B、速度、ceiling/acceleration 代际为显式参数；高速档仍需 `--control` 与 live preflight |
 | 三路 YOLO | `AstraDrone_ros1_ws/src/Detection/yolo_detect/launch/ppe_yolo_three_uav.launch`；必须显式给模型路径/Python/设备 |
 
 `three_uav_inspection.sh` 的 `light/full` 录制写入 `runtime_artifacts/`，`none` 不创建正式结果目录。不要仅相信 wrapper 的“started/success”文字；应检查 `roslaunch.log`、`gzserver/gzclient`、MAVROS 状态、任务节点和 setpoint publisher。
@@ -371,6 +373,9 @@ git diff -- <相关文件>
 - `fixed_speed_baseline_report.md`：固定速度基线和 mission completion 记账。
 - `runtime_artifacts/learning_speed/calibration/manual_calibration_report.md`：当前两环境 12-run 正式结果。
 - `runtime_artifacts/learning_speed/calibration/observation_c_final_data_quality_report.md`：Observation C 时间戳根因、修复边界与最终数据质量门。
+- `high_speed_parameter_chain_update_report.md`：4.0 m/s ceiling、3.0 m/s² acceleration、bridge 逐轴/范数一致性与静态 qualification 边界。
+- `high_speed_progressive_qualification_report.md`：Environment B 逐级高速结果、2.5 m/s collision-proxy failure、Observation C/控制链趋势与 Reward 前置结论。
+- `final_velocity_execution_chain_audit_report.md`：三档 request→EGO→bridge→PX4→actual 最终审计、隐藏速度限幅排除与 Stage 1 Reward 设计入口结论。
 - `clearance_semantics_cleanup_report.md`、`pre_entry_clearance_root_cause_report.md`：净空语义与历史残余清理。
 - `worksite_mid360_startup_root_cause_report.md`：worksite terrain collision、Mid-360 和 1/2/3 机启动根因。
 - `ego_planner_工程落地学习.md`、`legacy_ego_integration.md`：历史学习路线，仅作背景，不作为当前完成度入口。
