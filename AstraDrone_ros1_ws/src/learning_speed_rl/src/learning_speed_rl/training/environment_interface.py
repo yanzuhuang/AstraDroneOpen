@@ -10,7 +10,7 @@ class SpeedTrainingEnvironment(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def step(self, requested_v_max):
+    def run_episode(self, action_provider, config=None):
         raise NotImplementedError
 
 

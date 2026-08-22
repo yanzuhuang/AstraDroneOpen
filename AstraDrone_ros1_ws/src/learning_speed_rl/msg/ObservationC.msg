@@ -3,6 +3,13 @@ string version
 bool valid
 string[] diagnostics
 
+# Reset/backend provenance only; excluded from the frozen five policy inputs.
+uint64 temporal_generation
+time reset_barrier_stamp
+uint64 lidar_temporal_generation
+time lidar_pose_source_stamp
+bool lidar_pose_used_future
+
 # Per-sample read-only provenance. These fields are diagnostics only and are
 # deliberately excluded from the frozen five-item policy_input().
 time lookup_receipt_time
@@ -24,6 +31,13 @@ time state_buffer_newest_stamp
 uint32 state_buffer_size
 float64 state_buffer_coverage_sec
 float64 latest_state_age_at_lookup_sec
+# Backend-aware state provenance. The two fast_lio_* rates below remain as
+# compatibility aliases for frozen v1 artifacts and existing analysis tools.
+string state_source_type
+string state_contract_version
+string state_velocity_source
+float64 state_source_rate_hz
+float64 state_insert_rate_hz
 float64 fast_lio_source_rate_hz
 float64 fast_lio_state_insert_rate_hz
 uint64 state_insert_count

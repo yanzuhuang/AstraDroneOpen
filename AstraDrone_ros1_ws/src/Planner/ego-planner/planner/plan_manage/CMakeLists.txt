@@ -11,6 +11,7 @@ find_package(PCL 1.7 REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
   astra_custom_msgs
+  learning_speed_rl
   roscpp
   std_msgs
   geometry_msgs
@@ -26,7 +27,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES ego_planner
- CATKIN_DEPENDS astra_custom_msgs plan_env path_searching bspline_opt traj_utils
+ CATKIN_DEPENDS astra_custom_msgs learning_speed_rl plan_env path_searching bspline_opt traj_utils
 #  DEPENDS system_lib
 )
 

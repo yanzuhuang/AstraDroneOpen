@@ -12,6 +12,9 @@
 #include <std_msgs/Empty.h>
 #include <std_msgs/Float64.h>
 #include <astra_custom_msgs/PlannerStatus.h>
+#include <learning_speed_rl/SpeedActionStamped.h>
+#include <learning_speed_rl/SpeedAppliedStamped.h>
+#include <unordered_map>
 #include <vector>
 #include <visualization_msgs/Marker.h>
 
@@ -73,10 +76,9 @@ namespace ego_planner
     bool enable_fail_safe_;
     bool dynamic_speed_limit_enabled_{false};
     double current_speed_limit_{0.0};
-    double last_replan_speed_limit_{0.0};
-    double speed_limit_replan_cooldown_{1.0};
-    ros::Time last_speed_limit_replan_time_;
     DynamicSpeedLimitGate dynamic_speed_limit_gate_;
+    std::unordered_map<std::string, uint64_t> last_speed_request_id_by_episode_;
+    std::unordered_map<std::string, uint64_t> last_speed_step_by_episode_;
 
     /* planning data */
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
@@ -103,6 +105,7 @@ namespace ego_planner
     ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, swarm_trajs_pub_, broadcast_bspline_pub_;
     ros::Publisher status_pub_;
     ros::Publisher applied_speed_limit_pub_;
+    ros::Publisher applied_speed_limit_stamped_pub_;
     std::string odom_topic_, waypoint_topic_, cancel_topic_, swarm_trajectory_topic_;
     std::string status_topic_, status_frame_id_, target_id_;
     std::string swarm_common_frame_;
@@ -135,7 +138,9 @@ namespace ego_planner
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void cancelCallback(const std_msgs::EmptyConstPtr &msg);
     void statusCallback(const ros::TimerEvent &e);
-    void speedLimitCallback(const std_msgs::Float64ConstPtr &msg);
+    void speedLimitCallback(const learning_speed_rl::SpeedActionStampedConstPtr &msg);
+    void publishAppliedSpeedLimit(
+        const learning_speed_rl::SpeedActionStamped &action);
     void recordPlanningResult(bool success, const std::string &failure_reason);
     const char *stateName() const;
     void swarmTrajsCallback(const traj_utils::MultiBsplinesPtr &msg);

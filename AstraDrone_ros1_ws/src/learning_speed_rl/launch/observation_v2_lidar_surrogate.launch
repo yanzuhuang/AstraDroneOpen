@@ -7,6 +7,18 @@
   <arg name="world_frame" default="camera_init"/>
   <arg name="body_frame" default="body"/>
   <arg name="sensor_frame" default="mid360_link"/>
+  <arg name="state_source_type" default="fast_lio_state_estimate"/>
+  <arg name="state_contract_version"
+       default="astradrone_planning_odometry_v1.0"/>
+  <arg name="cloud_frame_mode" default="world_registered"/>
+  <arg name="pose_lookup_policy" default="interpolate"/>
+  <arg name="sensor_translation_x" default="-0.011"/>
+  <arg name="sensor_translation_y" default="-0.02329"/>
+  <arg name="sensor_translation_z" default="0.04412"/>
+  <arg name="sensor_rotation_x" default="0.0"/>
+  <arg name="sensor_rotation_y" default="0.0"/>
+  <arg name="sensor_rotation_z" default="0.0"/>
+  <arg name="sensor_rotation_w" default="1.0"/>
 
   <group ns="$(arg namespace)">
     <node pkg="learning_speed_rl" type="observation_v2_node.py"
@@ -17,6 +29,18 @@
       <param name="observation_v2/frames/world" value="$(arg world_frame)"/>
       <param name="observation_v2/frames/body" value="$(arg body_frame)"/>
       <param name="observation_v2/frames/sensor" value="$(arg sensor_frame)"/>
+      <param name="observation_v2/state_source_type"
+             value="$(arg state_source_type)"/>
+      <param name="observation_v2/state_contract_version"
+             value="$(arg state_contract_version)"/>
+      <param name="observation_v2/preprocessing/cloud_frame_mode"
+             value="$(arg cloud_frame_mode)"/>
+      <param name="observation_v2/timing/pose_lookup_policy"
+             value="$(arg pose_lookup_policy)"/>
+      <rosparam subst_value="true"
+                param="observation_v2/sensor_extrinsic/translation_body_sensor_m">[$(arg sensor_translation_x), $(arg sensor_translation_y), $(arg sensor_translation_z)]</rosparam>
+      <rosparam subst_value="true"
+                param="observation_v2/sensor_extrinsic/rotation_body_sensor_xyzw">[$(arg sensor_rotation_x), $(arg sensor_rotation_y), $(arg sensor_rotation_z), $(arg sensor_rotation_w)]</rosparam>
     </node>
   </group>
 </launch>

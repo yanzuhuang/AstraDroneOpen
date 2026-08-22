@@ -1,0 +1,14 @@
+<launch>
+  <group ns="request_driven_test">
+    <node pkg="learning_speed_rl" type="speed_adapter_node.py"
+          name="speed_adapter" output="screen" required="true">
+      <rosparam command="load"
+                file="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
+      <param name="policy/mode" value="mock"/>
+      <param name="timing/mock_request_driven" value="true"/>
+    </node>
+    <test test-name="mock_request_driven_integration"
+          pkg="learning_speed_rl" type="mock_request_driven_integration.py"
+          time-limit="15.0"/>
+  </group>
+</launch>

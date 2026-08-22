@@ -65,13 +65,13 @@
   <arg name="swarm_origin_z" default="0.0"/>
   <arg name="swarm_origin_yaw" default="0.0"/>
   <arg name="dynamic_speed_limit_enabled" default="false"/>
-  <arg name="dynamic_speed_limit_topic" default="learning_speed/v_max"/>
+  <arg name="dynamic_speed_limit_topic" default="learning_speed/action_stamped"/>
   <arg name="dynamic_speed_limit_applied_topic"
        default="learning_speed/applied_v_max"/>
+  <arg name="dynamic_speed_limit_applied_stamped_topic"
+       default="learning_speed/applied_v_max_stamped"/>
   <arg name="dynamic_speed_limit_minimum" default="0.05"/>
   <arg name="dynamic_speed_limit_maximum" default="$(arg max_vel)"/>
-  <arg name="dynamic_speed_limit_replan_delta" default="0.05"/>
-  <arg name="dynamic_speed_limit_replan_cooldown" default="1.0"/>
 
 
   <!-- main node -->
@@ -186,14 +186,12 @@
            value="$(arg dynamic_speed_limit_topic)"/>
     <param name="dynamic_speed_limit/applied_topic"
            value="$(arg dynamic_speed_limit_applied_topic)"/>
+    <param name="dynamic_speed_limit/applied_stamped_topic"
+           value="$(arg dynamic_speed_limit_applied_stamped_topic)"/>
     <param name="dynamic_speed_limit/minimum"
            value="$(arg dynamic_speed_limit_minimum)" type="double"/>
     <param name="dynamic_speed_limit/maximum"
            value="$(arg dynamic_speed_limit_maximum)" type="double"/>
-    <param name="dynamic_speed_limit/replan_delta"
-           value="$(arg dynamic_speed_limit_replan_delta)" type="double"/>
-    <param name="dynamic_speed_limit/replan_cooldown"
-           value="$(arg dynamic_speed_limit_replan_cooldown)" type="double"/>
     <param name="visualization/marker_namespace" value="$(arg marker_namespace)"/>
     <param name="visualization/optimal_color_r" value="$(arg trajectory_color_r)"/>
     <param name="visualization/optimal_color_g" value="$(arg trajectory_color_g)"/>

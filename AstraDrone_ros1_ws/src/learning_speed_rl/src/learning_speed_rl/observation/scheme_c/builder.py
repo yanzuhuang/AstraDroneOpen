@@ -7,12 +7,21 @@ from .types import FutureTrajectoryFeature, ObservationC, SystemStateFeature
 
 
 class ObservationCBuilder:
-    def __init__(self, sampler: TrajectorySampler, world_frame_id: str, body_frame_id: str):
-        if not world_frame_id or not body_frame_id:
+    def __init__(
+        self, sampler: TrajectorySampler, world_frame_id: str,
+        body_frame_id: str, state_source_type: str = "fast_lio_state_estimate",
+        state_contract_version: str = "astradrone_planning_odometry_v1.0",
+        state_velocity_source: str = "timestamped_state_position_difference_world",
+    ):
+        if not all((world_frame_id, body_frame_id, state_source_type,
+                    state_contract_version, state_velocity_source)):
             raise ValueError("Observation C world/body frames must be nonempty")
         self.sampler = sampler
         self.world_frame_id = world_frame_id.lstrip("/")
         self.body_frame_id = body_frame_id.lstrip("/")
+        self.state_source_type = str(state_source_type)
+        self.state_contract_version = str(state_contract_version)
+        self.state_velocity_source = str(state_velocity_source)
 
     def build(self, lidar, trajectory, kinematic_state, previous_v_max):
         if trajectory.frame_id.lstrip("/") != self.world_frame_id:
@@ -56,8 +65,10 @@ class ObservationCBuilder:
             metadata={
                 "pose_lookup": getattr(kinematic_state, "lookup_mode", "matched"),
                 "trajectory_source": "traj_utils/Bspline",
-                "tracking_error_definition": "desired_bspline_position_minus_actual_fast_lio_position",
-                "actual_velocity_source": "timestamped_fast_lio_position_difference",
+                "state_source_type": self.state_source_type,
+                "state_contract_version": self.state_contract_version,
+                "tracking_error_definition": "desired_bspline_position_minus_actual_state_position",
+                "actual_velocity_source": self.state_velocity_source,
                 "previous_v_max_source": "ego_applied_v_max",
             },
         )

@@ -54,36 +54,34 @@ namespace ego_planner
 
     double dynamic_speed_limit_minimum = 0.05;
     double dynamic_speed_limit_maximum = planner_manager_->pp_.max_vel_;
-    double dynamic_speed_limit_replan_delta = 0.05;
-    std::string dynamic_speed_limit_topic = "learning_speed/v_max";
+    std::string dynamic_speed_limit_topic = "learning_speed/action_stamped";
     std::string applied_speed_limit_topic = "learning_speed/applied_v_max";
+    std::string applied_speed_limit_stamped_topic =
+        "learning_speed/applied_v_max_stamped";
     nh.param("dynamic_speed_limit/enabled", dynamic_speed_limit_enabled_, false);
     nh.param("dynamic_speed_limit/minimum", dynamic_speed_limit_minimum, 0.05);
     nh.param("dynamic_speed_limit/maximum", dynamic_speed_limit_maximum,
              planner_manager_->pp_.max_vel_);
-    nh.param("dynamic_speed_limit/replan_delta",
-             dynamic_speed_limit_replan_delta, 0.05);
-    nh.param("dynamic_speed_limit/replan_cooldown",
-             speed_limit_replan_cooldown_, 1.0);
     nh.param<std::string>("dynamic_speed_limit/topic",
                           dynamic_speed_limit_topic,
-                          "learning_speed/v_max");
+                          "learning_speed/action_stamped");
     nh.param<std::string>("dynamic_speed_limit/applied_topic",
                           applied_speed_limit_topic,
                           "learning_speed/applied_v_max");
+    nh.param<std::string>("dynamic_speed_limit/applied_stamped_topic",
+                          applied_speed_limit_stamped_topic,
+                          "learning_speed/applied_v_max_stamped");
     dynamic_speed_limit_gate_ = DynamicSpeedLimitGate(
-        dynamic_speed_limit_minimum, dynamic_speed_limit_maximum,
-        dynamic_speed_limit_replan_delta);
+        dynamic_speed_limit_minimum, dynamic_speed_limit_maximum);
     current_speed_limit_ = planner_manager_->pp_.max_vel_;
-    last_replan_speed_limit_ = current_speed_limit_;
 
     if (dynamic_speed_limit_enabled_ &&
         (!dynamic_speed_limit_gate_.validConfiguration() ||
          dynamic_speed_limit_gate_.maximum() > planner_manager_->pp_.max_vel_ + 1.0e-9 ||
          !dynamic_speed_limit_gate_.accepts(current_speed_limit_) ||
-         !std::isfinite(speed_limit_replan_cooldown_) ||
-         speed_limit_replan_cooldown_ < 0.0 || dynamic_speed_limit_topic.empty() ||
-         applied_speed_limit_topic.empty()))
+         dynamic_speed_limit_topic.empty() ||
+         applied_speed_limit_topic.empty() ||
+         applied_speed_limit_stamped_topic.empty()))
     {
       ROS_FATAL("[EGO FSM] invalid dynamic speed-limit configuration; maximum "
                 "must not exceed the static manager/max_vel ceiling.");
@@ -154,20 +152,21 @@ namespace ego_planner
     if (dynamic_speed_limit_enabled_)
     {
       speed_limit_sub_ = public_nh.subscribe(
-          dynamic_speed_limit_topic, 1, &EGOReplanFSM::speedLimitCallback,
+          dynamic_speed_limit_topic, 100, &EGOReplanFSM::speedLimitCallback,
           this, ros::TransportHints().tcpNoDelay());
       applied_speed_limit_pub_ = public_nh.advertise<std_msgs::Float64>(
           applied_speed_limit_topic, 1, true);
+      applied_speed_limit_stamped_pub_ =
+          public_nh.advertise<learning_speed_rl::SpeedAppliedStamped>(
+              applied_speed_limit_stamped_topic, 100, false);
       std_msgs::Float64 initial_limit;
       initial_limit.data = current_speed_limit_;
       applied_speed_limit_pub_.publish(initial_limit);
-      ROS_WARN("[EGO FSM] dynamic speed limit enabled: topic=%s range=[%.3f, %.3f] "
-               "replan_delta=%.3f cooldown=%.3f s",
+      ROS_WARN("[EGO FSM] dynamic speed limit enabled: topic=%s range=[%.3f, %.3f]; "
+               "outer-loop force-replan delta outside [-0.300, +0.500] m/s",
                public_nh.resolveName(dynamic_speed_limit_topic).c_str(),
                dynamic_speed_limit_gate_.minimum(),
-               dynamic_speed_limit_gate_.maximum(),
-               dynamic_speed_limit_replan_delta,
-               speed_limit_replan_cooldown_);
+               dynamic_speed_limit_gate_.maximum());
     }
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
@@ -201,12 +200,61 @@ namespace ego_planner
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
   }
 
-  void EGOReplanFSM::speedLimitCallback(const std_msgs::Float64ConstPtr &msg)
+  void EGOReplanFSM::publishAppliedSpeedLimit(
+      const learning_speed_rl::SpeedActionStamped &action)
+  {
+    std_msgs::Float64 scalar;
+    scalar.data = current_speed_limit_;
+    applied_speed_limit_pub_.publish(scalar);
+
+    learning_speed_rl::SpeedAppliedStamped stamped;
+    stamped.header = action.header;
+    const ros::Time minimum_apply_stamp =
+        action.header.stamp + ros::Duration(0, 1);
+    const ros::Time now = ros::Time::now();
+    stamped.header.stamp = now < minimum_apply_stamp
+                               ? minimum_apply_stamp
+                               : now;
+    stamped.version = "learning_speed_applied_v1.0";
+    stamped.episode_id = action.episode_id;
+    stamped.step_index = action.step_index;
+    stamped.request_id = action.request_id;
+    stamped.applied_v_max = current_speed_limit_;
+    applied_speed_limit_stamped_pub_.publish(stamped);
+  }
+
+  void EGOReplanFSM::speedLimitCallback(
+      const learning_speed_rl::SpeedActionStampedConstPtr &msg)
   {
     if (!dynamic_speed_limit_enabled_ || !msg)
       return;
 
-    const double requested = msg->data;
+    if (msg->version != "learning_speed_action_v1.1" ||
+        msg->episode_id.empty() || msg->request_id == 0 ||
+        msg->header.stamp.isZero() || !std::isfinite(msg->requested_v_max))
+    {
+      ROS_ERROR_THROTTLE(1.0,
+                         "[EGO FSM] rejected invalid stamped speed action.");
+      return;
+    }
+    const auto previous_id =
+        last_speed_request_id_by_episode_.find(msg->episode_id);
+    const auto previous_step =
+        last_speed_step_by_episode_.find(msg->episode_id);
+    if ((previous_id != last_speed_request_id_by_episode_.end() &&
+         msg->request_id <= previous_id->second) ||
+        (previous_step != last_speed_step_by_episode_.end() &&
+         msg->step_index <= previous_step->second))
+    {
+      ROS_ERROR("[EGO FSM] rejected duplicate/out-of-order speed identity "
+                "episode=%s step=%llu request_id=%llu.",
+                msg->episode_id.c_str(),
+                static_cast<unsigned long long>(msg->step_index),
+                static_cast<unsigned long long>(msg->request_id));
+      return;
+    }
+
+    const double requested = msg->filtered_v_max;
     if (!dynamic_speed_limit_gate_.accepts(requested))
     {
       ROS_ERROR_THROTTLE(1.0,
@@ -216,15 +264,16 @@ namespace ego_planner
                          dynamic_speed_limit_gate_.maximum());
       return;
     }
+    last_speed_request_id_by_episode_[msg->episode_id] = msg->request_id;
+    last_speed_step_by_episode_[msg->episode_id] = msg->step_index;
 
     if (!dynamic_speed_limit_gate_.changed(current_speed_limit_, requested))
     {
-      std_msgs::Float64 applied;
-      applied.data = current_speed_limit_;
-      applied_speed_limit_pub_.publish(applied);
+      publishAppliedSpeedLimit(*msg);
       return;
     }
 
+    const double previous = current_speed_limit_;
     if (!planner_manager_->setMaxVelocity(requested))
     {
       ROS_ERROR_THROTTLE(1.0,
@@ -234,26 +283,15 @@ namespace ego_planner
     }
 
     current_speed_limit_ = requested;
-    std_msgs::Float64 applied;
-    applied.data = current_speed_limit_;
-    applied_speed_limit_pub_.publish(applied);
+    publishAppliedSpeedLimit(*msg);
 
-    if (exec_state_ != FSM_EXEC_STATE::EXEC_TRAJ || !have_target_)
-      last_replan_speed_limit_ = requested;
-
-    const ros::Time now = ros::Time::now();
-    const bool cooldown_elapsed = last_speed_limit_replan_time_.isZero() ||
-        (now - last_speed_limit_replan_time_).toSec() >=
-            speed_limit_replan_cooldown_;
     if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ && have_target_ &&
-        cooldown_elapsed && dynamic_speed_limit_gate_.requiresReplan(
-                                last_replan_speed_limit_, requested))
+        dynamic_speed_limit_gate_.requiresForceReplan(previous, requested))
     {
-      last_replan_speed_limit_ = requested;
-      last_speed_limit_replan_time_ = now;
-      ROS_WARN("[EGO FSM] v_max changed to %.3f m/s; requesting a continuous "
-               "replan from the current trajectory state.",
-               requested);
+      ROS_WARN("[EGO FSM] outer-loop v_max delta %.3f m/s (%.3f -> %.3f) is "
+               "outside [-0.300, +0.500]; forcing one replan from the current "
+               "trajectory state.",
+               requested - previous, previous, requested);
       changeFSMExecState(REPLAN_TRAJ, "DYNAMIC_SPEED_LIMIT");
     }
   }

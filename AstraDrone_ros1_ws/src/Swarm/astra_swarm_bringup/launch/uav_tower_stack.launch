@@ -30,10 +30,9 @@
   <arg name="learning_speed_config"
        default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
   <arg name="learning_speed_policy_mode" default="mock"/>
+  <arg name="learning_speed_mock_request_driven" default="false"/>
   <arg name="learning_speed_fixed_v_max" default="$(arg max_vel)"/>
   <arg name="learning_speed_v_max_min" default="0.05"/>
-  <arg name="learning_speed_replan_delta" default="0.03"/>
-  <arg name="learning_speed_replan_cooldown" default="1.0"/>
   <arg name="task_config"
        default="$(find astra_tower_mission)/config/sector_inspection.yaml"/>
   <arg name="low_altitude_ego_config"
@@ -157,15 +156,13 @@
       <arg name="dynamic_speed_limit_enabled"
            value="$(arg learning_speed_enabled)"/>
       <arg name="dynamic_speed_limit_topic"
-           value="learning_speed/v_max"/>
+           value="learning_speed/action_stamped"/>
       <arg name="dynamic_speed_limit_applied_topic"
            value="learning_speed/applied_v_max"/>
+      <arg name="dynamic_speed_limit_applied_stamped_topic"
+           value="learning_speed/applied_v_max_stamped"/>
       <arg name="dynamic_speed_limit_minimum"
            value="$(arg learning_speed_v_max_min)"/>
-      <arg name="dynamic_speed_limit_replan_delta"
-           value="$(arg learning_speed_replan_delta)"/>
-      <arg name="dynamic_speed_limit_replan_cooldown"
-           value="$(arg learning_speed_replan_cooldown)"/>
     </include>
 
     <node pkg="astra_tower_mission" type="occupancy_stamp_adapter_node"
@@ -187,6 +184,8 @@
       <param name="safety/initial_v_max"
              value="$(arg learning_speed_fixed_v_max)"/>
       <param name="policy/mode" value="$(arg learning_speed_policy_mode)"/>
+      <param name="timing/mock_request_driven"
+             value="$(arg learning_speed_mock_request_driven)"/>
       <param name="policy/fixed_v_max"
              value="$(arg learning_speed_fixed_v_max)"/>
       <param name="policy/mock_default_v_max" value="$(arg max_vel)"/>

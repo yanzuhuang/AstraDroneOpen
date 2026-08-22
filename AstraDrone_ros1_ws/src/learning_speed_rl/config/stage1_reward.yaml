@@ -1,0 +1,27 @@
+# Every numeric value in this file is an AstraDroneOpen calibrated parameter.
+# The paper does not publish the complete phi construction or all lambda values.
+reward:
+  mode: stage1
+  version: astradrone_stage1_reward_v1.0
+
+  complexity:
+    nearest_safe_m: 6.0
+    nearest_dangerous_m: 2.5
+    density_safe: 0.040
+    density_dangerous: 0.080
+
+  anchors_mps:
+    low: 1.75
+    medium: 1.25
+    high: 0.75
+    unknown: 1.25
+
+  lambdas:
+    # Eq. (10) branch thresholds; phi_1 is the upper/danger threshold.
+    phi_1: 0.65
+    phi_2: 0.35
+    speed_1: 1.00
+    speed_2: 0.80
+    speed_3: 0.25
+    smoothing: 0.10
+    danger: 2.00

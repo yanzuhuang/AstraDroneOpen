@@ -14,7 +14,7 @@ from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, Float32MultiArray, Float64
 
-from learning_speed_rl.msg import SpeedActionStamped
+from learning_speed_rl.msg import SpeedActionStamped, SpeedRequestStamped
 
 from learning_speed_rl.observation import (
     LOW_DIM_FIELDS,
@@ -55,11 +55,6 @@ class SpeedAdapterNode:
             v_max_min=float(rospy.get_param("~safety/v_max_min", 0.05)),
             v_max_max=float(rospy.get_param("~safety/v_max_max", 0.20)),
             initial_v_max=float(rospy.get_param("~safety/initial_v_max", 0.20)),
-            rise_rate_mps2=float(rospy.get_param("~safety/rise_rate_mps2", 0.08)),
-            fall_rate_mps2=float(rospy.get_param("~safety/fall_rate_mps2", 0.12)),
-            maximum_step_mps=float(rospy.get_param("~safety/maximum_step_mps", 0.02)),
-            low_pass_alpha=float(rospy.get_param("~safety/low_pass_alpha", 0.45)),
-            hysteresis_mps=float(rospy.get_param("~safety/hysteresis_mps", 0.005)),
         )
         safety_config.validate()
         self._filter = SpeedSafetyFilter(safety_config)
@@ -120,6 +115,9 @@ class SpeedAdapterNode:
             raise rospy.ROSInitException("invalid observation filter parameters")
 
         self._policy_rate = float(rospy.get_param("~timing/policy_rate_hz", 10.0))
+        self._mock_request_driven = bool(
+            rospy.get_param("~timing/mock_request_driven", False)
+        )
         self._odom_timeout = float(rospy.get_param("~timing/odom_timeout_sec", 0.5))
         self._command_timeout = float(
             rospy.get_param("~timing/command_timeout_sec", 0.5)
@@ -134,6 +132,10 @@ class SpeedAdapterNode:
             or self._occupancy_timeout <= 0.0
         ):
             raise rospy.ROSInitException("invalid policy timing parameters")
+        if self._mock_request_driven and self._policy_mode != "mock":
+            raise rospy.ROSInitException(
+                "timing/mock_request_driven is valid only for mock policy mode"
+            )
 
         topic = lambda name, default: rospy.get_param("~topics/" + name, default)
         self._topic_odom = topic("odom", "Odometry")
@@ -174,12 +176,20 @@ class SpeedAdapterNode:
         self._last_applied_v_max = None
         self._last_applied_receive_sec = None
         self._previous_safe_v_max = safety_config.initial_v_max
-        self._last_policy_time = None
+        self._last_request_identity = {}
+        self._standalone_request_id = 0
 
-        self._raw_pub = rospy.Publisher(self._topic_raw, Float64, queue_size=1)
-        self._safe_pub = rospy.Publisher(self._topic_safe, Float64, queue_size=1)
+        action_queue_size = 100 if self._mock_request_driven else 1
+        self._raw_pub = rospy.Publisher(
+            self._topic_raw, Float64, queue_size=action_queue_size
+        )
+        self._safe_pub = rospy.Publisher(
+            self._topic_safe, Float64, queue_size=action_queue_size
+        )
         self._action_stamped_pub = rospy.Publisher(
-            self._topic_action_stamped, SpeedActionStamped, queue_size=1
+            self._topic_action_stamped,
+            SpeedActionStamped,
+            queue_size=action_queue_size,
         )
         self._ready_pub = rospy.Publisher(
             self._topic_ready, Bool, queue_size=1, latch=True
@@ -212,15 +222,27 @@ class SpeedAdapterNode:
         self._mock_sub = None
         if self._policy_mode == "mock":
             self._mock_sub = rospy.Subscriber(
-                self._topic_mock, Float64, self._mock_callback, queue_size=1
+                self._topic_mock,
+                SpeedRequestStamped,
+                self._mock_callback,
+                queue_size=action_queue_size,
             )
         self._applied_sub = rospy.Subscriber(
             self._topic_applied, Float64, self._applied_callback, queue_size=1
         )
 
-        self._timer = rospy.Timer(
-            rospy.Duration(1.0 / self._policy_rate), self._policy_timer
-        )
+        self._timer = None
+        if self._mock_request_driven:
+            # Preserve the reviewed initial dynamic constraint before Episode
+            # active-motion readiness, then leave the outer loop exclusively
+            # request-driven. The Episode marker ignores this pre-start event.
+            self._timer = rospy.Timer(
+                rospy.Duration(0.1), self._request_driven_bootstrap, oneshot=True
+            )
+        else:
+            self._timer = rospy.Timer(
+                rospy.Duration(1.0 / self._policy_rate), self._policy_timer
+            )
         if self._policy_mode == "fixed":
             rospy.logwarn(
                 "learning_speed_rl fixed baseline source active: %.3f m/s -> %s; "
@@ -230,9 +252,11 @@ class SpeedAdapterNode:
             )
         else:
             rospy.logwarn(
-                "learning_speed_rl mock adapter active: %s -> %s; RL inference is disabled",
+                "learning_speed_rl mock adapter active: %s -> %s; "
+                "request_driven=%s; RL inference is disabled",
                 rospy.resolve_name(self._topic_mock),
                 rospy.resolve_name(self._topic_safe),
+                self._mock_request_driven,
             )
 
     def _odom_callback(self, message):
@@ -390,10 +414,44 @@ class SpeedAdapterNode:
     def _mock_callback(self, message):
         if self._policy_mode != "mock":
             return
+        now_sec = rospy.Time.now().to_sec()
+        stamp_sec = message.header.stamp.to_sec()
+        if (
+            message.version != "learning_speed_request_v1.0"
+            or not message.episode_id
+            or int(message.request_id) <= 0
+            or not math.isfinite(stamp_sec)
+            or stamp_sec <= 0.0
+        ):
+            rospy.logerr_throttle(
+                1.0, "learning_speed_rl rejected invalid stamped mock request"
+            )
+            return
+        identity = (
+            str(message.episode_id),
+            int(message.step_index),
+            int(message.request_id),
+            stamp_sec,
+        )
+        with self._lock:
+            previous = self._last_request_identity.get(identity[0])
+            if previous is not None and (
+                identity[1] <= previous[0] or identity[2] <= previous[1]
+            ):
+                rospy.logerr(
+                    "learning_speed_rl rejected duplicate/out-of-order request "
+                    "episode=%s step=%d request_id=%d",
+                    identity[0], identity[1], identity[2],
+                )
+                return
+            self._last_request_identity[identity[0]] = (identity[1], identity[2])
         try:
-            self._policy.set_command(message.data)
+            self._policy.set_command(message.requested_v_max)
         except ValueError as error:
             rospy.logerr_throttle(1.0, "learning_speed_rl rejected mock command: %s", error)
+            return
+        if self._mock_request_driven:
+            self._run_request_driven_mock_cycle(now_sec, identity)
 
     def _applied_callback(self, message):
         if not math.isfinite(message.data):
@@ -449,39 +507,83 @@ class SpeedAdapterNode:
         return max(0.0, now_sec - received_sec)
 
     def _policy_timer(self, _event):
-        now_sec = rospy.Time.now().to_sec()
+        self._run_policy_cycle(rospy.Time.now().to_sec())
+
+    def _request_driven_bootstrap(self, _event):
+        self._run_request_driven_mock_cycle(rospy.Time.now().to_sec())
+
+    def _standalone_identity(self, now_sec):
+        self._standalone_request_id += 1
+        return (
+            "__speed_adapter_{}__".format(self._policy_mode),
+            self._standalone_request_id - 1,
+            self._standalone_request_id,
+            float(now_sec),
+        )
+
+    def _run_request_driven_mock_cycle(self, now_sec, identity=None):
+        """Run mock/filter/action without building unused legacy v1 tensors."""
+
+        if now_sec <= 0.0:
+            return
+        try:
+            raw_v_max = self._policy.predict(None)
+            safe_v_max = self._filter.filter(raw_v_max)
+        except (RuntimeError, ValueError) as error:
+            rospy.logerr_throttle(
+                1.0, "learning_speed_rl request cycle failed: %s", error
+            )
+            return
+        self._publish_action_outputs(
+            now_sec,
+            raw_v_max,
+            safe_v_max,
+            self._standalone_identity(now_sec) if identity is None else identity,
+        )
+
+    def _run_policy_cycle(self, now_sec):
         # Under /use_sim_time a timer can be dispatched while /clock is still
         # zero.  Do not publish a value that downstream timestamp buffers
         # would have to associate with an invalid epoch.
         if now_sec <= 0.0:
             return
-        if self._last_policy_time is not None and now_sec < self._last_policy_time:
-            self._filter.reset_time()
-        self._last_policy_time = now_sec
-
         try:
             observation = self._snapshot_observation(now_sec)
             raw_v_max = self._policy.predict(observation)
-            safe_v_max = self._filter.update(raw_v_max, now_sec)
+            safe_v_max = self._filter.filter(raw_v_max)
         except (RuntimeError, ValueError) as error:
             rospy.logerr_throttle(1.0, "learning_speed_rl policy cycle failed: %s", error)
             return
 
-        self._raw_pub.publish(Float64(data=raw_v_max))
-        action = SpeedActionStamped()
-        action.header.stamp = rospy.Time.from_sec(now_sec)
-        action.version = "learning_speed_action_v1.0"
-        action.source_mode = self._policy_mode
-        action.requested_v_max = raw_v_max
-        action.filtered_v_max = safe_v_max
-        self._action_stamped_pub.publish(action)
-        self._safe_pub.publish(Float64(data=safe_v_max))
+        self._publish_action_outputs(
+            now_sec,
+            raw_v_max,
+            safe_v_max,
+            self._standalone_identity(now_sec),
+        )
         self._low_dim_pub.publish(
             Float32MultiArray(data=observation.normalized_low_dim.tolist())
         )
         self._ready_pub.publish(Bool(data=observation.ready_for_rl))
-        self._previous_safe_v_max = safe_v_max
         self._publish_diagnostics(now_sec, raw_v_max, safe_v_max, observation)
+
+    def _publish_action_outputs(self, now_sec, raw_v_max, safe_v_max, identity):
+        """Atomic output implementation shared by both policy schedules."""
+
+        episode_id, step_index, request_id, request_stamp_sec = identity
+        self._raw_pub.publish(Float64(data=raw_v_max))
+        action = SpeedActionStamped()
+        action.header.stamp = rospy.Time.from_sec(request_stamp_sec)
+        action.version = "learning_speed_action_v1.1"
+        action.source_mode = self._policy_mode
+        action.episode_id = episode_id
+        action.step_index = step_index
+        action.request_id = request_id
+        action.requested_v_max = raw_v_max
+        action.filtered_v_max = safe_v_max
+        self._action_stamped_pub.publish(action)
+        self._safe_pub.publish(Float64(data=safe_v_max))
+        self._previous_safe_v_max = safe_v_max
 
     def _publish_diagnostics(self, now_sec, raw_v_max, safe_v_max, observation):
         with self._lock:

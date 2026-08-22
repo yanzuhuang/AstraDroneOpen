@@ -276,7 +276,7 @@ class TimestampReplanningAndStateTest(unittest.TestCase):
         self.assertEqual(diagnostic.out_of_order_state_count, 1)
         self.assertEqual(diagnostic.buffer_size, 1)
 
-    def test_fast_lio_position_difference_and_interpolation(self):
+    def test_backend_neutral_position_difference_and_interpolation(self):
         buffer = KinematicStateBuffer(10, 0.15, 1.0, 0.5)
         buffer.add_pose(Pose3D(1.0, np.asarray([0.0, 0.0, 0.0]), yaw_quaternion(0)))
         buffer.add_pose(Pose3D(1.1, np.asarray([0.1, 0.0, 0.0]), yaw_quaternion(0)))
@@ -294,6 +294,54 @@ class TimestampReplanningAndStateTest(unittest.TestCase):
         missing, reason = buffer.lookup(1.21)
         self.assertIsNone(missing)
         self.assertEqual(reason, "observation_newer_than_kinematic_history")
+
+    def test_training_causal_state_lookup_never_uses_future_sample(self):
+        buffer = KinematicStateBuffer(
+            10, 0.05, 1.0, 0.5, lookup_policy="causal_at_or_before"
+        )
+        buffer.add_pose(Pose3D(1.00, [0.0, 0.0, 0.0], yaw_quaternion(0)))
+        buffer.add_pose(Pose3D(1.01, [0.1, 0.0, 0.0], yaw_quaternion(0)))
+        buffer.add_pose(Pose3D(1.02, [0.2, 0.0, 0.0], yaw_quaternion(0)))
+        selected, mode, diagnostic = buffer.lookup_with_diagnostics(1.015)
+        self.assertIsNotNone(selected)
+        self.assertEqual(mode, "causal_previous")
+        self.assertAlmostEqual(selected.pose.stamp_sec, 1.01)
+        self.assertIsNone(diagnostic.after_stamp_sec)
+        self.assertGreaterEqual(diagnostic.dt_before_sec, 0.0)
+
+    def test_training_truth_provenance_does_not_change_values(self):
+        trajectory = make_trajectory()
+        actual = trajectory.evaluate_elapsed(0.0)
+        kinematic = state(10.0, actual, velocity=(0.4, 0.1, 0.0))
+        default_observation = builder().build(
+            lidar(10.0), trajectory, kinematic, 0.4
+        )
+        truth_builder = ObservationCBuilder(
+            builder().sampler,
+            "camera_init",
+            "body",
+            state_source_type="gazebo_truth_training",
+            state_contract_version="astradrone_training_odometry_v1.0",
+            state_velocity_source="timestamped_state_position_difference_world",
+        )
+        truth_observation = truth_builder.build(
+            lidar(10.0), trajectory, kinematic, 0.4
+        )
+        np.testing.assert_allclose(
+            truth_observation.system_state.actual_velocity_body,
+            default_observation.system_state.actual_velocity_body,
+        )
+        np.testing.assert_allclose(
+            truth_observation.system_state.tracking_error_body,
+            default_observation.system_state.tracking_error_body,
+        )
+        self.assertEqual(
+            truth_observation.metadata["state_source_type"],
+            "gazebo_truth_training",
+        )
+        self.assertNotIn(
+            "fast_lio", truth_observation.metadata["tracking_error_definition"]
+        )
 
     def test_invalid_lidar_and_system_state_do_not_build(self):
         with self.assertRaises(ValueError):

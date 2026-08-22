@@ -15,15 +15,18 @@ def config():
         v_max_min=0.1,
         v_max_max=1.0,
         initial_v_max=0.8,
-        rise_rate_mps2=0.5,
-        fall_rate_mps2=1.0,
-        maximum_step_mps=0.2,
-        low_pass_alpha=1.0,
-        hysteresis_mps=0.01,
     )
 
 
 class SpeedSafetyFilterTest(unittest.TestCase):
+    def test_configuration_requires_finite_reviewed_range(self):
+        with self.assertRaises(ValueError):
+            SpeedSafetyFilter(SafetyFilterConfig(math.nan, 1.0, 0.8))
+        with self.assertRaises(ValueError):
+            SpeedSafetyFilter(SafetyFilterConfig(1.0, 0.1, 0.8))
+        with self.assertRaises(ValueError):
+            SpeedSafetyFilter(SafetyFilterConfig(0.1, 1.0, 1.1))
+
     def test_fixed_policy_is_immutable_and_finite(self):
         policy = FixedSpeedPolicy(0.16)
         self.assertAlmostEqual(policy.predict(None), 0.16)
@@ -33,26 +36,20 @@ class SpeedSafetyFilterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             FixedSpeedPolicy(0.0)
 
-    def test_clamps_and_limits_fall_rate(self):
+    def test_clamps_to_reviewed_range(self):
         speed_filter = SpeedSafetyFilter(config())
-        self.assertAlmostEqual(speed_filter.update(-5.0, 0.0), 0.8)
-        self.assertAlmostEqual(speed_filter.update(-5.0, 0.1), 0.7)
-        self.assertAlmostEqual(speed_filter.update(-5.0, 0.2), 0.6)
+        self.assertAlmostEqual(speed_filter.filter(-5.0), 0.1)
+        self.assertAlmostEqual(speed_filter.filter(5.0), 1.0)
 
-    def test_limits_rise_rate_and_maximum_step(self):
+    def test_legal_actions_are_not_dynamically_shaped(self):
         speed_filter = SpeedSafetyFilter(config())
-        speed_filter.update(1.0, 0.0)
-        self.assertAlmostEqual(speed_filter.update(1.0, 1.0), 1.0)
-
-    def test_hysteresis_retains_previous_target(self):
-        speed_filter = SpeedSafetyFilter(config())
-        speed_filter.update(0.805, 0.0)
-        self.assertAlmostEqual(speed_filter.target, 0.8)
+        for requested in (0.2, 0.9, 0.4, 0.4, 1.0, 0.1):
+            self.assertAlmostEqual(speed_filter.filter(requested), requested)
 
     def test_rejects_non_finite_policy_output(self):
         speed_filter = SpeedSafetyFilter(config())
         with self.assertRaises(ValueError):
-            speed_filter.update(math.nan, 0.0)
+            speed_filter.filter(math.nan)
 
     def test_high_speed_fixed_requests_are_not_clamped(self):
         for requested in (1.75, 2.0, 2.5, 3.0, 3.5):
@@ -60,14 +57,9 @@ class SpeedSafetyFilterTest(unittest.TestCase):
                 v_max_min=0.05,
                 v_max_max=4.0,
                 initial_v_max=requested,
-                rise_rate_mps2=0.08,
-                fall_rate_mps2=0.12,
-                maximum_step_mps=0.02,
-                low_pass_alpha=0.45,
-                hysteresis_mps=0.005,
             ))
             self.assertAlmostEqual(
-                speed_filter.update(requested, 1.0), requested)
+                speed_filter.filter(requested), requested)
 
 
 if __name__ == "__main__":

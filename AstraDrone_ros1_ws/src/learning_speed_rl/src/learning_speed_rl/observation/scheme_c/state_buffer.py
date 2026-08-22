@@ -1,4 +1,4 @@
-"""Timestamped FAST-LIO kinematic state with fail-closed interpolation."""
+"""Timestamped backend-neutral kinematic state with fail-closed interpolation."""
 
 from bisect import bisect_left, bisect_right
 from collections import deque
@@ -53,6 +53,7 @@ class KinematicStateBuffer:
         self, capacity: int, maximum_interpolation_gap_sec: float,
         velocity_filter_alpha: float = 0.30,
         maximum_velocity_dt_sec: float = 0.50,
+        lookup_policy: str = "interpolate",
     ):
         if capacity < 2 or maximum_interpolation_gap_sec <= 0.0:
             raise ValueError("invalid kinematic buffer configuration")
@@ -60,10 +61,13 @@ class KinematicStateBuffer:
             raise ValueError("velocity_filter_alpha must be in (0,1]")
         if maximum_velocity_dt_sec <= 0.0:
             raise ValueError("maximum_velocity_dt_sec must be positive")
+        if lookup_policy not in ("interpolate", "causal_at_or_before"):
+            raise ValueError("unsupported kinematic lookup policy")
         self.capacity = int(capacity)
         self.maximum_interpolation_gap_sec = float(maximum_interpolation_gap_sec)
         self.velocity_filter_alpha = float(velocity_filter_alpha)
         self.maximum_velocity_dt_sec = float(maximum_velocity_dt_sec)
+        self.lookup_policy = str(lookup_policy)
         self._states: List[KinematicState] = []
         self._source_intervals: Deque[float] = deque(maxlen=100)
         self._receipt_intervals: Deque[float] = deque(maxlen=100)
@@ -215,6 +219,29 @@ class KinematicStateBuffer:
                 "observation_precedes_kinematic_history",
                 "observation_precedes_kinematic_history",
                 after=stamps[0],
+            )
+        if self.lookup_policy == "causal_at_or_before":
+            before = self._states[index - 1]
+            age = stamp_sec - before.pose.stamp_sec
+            if age > self.maximum_interpolation_gap_sec + 1.0e-9:
+                return finish(
+                    None,
+                    "causal_state_too_old",
+                    "causal_state_too_old",
+                    before=before.pose.stamp_sec,
+                )
+            if not before.velocity_valid:
+                return finish(
+                    None,
+                    "velocity_unavailable",
+                    "velocity_unavailable",
+                    before=before.pose.stamp_sec,
+                )
+            return finish(
+                before,
+                "causal_previous",
+                "",
+                before=before.pose.stamp_sec,
             )
         if index == len(stamps):
             return finish(

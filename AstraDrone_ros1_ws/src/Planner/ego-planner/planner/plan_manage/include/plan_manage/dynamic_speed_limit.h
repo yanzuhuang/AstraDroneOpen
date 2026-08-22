@@ -11,17 +11,15 @@ class DynamicSpeedLimitGate
 public:
   DynamicSpeedLimitGate() = default;
 
-  DynamicSpeedLimitGate(double minimum, double maximum,
-                        double replan_delta)
-      : minimum_(minimum), maximum_(maximum), replan_delta_(replan_delta)
+  DynamicSpeedLimitGate(double minimum, double maximum)
+      : minimum_(minimum), maximum_(maximum)
   {
   }
 
   bool validConfiguration() const
   {
     return std::isfinite(minimum_) && std::isfinite(maximum_) &&
-           std::isfinite(replan_delta_) && minimum_ > 0.0 &&
-           maximum_ >= minimum_ && replan_delta_ > 0.0;
+           minimum_ > 0.0 && maximum_ >= minimum_;
   }
 
   bool accepts(double requested) const
@@ -37,20 +35,22 @@ public:
            std::abs(requested - current) > epsilon;
   }
 
-  bool requiresReplan(double limit_used_for_last_replan,
-                      double requested) const
+  bool requiresForceReplan(double previous, double requested) const
   {
-    return accepts(requested) && std::isfinite(limit_used_for_last_replan) &&
-           std::abs(requested - limit_used_for_last_replan) >= replan_delta_;
+    if (!accepts(previous) || !accepts(requested))
+      return false;
+    return requested < previous - kNoForceReplanDecreaseMagnitudeMps ||
+           requested > previous + kNoForceReplanIncreaseMps;
   }
 
   double minimum() const { return minimum_; }
   double maximum() const { return maximum_; }
 
 private:
+  static constexpr double kNoForceReplanDecreaseMagnitudeMps = 0.3;
+  static constexpr double kNoForceReplanIncreaseMps = 0.5;
   double minimum_{0.1};
   double maximum_{1.0};
-  double replan_delta_{0.1};
 };
 
 }  // namespace ego_planner

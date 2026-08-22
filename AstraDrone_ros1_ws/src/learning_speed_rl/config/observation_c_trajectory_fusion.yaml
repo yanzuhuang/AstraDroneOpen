@@ -23,10 +23,15 @@ observation_c:
     maximum_input_age_sec: 0.25
     pending_lidar_capacity: 10
     diagnostics_rate_hz: 2.0
+    state_lookup_policy: interpolate
+    require_lidar_state_provenance: false
 
   system_state:
-    # Matches the existing speed adapter's causal FAST-LIO position-difference
-    # filter. FAST-LIO currently leaves nav_msgs/Odometry.twist unpopulated.
+    source_type: fast_lio_state_estimate
+    source_contract_version: astradrone_planning_odometry_v1.0
+    # Backend-neutral value rule. Full-stack FAST-LIO currently leaves twist
+    # unpopulated; training truth can use the same causal position difference.
+    velocity_source: timestamped_state_position_difference_world
     velocity_filter_alpha: 0.30
     maximum_velocity_dt_sec: 0.50
     v_max_buffer_capacity: 100

@@ -6,6 +6,7 @@ policy:
 
 timing:
   policy_rate_hz: 10.0
+  mock_request_driven: false
   odom_timeout_sec: 0.5
   command_timeout_sec: 0.5
   occupancy_timeout_sec: 1.0
@@ -14,11 +15,6 @@ safety:
   v_max_min: 0.05
   v_max_max: 0.20
   initial_v_max: 0.20
-  rise_rate_mps2: 0.08
-  fall_rate_mps2: 0.12
-  maximum_step_mps: 0.02
-  low_pass_alpha: 0.45
-  hysteresis_mps: 0.005
   applied_tolerance_mps: 0.005
 
 observation:

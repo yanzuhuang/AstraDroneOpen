@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>hector_ego_training_backend</name>
+  <version>0.1.0</version>
+  <description>Training-only EGO PositionCommand execution backend for Hector Quadrotor.</description>
+  <maintainer email="maintainer@example.com">AstraDroneOpen Maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>controller_manager_msgs</build_depend>
+  <build_depend>diagnostic_msgs</build_depend>
+  <build_depend>gazebo_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>quadrotor_msgs</build_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>std_srvs</build_depend>
+  <build_depend>traj_utils</build_depend>
+
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>hector_quadrotor_controller</exec_depend>
+  <exec_depend>hector_quadrotor_gazebo</exec_depend>
+  <exec_depend>hector_quadrotor_description</exec_depend>
+  <exec_depend>learning_speed_rl</exec_depend>
+  <exec_depend>livox_laser_simulation</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>quadrotor_msgs</exec_depend>
+  <exec_depend>rosgraph</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>traj_utils</exec_depend>
+
+  <test_depend>python3-nose</test_depend>
+
+  <export/>
+</package>

@@ -119,7 +119,13 @@ def nested(record, path, default=None):
 
 
 def transition_audit(path):
-    result = {"records": 0, "contract_valid": True, "violations": []}
+    result = {
+        "records": 0,
+        "reward_defined": 0,
+        "reward_undefined": 0,
+        "contract_valid": True,
+        "violations": [],
+    }
     if not path.is_file():
         result["contract_valid"] = False
         result["violations"].append("transition_candidates.jsonl missing")
@@ -134,11 +140,45 @@ def transition_audit(path):
             except json.JSONDecodeError:
                 result["violations"].append("invalid JSON line {}".format(line_number))
                 continue
-            if (
-                item.get("reward") is not None
-                or item.get("reward_defined") is not False
-                or item.get("training_ready") is not False
+            defined = item.get("reward_defined") is True
+            if defined:
+                reward = item.get("reward")
+                components = item.get("reward_components")
+                required = (
+                    "reward_total", "reward_speed", "reward_smoothing",
+                    "reward_danger", "phi_1", "phi_2",
+                )
+                valid = (
+                    isinstance(reward, (int, float))
+                    and math.isfinite(reward)
+                    and item.get("training_ready") is True
+                    and item.get("reward_version")
+                    == "astradrone_stage1_reward_v1.0"
+                    and isinstance(components, dict)
+                    and components.get("reward_valid") is True
+                    and all(
+                        isinstance(components.get(name), (int, float))
+                        and math.isfinite(components[name])
+                        for name in required
+                    )
+                    and abs(float(components["reward_total"]) - reward)
+                    <= 1.0e-12
+                )
+                if valid:
+                    result["reward_defined"] += 1
+                else:
+                    result["violations"].append(
+                        "invalid defined Stage 1 reward line {}".format(line_number)
+                    )
+            elif (
+                item.get("reward") is None
+                and item.get("reward_defined") is False
+                and item.get("training_ready") is False
+                and item.get("reward_version") in (None, "")
+                and item.get("reward_components") is None
             ):
+                result["reward_undefined"] += 1
+            else:
                 result["violations"].append(
                     "reward/training boundary violation line {}".format(line_number)
                 )
@@ -619,7 +659,7 @@ def write_report(path, runs, analysis, qualification_attempts):
     lines.extend([
         "- density/clutter 是 Observation C 已知障碍角度 bin 的代理，不是物体数、物理体积或 clearance。nearest obstacle 是 surrogate 最近已知障碍距离。raw-filtered 与 EGO inflated occupied-center 最近距只在 CSV 中按各自语义单独保留。",
         "- PASS 要求任务 success+done 且无 collision/emergency/tracking safety terminal；恢复过的 planner failure 会如实保留，但本身不覆盖任务结果。",
-        "- 所有 transition candidate 均应保持 reward=null、reward_defined=false、training_ready=false。",
+        "- transition reward 边界同时兼容冻结的 legacy reward-null 工件与在线 Stage 1 工件；后者必须是 finite、versioned、reward_defined=true 且 training_ready=true。",
     ])
     if qualification_attempts:
         lines.extend([

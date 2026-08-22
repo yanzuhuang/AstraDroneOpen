@@ -10,10 +10,18 @@ The deployed v1 path is:
 EGO inflated occupancy + odometry + PositionCommand + local goal
   -> fixed observation contract
   -> MockSpeedPolicy
-  -> clamp -> hysteresis -> slew limit -> low-pass filter
-  -> learning_speed/v_max (std_msgs/Float64)
+  -> finite validation + reviewed min/max clamp
+  -> learning_speed/action_stamped (request identity + requested/filtered)
   -> EGO dynamic velocity-limit interface
+  -> learning_speed/applied_v_max_stamped (same request identity)
 ```
+
+For every legal in-range action, `requested_v_max == filtered_v_max`; the
+adapter does not apply slew, low-pass, hysteresis, or maximum-step shaping.
+EGO compares consecutive applied constraints at the 10 Hz outer-loop rate. It
+forces one extra replan only when `delta_v < -0.3 m/s` or
+`delta_v > +0.5 m/s`; otherwise EGO continues using its native replanning
+rules without a Learning-Speed-induced replan.
 
 The node only accepts the explicit, mutually exclusive `policy/mode: mock` or
 `policy/mode: fixed` sources.  It has no SAC/neural inference mode, so an
@@ -142,7 +150,8 @@ Inside a UAV namespace, the defaults are:
 
 ```bash
 roslaunch learning_speed_rl speed_adapter.launch namespace:=uav1 static_max_vel:=0.20
-rostopic pub -1 /uav1/learning_speed/mock_v_max std_msgs/Float64 "data: 0.08"
+rostopic pub -1 /uav1/learning_speed/mock_v_max learning_speed_rl/SpeedRequestStamped \
+  "{header: {stamp: now}, version: learning_speed_request_v1.0, episode_id: manual_mock, step_index: 0, request_id: 1, requested_v_max: 0.08}"
 ```
 
 The EGO launch must separately opt into its dynamic interface. The audited
@@ -152,7 +161,8 @@ so the policy can reduce and restore the reviewed ceiling but cannot exceed it.
 
 For the single-UAV fixed-speed baseline, use the dedicated immutable `fixed`
 source.  It is mutually exclusive with the mock input and with any future RL
-backend, and it still passes through `SpeedSafetyFilter` before EGO:
+backend, and it still passes through the finite/range-only `SpeedSafetyFilter`
+before EGO:
 
 ```bash
 # Preview is non-controlling.  --control is required for a real run.
@@ -180,16 +190,20 @@ Subscriptions (relative to the vehicle namespace):
 - `move_base_simple/goal` (`geometry_msgs/PoseStamped`): local goal context
   only when its frame exactly matches odometry; cross-frame subtraction is
   rejected and reported rather than silently assuming an identity TF.
-- `learning_speed/mock_v_max` (`std_msgs/Float64`): mock policy command.
-- `learning_speed/applied_v_max` (`std_msgs/Float64`): EGO acknowledgement.
+- `learning_speed/mock_v_max` (`SpeedRequestStamped`): versioned mock/Episode
+  request with `episode_id`, `step_index` and monotonic `request_id`.
+- `learning_speed/applied_v_max` (`std_msgs/Float64`): compatibility state
+  value consumed by Observation C and existing scalar diagnostics; never used
+  for Episode action pairing.
 
 Publications:
 
 - `learning_speed/raw_v_max`: raw policy request.
-- `learning_speed/v_max`: filtered request sent only to EGO.
-- `learning_speed/action_stamped`: additive atomic audit mirror of the raw and
-  filtered values with their policy-cycle ROS timestamp; it has no subscriber
-  in EGO or the control path.
+- `learning_speed/v_max`: scalar compatibility mirror of the filtered value.
+- `learning_speed/action_stamped`: the sole EGO dynamic-limit input, carrying
+  the request identity and atomic requested/filtered values.
+- `learning_speed/applied_v_max_stamped`: published by EGO after application;
+  it echoes the identity and is the sole formal action-pairing acknowledgement.
 - `learning_speed/observation/low_dim`: normalized 22-element vector.
 - `learning_speed/observation_ready`: strict readiness for future RL.
 - `learning_speed/diagnostics`: source freshness, tensor contract, request and
@@ -236,7 +250,8 @@ part of the future model version contract.
 
 ## Training and artifacts
 
-`training/` contains only environment and artifact-boundary contracts;
+`training/` contains environment/artifact boundaries, the versioned transition
+contract and the reviewed framework-neutral Stage 1 reward;
 `inference/` contains fail-closed reviewed-model loading. Formal flight launch
 files never import training code.
 
@@ -256,7 +271,7 @@ Only a separately reviewed, selected inference model may later be copied to
 
 ## Frozen SAC transition contract and manual calibration
 
-`training/data_contract.py` freezes `learning_speed_sac_transition_v1.0` as:
+`training/data_contract.py` freezes `learning_speed_sac_transition_v1.3` as:
 
 ```text
 state_t -> requested_v_max -> filtered_v_max -> applied_v_max
@@ -269,15 +284,120 @@ The v1 policy input contains exactly `lidar_surrogate[3200]`,
 clearance/clutter metrics, lidar masks/semantic and diagnostics are provenance
 or calibration-only fields and are never returned by `PolicyStateV1.policy_input()`.
 
-A transition candidate is accepted only when `state_t` is a valid atomic
-Observation C received before the requested action and its trajectory
-id/start/frame equals the newest official `planning/bspline` received before
-that action. `state_t+1` is the first newer valid Observation C received after
-the EGO applied acknowledgement. The adapter publishes requested and filtered
-values atomically on the additive `learning_speed/action_stamped` audit topic;
-the EGO applied acknowledgement remains headerless and uses its local ROS
-callback receipt time. Calibration candidates keep `reward=null`,
-`reward_defined=false` and `training_ready=false`.
+Each v1.3 transition also carries a separate
+`learning_speed_progress_reward_context_v1.0`. It pairs the latest headerless
+`tower_mission/progress` and mission-state receipts available at `state_t` and
+`state_t+1`, binds both snapshots to the corresponding Observation C receipt
+times, and records run/episode provenance plus `P_t`, `P_t_plus_1` and
+`Delta_P`. This context remains diagnostics/evaluation evidence; it is not a
+policy input and is not used by the Stage 1 reward.
+
+A transition candidate requires a valid atomic `state_t` received before the
+requested action and a strictly newer valid `state_t+1` received after the EGO
+applied acknowledgement. A native EGO replan may publish a new B-spline between
+`state_t` and the action without invalidating the transition. The trajectory
+identity embedded in each Observation C and the latest official trajectory at
+action time are both retained as independent provenance; equality is not a
+validity condition. The adapter publishes requested and filtered values
+atomically on `learning_speed/action_stamped`; EGO echoes the same identity on
+`learning_speed/applied_v_max_stamped`. Episode v0.1 and the online recorder
+pair action/application by identity equality; timestamps remain causal and
+future-leak checks rather than identity guesses. Calibration candidates keep `reward=null`,
+`reward_defined=false` and `training_ready=false` only in the frozen legacy
+artifacts. The current recorder loads `config/stage1_reward.yaml`, evaluates
+the causal `state_t` signals through `Stage1Reward.evaluate()`, and binds a
+finite, versioned reward to every valid, same-episode, non-truncated candidate.
+
+## Stage 1 Reward v1
+
+`training/reward.py` implements `astradrone_stage1_reward_v1.0` as a
+paper-guided adaptation of Eq. (6), (7), (9) and (10) in *Learning Speed
+Adaptation for Flight in Clutter*. It is not an exact reproduction of the
+paper's unpublished feature coefficients or complete lambda values. Select it
+with `config/stage1_reward.yaml` (`reward.mode: stage1`).
+
+Stage 1 uses only:
+
+```text
+r_stage1 = r_speed_stage1 + r_smoothing + r_danger
+```
+
+The continuous N/D/Unknown complexity feature preserves the frozen Candidate C
+boundaries and `1.75/1.25/0.75/1.25 m/s` human anchors. Smoothing uses current
+and previous applied `v_max`. Danger is nonzero only for the explicit frozen
+dangerous terminal and scales with current causal actual speed squared.
+Tracking error and progress context are not reward terms. The existing 1.0 m
+continuous tracking safety gate is unchanged.
+
+The transition contract can bind a valid Stage 1 evaluation with all component
+terms and marks only that resulting record training-ready. Invalid Observation,
+episode-boundary and truncated inputs cannot produce a valid reward transition.
+The recorder remains read-only with respect to flight/control and now performs
+that binding online; it publishes no reward topic and starts no SAC or policy.
+Frozen historical calibration artifacts remain unchanged and reward-null.
+
+Design and offline replay evidence are in
+`runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_reward_v1_report.md`.
+
+## AstraDroneEnv Episode v0.1 and 10 Hz causal scheduler
+
+`training/astra_drone_env.py` owns one continuous UAV1 Episode and publishes
+policy requests on a fixed 0.1 s ROS/simulation-time grid. It does not wait for
+the previous transition to close before publishing the next request. Each
+in-flight step retains its own `episode_id`, zero-based `step_index`, state,
+request marker, atomic action, applied acknowledgement, trajectory provenance
+and post-hold Observation:
+
+```text
+strictly causal valid state_t
+ -> 10 Hz SpeedRequestStamped(episode_id, step_index, request_id)
+ -> SpeedActionStamped(same identity)
+ -> EGO SpeedAppliedStamped(same identity)
+ -> first unused valid Observation C after applied receipt + 0.1 s
+ -> existing Stage1Reward.evaluate + SacTransitionV1
+```
+
+The pending queue consumes every identity and next Observation at most once.
+Action/application matching is direct `(episode_id, request_id)` equality with
+`step_index` and values cross-checked; `state_t` must predate the action, while `state_t+1` must have a
+strictly newer source stamp and receipt no earlier than the hold boundary.
+Native mapping/planning/replanning stays asynchronous, and state/action/next
+trajectory identities remain independent provenance rather than an equality
+gate.
+
+Episode mode requires SpeedAdapter `timing/mock_request_driven=true`. The
+adapter emits one initial reviewed constraint before active-motion readiness,
+then each Episode mock request immediately executes the existing
+MockSpeedPolicy -> range-only SpeedSafetyFilter -> `SpeedActionStamped` -> EGO
+chain. Its independent mock timer is disabled, so there is one formal 10 Hz
+outer-loop owner. Fixed mode and ordinary mock mode retain their default timer
+behavior. Scalar `v_max/applied_v_max` topics remain state mirrors, not a
+second formal pairing path.
+
+`AstraDroneEpisodeConfig` fixes the policy period to 0.1 s and supports a
+positive maximum step count, maximum ROS duration, or both. Episode start
+requires a valid Observation C, mission active, bridge `TRACK_EGO`, planner
+`EXEC_TRAJ` and configured minimum actual speed. Existing mission success,
+mission failure, collision proxy, EGO emergency and continuous tracking gate
+are the only termination sources. A configured limit reached without one of
+those signals sets Episode `terminated=false`, `truncated=true` after the last
+fully closed transition. The frozen v1.3 transition remains non-truncated and
+reward-defined; the Episode boundary is recorded separately so Stage 1 reward
+semantics are not changed.
+
+`reset()` still raises `NotImplementedError`. There is no SAC, Replay Buffer,
+checkpoint, Soft/Hard Reset, teleport, normalization or multi-UAV RL. The old
+blocking `step()` API, sequential wait helper, 0.2 s fallback and unused
+pre-step observation timeout were removed. Historical 0.5/1.0 s and blocking
+0.1 s runtime artifacts remain unchanged as evidence.
+
+The action-identity revalidation closed 100/100 scheduled requests at exactly
+10 Hz with 100/100 action and stamped applied acknowledgements, request IDs
+1..100, zero timeout/causal mismatch/deadline drop, finite reward for every
+transition and a real `max_episode_steps` truncated boundary. The later full
+mission ended in a preserved planner-failure landing after the Episode window;
+it is not rewritten as Episode termination. See
+`runtime_artifacts/astra_drone_action_identity_episode_revalidation_report.md`.
 
 Attach the read-only manual calibration recorder to an already running stack:
 
@@ -294,8 +414,9 @@ add `--observation-c-running`. Output is written only below
   action chain, obstacle/clutter diagnostics, planner/mission and safety state;
 - `observation_diagnostics.jsonl`: masks/semantic, diagnostics and the existing
   raw/inflated clearance representations kept outside the policy input;
-- `transition_candidates.jsonl`: causally checked contract records with no
-  reward and therefore not training-ready;
+- `transition_candidates.jsonl`: causally checked records with a finite Stage 1
+  reward and versioned components for valid, same-episode, non-truncated
+  transitions; progress context remains diagnostic-only;
 - `planner_failure_episodes.csv`: failure intervals and recovered/unrecovered;
 - `run_summary.json`: mission result, safety terminal and validity totals.
 

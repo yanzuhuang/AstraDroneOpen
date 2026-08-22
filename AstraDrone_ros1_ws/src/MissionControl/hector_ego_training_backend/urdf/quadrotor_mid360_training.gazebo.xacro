@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<robot name="quadrotor_mid360_training"
+       xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Reuse the qualified upstream Hector vehicle and controller plugins. -->
+  <xacro:include filename="$(find hector_quadrotor_description)/urdf/quadrotor.gazebo.xacro"/>
+
+  <!--
+    Training-only Mid360 mount. The existing Astra Gazebo model places its
+    Mid360 link at +0.08 m and the ray origin another +0.05 m above it. Here
+    the published mid360_link is placed directly at that verified ray origin,
+    so PointCloud2 coordinates and TF name one physical frame:
+      base_link -> mid360_link = xyz [0, 0, 0.13], identity rotation.
+  -->
+  <link name="mid360_link">
+    <inertial>
+      <mass value="0.001"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0"
+               iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 -0.05" rpy="0 0 3.141592653589793"/>
+      <geometry>
+        <mesh filename="package://livox_laser_simulation/meshes/livox_mid-360-90x.dae"/>
+      </geometry>
+    </visual>
+  </link>
+  <joint name="mid360_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="mid360_link"/>
+    <origin xyz="0 0 0.13" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="mid360_link">
+    <sensor type="ray" name="training_mid360_laser">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>false</visualize>
+      <always_on>true</always_on>
+      <update_rate>10</update_rate>
+      <plugin name="training_mid360_plugin"
+              filename="liblivox_laser_simulation.so">
+        <robotNamespace>/uav1/livox</robotNamespace>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>100</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.1415926535897931</min_angle>
+              <max_angle>3.1415926535897931</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>50</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.1415926535897931</min_angle>
+              <max_angle>3.1415926535897931</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.2</min>
+            <max>40</max>
+            <resolution>1</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0</stddev>
+          </noise>
+        </ray>
+        <visualize>false</visualize>
+        <samples>20000</samples>
+        <downsample>1</downsample>
+        <csv_file_name>mid360-real-centr.csv</csv_file_name>
+        <!-- Plugin-native PointCloud2 XYZRTLT mode; full-stack keeps CustomMsg=3. -->
+        <publish_pointcloud_type>2</publish_pointcloud_type>
+        <ros_topic>/uav1/livox/lidar</ros_topic>
+        <frameName>mid360_link</frameName>
+      </plugin>
+    </sensor>
+  </gazebo>
+</robot>

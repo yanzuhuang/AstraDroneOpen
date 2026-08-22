@@ -103,6 +103,7 @@
               /uav1/ego_mavros_bridge/tracking_error
               /uav1/ego_mavros_bridge/state /uav1/planner/status
               /uav1/tower_mission/state /uav1/tower_mission/current_target
+              /uav1/tower_mission/progress
               /uav1/tower_mission/mission_success
               /uav1/tower_mission/mission_failure
               /uav1/tower_mission/mission_done

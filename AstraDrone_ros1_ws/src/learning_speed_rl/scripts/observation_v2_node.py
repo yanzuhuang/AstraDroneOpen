@@ -16,6 +16,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, Float32MultiArray, Header, MultiArrayDimension, UInt8MultiArray
+from std_srvs.srv import Trigger, TriggerResponse
 from visualization_msgs.msg import Marker, MarkerArray
 
 from learning_speed_rl.msg import LidarSurrogateStamped
@@ -33,6 +34,7 @@ from learning_speed_rl.observation.v2 import (
     Pose3D,
     PoseBuffer,
     preserve_source_stamp,
+    sensor_to_body,
 )
 from learning_speed_rl.observation.v2.lidar_surrogate import voxel_downsample
 
@@ -64,10 +66,38 @@ class ObservationV2Node:
         self._expected_world_frame = str(param("frames/world", "camera_init")).lstrip("/")
         self._expected_body_frame = str(param("frames/body", "body")).lstrip("/")
         self._sensor_frame = str(param("frames/sensor", "mid360_link")).lstrip("/")
+        self._cloud_frame_mode = str(
+            param("preprocessing/cloud_frame_mode", "world_registered")
+        )
+        self._pose_lookup_policy = str(
+            param("timing/pose_lookup_policy", "interpolate")
+        )
+        self._state_source_type = str(
+            param("state_source_type", "fast_lio_state_estimate")
+        )
+        self._state_contract_version = str(
+            param(
+                "state_contract_version", "astradrone_planning_odometry_v1.0"
+            )
+        )
         self._voxel_size = float(param("voxel_downsample_m", 0.05))
         self._minimum_range = float(param("preprocessing/minimum_range_m", 0.20))
         self._distance_clip = float(param("distance_clip_m", 10.0))
         self._unknown_offset = float(param("unknown_encoding_offset_m", 20.0))
+        self._sensor_translation_body_m = np.asarray(
+            param(
+                "sensor_extrinsic/translation_body_sensor_m",
+                [-0.011, -0.02329, 0.04412],
+            ),
+            dtype=np.float64,
+        )
+        self._sensor_rotation_body_xyzw = np.asarray(
+            param(
+                "sensor_extrinsic/rotation_body_sensor_xyzw",
+                [0.0, 0.0, 0.0, 1.0],
+            ),
+            dtype=np.float64,
+        )
 
         angular_spec = AngularPartitionSpec(
             angular_resolution_deg=float(param("angular_resolution_deg", 4.5)),
@@ -88,8 +118,8 @@ class ObservationV2Node:
             elevation_max_deg=float(param("unknown_estimator/fov_elevation_max_deg", 52.1640)),
             occlusion_angular_resolution_deg=float(param("unknown_estimator/occlusion_angular_resolution_deg", 4.5)),
             occlusion_margin_m=float(param("unknown_estimator/occlusion_margin_m", 0.10)),
-            sensor_translation_body_m=param("sensor_extrinsic/translation_body_sensor_m", [-0.011, -0.02329, 0.04412]),
-            sensor_rotation_body_xyzw=param("sensor_extrinsic/rotation_body_sensor_xyzw", [0.0, 0.0, 0.0, 1.0]),
+            sensor_translation_body_m=self._sensor_translation_body_m,
+            sensor_rotation_body_xyzw=self._sensor_rotation_body_xyzw,
         )
         self._builder = LidarSurrogateBuilder(
             LidarSurrogateConfig(
@@ -120,6 +150,14 @@ class ObservationV2Node:
             or self._maximum_cloud_pose_delta <= 0.0
             or self._maximum_pose_age <= 0.0
             or self._visualization_stride <= 0
+            or self._cloud_frame_mode not in ("world_registered", "sensor_raw")
+            or self._pose_lookup_policy not in (
+                "interpolate", "causal_at_or_before"
+            )
+            or (
+                self._cloud_frame_mode == "sensor_raw"
+                and self._pose_lookup_policy != "causal_at_or_before"
+            )
         ):
             raise rospy.ROSInitException("invalid Observation v2 configuration")
 
@@ -153,7 +191,14 @@ class ObservationV2Node:
         self._input_points = 0
         self._frame_points = 0
         self._last_pose_mode = ""
+        self._last_pose_source_stamp = None
         self._reset_count = 0
+        self._temporal_generation = 0
+        self._reset_barrier_stamp = 0.0
+        self._pre_barrier_state_reject_count = 0
+        self._pre_barrier_cloud_reject_count = 0
+        self._future_pose_use_count = 0
+        self._pose_lookup_counts = {"exact": 0, "interpolated": 0, "causal_previous": 0}
         self._process = None
         try:
             import psutil
@@ -164,26 +209,60 @@ class ObservationV2Node:
 
         self._odom_sub = rospy.Subscriber(topic("odom", "Odometry"), Odometry, self._odom_callback, queue_size=100)
         self._cloud_sub = rospy.Subscriber(topic("cloud", "stage3/cloud_registered_filtered"), PointCloud2, self._cloud_callback, queue_size=1, buff_size=2 ** 26)
+        self._clear_service = rospy.Service(
+            "~clear_temporal_history", Trigger, self._clear_temporal_history
+        )
         diagnostic_rate = float(param("timing/diagnostics_rate_hz", 2.0))
         self._diagnostic_timer = rospy.Timer(rospy.Duration(1.0 / diagnostic_rate), self._diagnostic_callback)
         self._valid_pub.publish(Bool(data=False))
         rospy.logwarn(
-            "Observation v2 read-only prototype active: cloud=%s odom=%s bins=%d; no v_max/control publisher exists",
+            "Observation v2 read-only prototype active: cloud=%s odom=%s bins=%d mode=%s pose_lookup=%s; no v_max/control publisher exists",
             rospy.resolve_name(topic("cloud", "stage3/cloud_registered_filtered")),
             rospy.resolve_name(topic("odom", "Odometry")),
             angular_spec.number_of_bins,
+            self._cloud_frame_mode,
+            self._pose_lookup_policy,
         )
 
-    def _clear_for_time_reset(self, reason):
+    def _clear_for_time_reset(self, reason, barrier_stamp=0.0, new_generation=True):
         self._pose_buffer.clear()
         self._cloud_history.clear()
+        self._pending_clouds.clear()
         self._input_source_intervals.clear()
+        self._cloud_intervals.clear()
+        self._output_stamp_intervals.clear()
         self._last_input_stamp = None
         self._last_cloud_stamp = None
+        self._last_odom_stamp = None
+        self._last_pose_receive_sec = None
+        self._last_cloud_receive_sec = None
+        self._last_output_stamp = None
+        self._last_output_wall = None
+        self._last_pose_source_stamp = None
         self._last_observation = None
         self._last_failure = reason
         self._reset_count += 1
+        if new_generation:
+            self._temporal_generation += 1
+        self._reset_barrier_stamp = float(barrier_stamp)
         self._valid_pub.publish(Bool(data=False))
+
+    def _clear_temporal_history(self, _request):
+        barrier = rospy.Time.now().to_sec()
+        if barrier <= 0.0:
+            return TriggerResponse(
+                success=False, message="ROS simulation time is not active"
+            )
+        with self._lock:
+            self._clear_for_time_reset(
+                "explicit_reset_barrier", barrier_stamp=barrier,
+                new_generation=True,
+            )
+            generation = self._temporal_generation
+        return TriggerResponse(
+            success=True,
+            message="generation={};barrier={:.9f}".format(generation, barrier),
+        )
 
     def _odom_callback(self, message):
         stamp = message.header.stamp.to_sec()
@@ -209,12 +288,15 @@ class ObservationV2Node:
             return
         pending = []
         with self._lock:
+            if stamp <= self._reset_barrier_stamp + 1.0e-9:
+                self._pre_barrier_state_reject_count += 1
+                return
             if self._pose_buffer.add(pose):
-                self._cloud_history.clear()
-                self._pending_clouds.clear()
-                self._reset_count += 1
-                self._last_failure = "ros_time_reset_on_odometry"
-                self._valid_pub.publish(Bool(data=False))
+                self._clear_for_time_reset(
+                    "ros_time_reset_on_odometry", barrier_stamp=0.0,
+                    new_generation=True,
+                )
+                self._pose_buffer.add(pose)
             self._last_odom_stamp = stamp
             self._last_pose_receive_sec = rospy.Time.now().to_sec()
             while self._pending_clouds and self._pending_clouds[0].header.stamp.to_sec() <= stamp + 1.0e-9:
@@ -242,7 +324,7 @@ class ObservationV2Node:
     def _publish_invalid_packet(
         self, stamp, frame, reason, cycle_start,
         input_points=0, finite_points=0, in_range_points=0,
-        history_frames=0, source_stamp=None,
+        history_frames=0, source_stamp=None, pose_source_stamp=None,
     ):
         packet = LidarSurrogateStamped()
         packet.header.stamp = (
@@ -254,6 +336,18 @@ class ObservationV2Node:
         packet.version = "lidar_surrogate_v2.0"
         packet.valid = False
         packet.diagnostics = [str(reason)]
+        packet.temporal_generation = self._temporal_generation
+        packet.reset_barrier_stamp = rospy.Time.from_sec(
+            max(0.0, self._reset_barrier_stamp)
+        )
+        packet.state_source_type = self._state_source_type
+        packet.state_contract_version = self._state_contract_version
+        packet.cloud_frame_mode = self._cloud_frame_mode
+        if pose_source_stamp is not None and pose_source_stamp > 0.0:
+            packet.pose_source_stamp = rospy.Time.from_sec(pose_source_stamp)
+        packet.pose_used_future = bool(
+            pose_source_stamp is not None and pose_source_stamp > stamp + 1.0e-9
+        )
         packet.input_points = int(max(0, input_points))
         packet.finite_points = int(max(0, finite_points))
         packet.in_range_points = int(max(0, in_range_points))
@@ -267,17 +361,31 @@ class ObservationV2Node:
         cycle_start = perf_counter()
         stamp = message.header.stamp.to_sec()
         cloud_frame = message.header.frame_id.lstrip("/")
+        expected_cloud_frame = (
+            self._expected_world_frame
+            if self._cloud_frame_mode == "world_registered"
+            else self._sensor_frame
+        )
         input_points = int(message.width * message.height)
         with self._lock:
+            if stamp <= self._reset_barrier_stamp + 1.0e-9:
+                self._pre_barrier_cloud_reject_count += 1
+                self._last_failure = "cloud_at_or_before_reset_barrier"
+                self._publish_invalid_packet(
+                    stamp, self._expected_body_frame,
+                    "cloud_at_or_before_reset_barrier", cycle_start,
+                    input_points=input_points, source_stamp=message.header.stamp,
+                )
+                return
             if self._last_input_stamp is not None and stamp > self._last_input_stamp:
                 self._input_source_intervals.append(stamp - self._last_input_stamp)
             if self._last_input_stamp is None or stamp >= self._last_input_stamp:
                 self._last_input_stamp = stamp
-        if stamp <= 0.0 or cloud_frame != self._expected_world_frame:
+        if stamp <= 0.0 or cloud_frame != expected_cloud_frame:
             reason = (
                 "timestamp_invalid" if stamp <= 0.0
                 else "frame_invalid:{}!={}".format(
-                    cloud_frame, self._expected_world_frame
+                    cloud_frame, expected_cloud_frame
                 )
             )
             with self._lock:
@@ -290,12 +398,24 @@ class ObservationV2Node:
             return
         with self._lock:
             if self._last_cloud_stamp is not None and stamp < self._last_cloud_stamp - 1.0e-9:
-                self._clear_for_time_reset("ros_time_reset_on_cloud")
-            pose, pose_mode = self._pose_buffer.lookup(stamp)
+                self._clear_for_time_reset(
+                    "ros_time_reset_on_cloud", barrier_stamp=0.0,
+                    new_generation=True,
+                )
+            if self._pose_lookup_policy == "causal_at_or_before":
+                pose, pose_mode = self._pose_buffer.lookup_at_or_before(
+                    stamp, self._maximum_cloud_pose_delta
+                )
+            else:
+                pose, pose_mode = self._pose_buffer.lookup(stamp)
             newest_pose_stamp = self._pose_buffer.newest_stamp
         if pose is None:
             with self._lock:
-                if allow_pending and pose_mode == "cloud_newer_than_pose_history":
+                if (
+                    allow_pending
+                    and self._pose_lookup_policy == "interpolate"
+                    and pose_mode == "cloud_newer_than_pose_history"
+                ):
                     if len(self._pending_clouds) == self._pending_clouds.maxlen:
                         self._pending_cloud_drop_count += 1
                     self._pending_clouds.append(message)
@@ -310,7 +430,23 @@ class ObservationV2Node:
                 source_stamp=message.header.stamp,
             )
             return
-        if newest_pose_stamp is None or newest_pose_stamp - stamp > self._maximum_cloud_pose_delta + 1.0e-9:
+        pose_used_future = pose.stamp_sec > stamp + 1.0e-9
+        if self._pose_lookup_policy == "causal_at_or_before":
+            pose_sync_invalid = (
+                pose_used_future
+                or stamp - pose.stamp_sec
+                > self._maximum_cloud_pose_delta + 1.0e-9
+            )
+        else:
+            pose_sync_invalid = (
+                newest_pose_stamp is None
+                or newest_pose_stamp - stamp
+                > self._maximum_cloud_pose_delta + 1.0e-9
+            )
+        if pose_sync_invalid:
+            if pose_used_future:
+                with self._lock:
+                    self._future_pose_use_count += 1
             with self._lock:
                 self._last_failure = "cloud_pose_timestamp_mismatch"
             self._publish_invalid_packet(
@@ -319,12 +455,13 @@ class ObservationV2Node:
                 input_points=input_points,
                 history_frames=self._cloud_history.size,
                 source_stamp=message.header.stamp,
+                pose_source_stamp=pose.stamp_sec,
             )
             return
 
         decode_start = perf_counter()
         try:
-            points_world = self._decode_points(message)
+            points_input = self._decode_points(message)
         except (KeyError, ValueError, TypeError) as error:
             reason = "pointcloud_decode_failed:{}".format(error)
             with self._lock:
@@ -337,8 +474,15 @@ class ObservationV2Node:
             )
             return
         decode_ms = (perf_counter() - decode_start) * 1000.0
-        finite_points = int(points_world.shape[0])
-        points_body = pose.world_to_body(points_world)
+        finite_points = int(points_input.shape[0])
+        if self._cloud_frame_mode == "world_registered":
+            points_body = pose.world_to_body(points_input)
+        else:
+            points_body = sensor_to_body(
+                points_input,
+                self._sensor_translation_body_m,
+                self._sensor_rotation_body_xyzw,
+            )
         ranges = np.linalg.norm(points_body, axis=1)
         valid = (
             np.all(np.isfinite(points_body), axis=1)
@@ -410,6 +554,7 @@ class ObservationV2Node:
         self._publish_observation(
             observation, aligned,
             source_stamp=message.header.stamp,
+            pose_source_stamp=pose.stamp_sec,
             input_points=input_points,
             finite_points=finite_points,
             in_range_points=in_range_points,
@@ -434,6 +579,10 @@ class ObservationV2Node:
             self._input_points = input_points
             self._frame_points = int(points_body.shape[0])
             self._last_pose_mode = pose_mode
+            self._last_pose_source_stamp = pose.stamp_sec
+            self._pose_lookup_counts[pose_mode] = (
+                self._pose_lookup_counts.get(pose_mode, 0) + 1
+            )
         self._valid_pub.publish(Bool(data=True))
 
     def _publish_float_array(self, publisher, values, label):
@@ -442,8 +591,9 @@ class ObservationV2Node:
         publisher.publish(message)
 
     def _publish_observation(
-        self, observation, aligned, source_stamp, input_points, finite_points,
-        in_range_points, history_frames, build_duration_ms,
+        self, observation, aligned, source_stamp, pose_source_stamp,
+        input_points, finite_points, in_range_points, history_frames,
+        build_duration_ms,
     ):
         self._publish_float_array(self._surrogate_pub, observation.lidar_surrogate, observation.version)
         self._publish_float_array(self._valid_mask_pub, observation.lidar_valid_mask, "lidar_valid_mask")
@@ -454,12 +604,21 @@ class ObservationV2Node:
         stamped = LidarSurrogateStamped()
         # Preserve the original ROS sec/nsec pair. A float to_sec()/from_sec()
         # round trip was observed to subtract exactly 1 ns in worksite, turning
-        # a same-scan FAST-LIO state into a false 0.10 s interpolation gap.
+        # a same-scan state sample into a false 0.10 s interpolation gap.
         stamped.header.stamp = preserve_source_stamp(source_stamp)
         stamped.header.frame_id = observation.frame_id
         stamped.version = observation.version
         stamped.valid = True
         stamped.diagnostics = []
+        stamped.temporal_generation = self._temporal_generation
+        stamped.reset_barrier_stamp = rospy.Time.from_sec(
+            max(0.0, self._reset_barrier_stamp)
+        )
+        stamped.state_source_type = self._state_source_type
+        stamped.state_contract_version = self._state_contract_version
+        stamped.cloud_frame_mode = self._cloud_frame_mode
+        stamped.pose_source_stamp = rospy.Time.from_sec(pose_source_stamp)
+        stamped.pose_used_future = pose_source_stamp > observation.stamp_sec + 1.0e-9
         stamped.lidar_surrogate = observation.lidar_surrogate.astype(np.float32).tolist()
         stamped.lidar_valid_mask = observation.lidar_valid_mask.astype(np.float32).tolist()
         stamped.unknown_mask = observation.unknown_mask.astype(np.float32).tolist()
@@ -533,6 +692,9 @@ class ObservationV2Node:
             output_wall_rate = self._frequency(self._output_wall_intervals)
             history_size = self._cloud_history.size
             pending_clouds = len(self._pending_clouds)
+            generation = self._temporal_generation
+            barrier_stamp = self._reset_barrier_stamp
+            pose_lookup_counts = dict(self._pose_lookup_counts)
         stale = pose_age > self._maximum_pose_age
         valid = observation is not None and not failure and not stale
         if stale:
@@ -540,7 +702,9 @@ class ObservationV2Node:
             self._valid_pub.publish(Bool(data=False))
         status = DiagnosticStatus()
         status.name = rospy.get_name() + "/lidar_surrogate"
-        status.hardware_id = "Mid360+FAST-LIO(read-only)"
+        status.hardware_id = "Mid360+{}(read-only)".format(
+            self._state_source_type
+        )
         status.level = DiagnosticStatus.OK if valid else DiagnosticStatus.WARN
         status.message = "observation_v2_ready" if valid else failure or "not_ready"
         metadata = {} if observation is None else observation.metadata
@@ -549,16 +713,36 @@ class ObservationV2Node:
         values = {
             "contract_version": "lidar_surrogate_v2.0",
             "control_output": "none",
+            "state_source_type": self._state_source_type,
+            "state_contract_version": self._state_contract_version,
             "observation_stamp_sec": "" if observation is None else "{:.9f}".format(observation.stamp_sec),
             "number_of_bins": self._partition.spec.number_of_bins,
             "bin_order": "elevation_major_azimuth_fast",
-            "source_cloud_frame": self._expected_world_frame,
+            "source_cloud_frame": (
+                self._expected_world_frame
+                if self._cloud_frame_mode == "world_registered"
+                else self._sensor_frame
+            ),
+            "cloud_frame_mode": self._cloud_frame_mode,
             "output_frame": self._expected_body_frame,
             "sensor_frame": self._sensor_frame,
+            "sensor_translation_body_m": self._sensor_translation_body_m.tolist(),
+            "sensor_rotation_body_xyzw": self._sensor_rotation_body_xyzw.tolist(),
+            "pose_lookup_policy": self._pose_lookup_policy,
             "pose_lookup": self._last_pose_mode,
+            "pose_source_stamp_sec": (
+                "" if self._last_pose_source_stamp is None
+                else "{:.9f}".format(self._last_pose_source_stamp)
+            ),
+            "pose_exact_count": pose_lookup_counts.get("exact", 0),
+            "pose_interpolated_count": pose_lookup_counts.get("interpolated", 0),
+            "pose_causal_previous_count": pose_lookup_counts.get("causal_previous", 0),
+            "future_pose_use_count": self._future_pose_use_count,
             "history_frames": history_size,
             "pending_clouds": pending_clouds,
             "pending_cloud_drop_count": self._pending_cloud_drop_count,
+            "raw_cloud_hz": "{:.3f}".format(self._lidar_source_rate()),
+            "accepted_cloud_hz": "{:.3f}".format(cloud_rate),
             "input_cloud_hz": "{:.3f}".format(cloud_rate),
             "output_stamp_hz": "{:.3f}".format(output_stamp_rate),
             "output_wall_hz": "{:.3f}".format(output_wall_rate),
@@ -580,6 +764,10 @@ class ObservationV2Node:
             "process_cpu_percent": "{:.2f}".format(cpu_percent),
             "process_max_rss_mib": "{:.2f}".format(memory_mib),
             "ros_time_reset_count": self._reset_count,
+            "temporal_generation": generation,
+            "reset_barrier_stamp_sec": "{:.9f}".format(barrier_stamp),
+            "pre_barrier_state_reject_count": self._pre_barrier_state_reject_count,
+            "pre_barrier_cloud_reject_count": self._pre_barrier_cloud_reject_count,
             "unknown_algorithm": "historical_fov_radial_sampling_v1_approximation",
         }
         status.values = [_key_value(key, value) for key, value in values.items()]

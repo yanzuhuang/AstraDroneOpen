@@ -1,0 +1,21 @@
+<launch>
+  <arg name="output_file"/>
+  <arg name="run_id" default="astra_drone_episode_v01_runtime"/>
+  <arg name="episode_id" default="episode_0001"/>
+  <arg name="required" default="true"/>
+  <arg name="episode_config"
+       default="$(find learning_speed_rl)/config/astra_drone_episode_v01.yaml"/>
+  <arg name="reward_config"
+       default="$(find learning_speed_rl)/config/stage1_reward.yaml"/>
+
+  <node pkg="learning_speed_rl" type="astra_drone_episode_runner.py"
+        name="astra_drone_episode_v01" output="screen"
+        required="$(arg required)">
+    <rosparam command="load" file="$(arg episode_config)"/>
+    <rosparam command="load" file="$(arg reward_config)"/>
+    <param name="namespace" value="uav1"/>
+    <param name="run_id" value="$(arg run_id)"/>
+    <param name="episode_id" value="$(arg episode_id)"/>
+    <param name="output_file" value="$(arg output_file)"/>
+  </node>
+</launch>

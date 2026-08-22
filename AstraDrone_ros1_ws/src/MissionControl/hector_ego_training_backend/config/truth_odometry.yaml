@@ -1,0 +1,16 @@
+backend_mode: gazebo_truth_training
+
+frames:
+  raw_world: world
+  raw_body: base_link
+  planning_world: world
+  planning_body: base_link
+
+timing:
+  maximum_source_age_sec: 0.05
+  future_tolerance_sec: 0.01
+  diagnostics_rate_hz: 5.0
+
+validation:
+  quaternion_norm_tolerance: 0.001
+  teleport_distance_m: 0.75

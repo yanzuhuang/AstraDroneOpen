@@ -1,6 +1,8 @@
 observation_v2:
   enabled: true
   contract_version: lidar_surrogate_v2.0
+  state_source_type: fast_lio_state_estimate
+  state_contract_version: astradrone_planning_odometry_v1.0
 
   # Flying-on-Point-Clouds reference values. They are configurable reference
   # defaults, not claimed optimal for AstraDroneOpen tower inspection.
@@ -25,10 +27,14 @@ observation_v2:
     maximum_cloud_pose_delta_sec: 0.05
     maximum_pose_age_sec: 0.20
     diagnostics_rate_hz: 2.0
+    # Full-stack registered clouds retain interpolation. Training raw sensor
+    # clouds override this with causal_at_or_before.
+    pose_lookup_policy: interpolate
 
   preprocessing:
     maximum_input_points: 250000
     minimum_range_m: 0.20
+    cloud_frame_mode: world_registered
 
   # FoV bounds were audited from the exact Mid360 scan pattern used by the
   # Gazebo plugin (mid360-real-centr.csv): azimuth nearly 360 degrees,

@@ -18,6 +18,7 @@ from learning_speed_rl.observation.v2 import (
     Pose3D,
     PoseBuffer,
     preserve_source_stamp,
+    sensor_to_body,
 )
 
 
@@ -144,6 +145,26 @@ class PoseAndHistoryTest(unittest.TestCase):
             history.append(CloudFrame(1.0, "camera_init", np.zeros((1, 3)), pose(1.0)))
         )
         self.assertEqual(history.size, 1)
+
+    def test_causal_lookup_never_uses_future_pose(self):
+        buffer = PoseBuffer(10, 0.05)
+        buffer.add(pose(1.00, (0.0, 0.0, 0.0)))
+        buffer.add(pose(1.02, (0.2, 0.0, 0.0)))
+        selected, mode = buffer.lookup_at_or_before(1.01, 0.05)
+        self.assertEqual(mode, "causal_previous")
+        self.assertAlmostEqual(selected.stamp_sec, 1.00)
+        np.testing.assert_allclose(selected.translation, [0.0, 0.0, 0.0])
+        missing, reason = buffer.lookup_at_or_before(1.10, 0.05)
+        self.assertIsNone(missing)
+        self.assertEqual(reason, "causal_pose_too_old")
+
+    def test_explicit_sensor_to_body_extrinsic(self):
+        transformed = sensor_to_body(
+            np.asarray([[1.0, 0.0, 0.0]], dtype=np.float64),
+            [0.0, 0.0, 0.13],
+            yaw_quaternion(90.0),
+        )
+        np.testing.assert_allclose(transformed, [[0.0, 1.0, 0.13]], atol=1e-8)
 
 
 class HistoryAlignmentTest(unittest.TestCase):

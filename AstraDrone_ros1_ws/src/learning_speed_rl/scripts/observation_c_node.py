@@ -11,6 +11,7 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point, Vector3
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Float64
+from std_srvs.srv import Trigger, TriggerResponse
 from traj_utils.msg import Bspline
 
 from learning_speed_rl.msg import (
@@ -49,6 +50,27 @@ class ObservationCNode:
         self._expected_bins = int(param("expected_lidar_bins", 3200))
         self._minimum_v_max = float(param("system_state/minimum_v_max", 0.01))
         self._maximum_v_max = float(param("system_state/maximum_v_max", 10.0))
+        self._state_source_type = str(
+            param("system_state/source_type", "fast_lio_state_estimate")
+        )
+        self._state_contract_version = str(
+            param(
+                "system_state/source_contract_version",
+                "astradrone_planning_odometry_v1.0",
+            )
+        )
+        self._state_velocity_source = str(
+            param(
+                "system_state/velocity_source",
+                "timestamped_state_position_difference_world",
+            )
+        )
+        self._state_lookup_policy = str(
+            param("timing/state_lookup_policy", "interpolate")
+        )
+        self._require_lidar_state_provenance = bool(
+            param("timing/require_lidar_state_provenance", False)
+        )
         sampling = TrajectorySamplingConfig(
             sample_count=int(param("trajectory_sample_count", 20)),
             sample_spacing=float(param("trajectory_sample_spacing", 0.25)),
@@ -58,7 +80,9 @@ class ObservationCNode:
             arc_length_max_depth=int(param("arc_length_max_depth", 16)),
         )
         self._builder = ObservationCBuilder(
-            TrajectorySampler(sampling), self._world_frame, self._body_frame
+            TrajectorySampler(sampling), self._world_frame, self._body_frame,
+            self._state_source_type, self._state_contract_version,
+            self._state_velocity_source,
         )
         self._state_buffer = KinematicStateBuffer(
             capacity=int(param("timing/state_buffer_capacity", 400)),
@@ -71,6 +95,7 @@ class ObservationCNode:
             maximum_velocity_dt_sec=float(
                 param("system_state/maximum_velocity_dt_sec", 0.50)
             ),
+            lookup_policy=self._state_lookup_policy,
         )
         self._maximum_input_age = float(param("timing/maximum_input_age_sec", 0.25))
         self._diagnostics_rate = float(param("timing/diagnostics_rate_hz", 2.0))
@@ -81,6 +106,9 @@ class ObservationCNode:
             or not 0.0 < self._minimum_v_max <= self._maximum_v_max
             or self._maximum_input_age <= 0.0
             or self._diagnostics_rate <= 0.0
+            or self._state_lookup_policy not in (
+                "interpolate", "causal_at_or_before"
+            )
         ):
             raise rospy.ROSInitException("invalid Observation C configuration")
 
@@ -97,6 +125,15 @@ class ObservationCNode:
         self._accepted_replans = 0
         self._rejected_trajectories = 0
         self._time_reset_count = 0
+        self._temporal_generation = 0
+        self._reset_barrier_stamp = 0.0
+        self._pre_barrier_state_reject_count = 0
+        self._pre_barrier_lidar_reject_count = 0
+        self._pre_barrier_trajectory_reject_count = 0
+        self._pre_barrier_v_max_reject_count = 0
+        self._generation_mismatch_count = 0
+        self._future_state_use_count = 0
+        self._future_trajectory_use_count = 0
 
         self._observation_topic = topic("observation", "learning_speed/observation_c")
         self._valid_topic = topic("valid", "learning_speed/observation_c/valid")
@@ -140,6 +177,9 @@ class ObservationCNode:
             self._v_max_callback,
             queue_size=2,
         )
+        self._clear_service = rospy.Service(
+            "~clear_temporal_history", Trigger, self._clear_temporal_history
+        )
         self._diagnostic_timer = rospy.Timer(
             rospy.Duration(1.0 / self._diagnostics_rate), self._diagnostic_callback
         )
@@ -159,6 +199,10 @@ class ObservationCNode:
         self, packet, kinematic=None, trajectory=None, lidar_message=None,
         receipt_sec=None,
     ):
+        packet.temporal_generation = self._temporal_generation
+        packet.reset_barrier_stamp = rospy.Time.from_sec(
+            max(0.0, self._reset_barrier_stamp)
+        )
         packet.state_before_missing = True
         packet.state_after_missing = True
         packet.state_buffer_oldest_missing = True
@@ -202,6 +246,13 @@ class ObservationCNode:
                     setattr(packet, field, value)
             packet.state_buffer_size = kinematic.buffer_size
             packet.state_buffer_coverage_sec = kinematic.buffer_coverage_sec
+            packet.state_source_type = self._state_source_type
+            packet.state_contract_version = self._state_contract_version
+            packet.state_velocity_source = self._state_velocity_source
+            packet.state_source_rate_hz = kinematic.source_rate_hz
+            packet.state_insert_rate_hz = kinematic.insert_rate_hz
+            # Frozen v1 compatibility aliases; do not infer FAST-LIO source
+            # from these names. Generic fields above are authoritative.
             packet.fast_lio_source_rate_hz = kinematic.source_rate_hz
             packet.fast_lio_state_insert_rate_hz = kinematic.insert_rate_hz
             packet.state_insert_count = kinematic.insert_count
@@ -238,6 +289,9 @@ class ObservationCNode:
                     trajectory.latest_start_stamp_sec,
                 )
         if lidar_message is not None:
+            packet.lidar_temporal_generation = lidar_message.temporal_generation
+            packet.lidar_pose_source_stamp = lidar_message.pose_source_stamp
+            packet.lidar_pose_used_future = lidar_message.pose_used_future
             packet.lidar_invalid_reason = (
                 "" if lidar_message.valid
                 else ";".join(lidar_message.diagnostics) or "unspecified"
@@ -271,14 +325,38 @@ class ObservationCNode:
             )
             self._observation_pub.publish(packet)
 
-    def _clear_for_time_reset(self):
+    def _clear_for_time_reset(
+        self, reason="ros_time_reset", barrier_stamp=0.0, new_generation=True
+    ):
         self._state_buffer.clear()
         self._pending_lidar.clear()
         self._trajectory_store.clear()
         self._v_max_buffer.clear()
         self._last_observation = None
+        self._last_observation_receive_sec = None
         self._time_reset_count += 1
-        self._set_invalid("ros_time_reset")
+        if new_generation:
+            self._temporal_generation += 1
+        self._reset_barrier_stamp = float(barrier_stamp)
+        self._lidar_valid = False
+        self._set_invalid(reason)
+
+    def _clear_temporal_history(self, _request):
+        barrier = rospy.Time.now().to_sec()
+        if barrier <= 0.0:
+            return TriggerResponse(
+                success=False, message="ROS simulation time is not active"
+            )
+        with self._lock:
+            self._clear_for_time_reset(
+                "explicit_reset_barrier", barrier_stamp=barrier,
+                new_generation=True,
+            )
+            generation = self._temporal_generation
+        return TriggerResponse(
+            success=True,
+            message="generation={};barrier={:.9f}".format(generation, barrier),
+        )
 
     def _odom_callback(self, message):
         receipt_sec = rospy.Time.now().to_sec()
@@ -310,8 +388,14 @@ class ObservationCNode:
             return
         pending = []
         with self._lock:
+            if stamp <= self._reset_barrier_stamp + 1.0e-9:
+                self._pre_barrier_state_reject_count += 1
+                return
             if self._state_buffer.add_pose(pose, receipt_sec):
-                self._clear_for_time_reset()
+                self._clear_for_time_reset(
+                    "ros_time_reset", barrier_stamp=0.0,
+                    new_generation=True,
+                )
                 return
             while (
                 self._pending_lidar
@@ -343,6 +427,9 @@ class ObservationCNode:
             self._set_invalid("trajectory_invalid:{}".format(error), publish_packet=False)
             return
         with self._lock:
+            if candidate.start_time_sec <= self._reset_barrier_stamp + 1.0e-9:
+                self._pre_barrier_trajectory_reject_count += 1
+                return
             current = self._trajectory_store.current
             if not self._trajectory_store.update(candidate):
                 self._rejected_trajectories += 1
@@ -360,7 +447,11 @@ class ObservationCNode:
             self._set_invalid("previous_v_max_invalid", publish_packet=False)
             return
         with self._lock:
-            self._v_max_buffer.add(rospy.Time.now().to_sec(), value)
+            receipt_sec = rospy.Time.now().to_sec()
+            if receipt_sec <= self._reset_barrier_stamp + 1.0e-9:
+                self._pre_barrier_v_max_reject_count += 1
+                return
+            self._v_max_buffer.add(receipt_sec, value)
 
     def _lidar_callback(self, message):
         self._process_lidar(message, allow_pending=True)
@@ -369,6 +460,39 @@ class ObservationCNode:
         receipt_sec = rospy.Time.now().to_sec()
         stamp = message.header.stamp.to_sec()
         frame = message.header.frame_id.lstrip("/")
+        if stamp <= self._reset_barrier_stamp + 1.0e-9:
+            with self._lock:
+                self._pre_barrier_lidar_reject_count += 1
+            self._set_invalid(
+                "lidar_at_or_before_reset_barrier", stamp,
+                lidar_message=message, receipt_sec=receipt_sec,
+            )
+            return
+        if message.temporal_generation != self._temporal_generation:
+            with self._lock:
+                self._generation_mismatch_count += 1
+            self._set_invalid(
+                "lidar_temporal_generation_mismatch", stamp,
+                lidar_message=message, receipt_sec=receipt_sec,
+            )
+            return
+        if self._require_lidar_state_provenance and (
+            message.state_source_type != self._state_source_type
+            or message.state_contract_version != self._state_contract_version
+        ):
+            self._set_invalid(
+                "lidar_state_source_provenance_mismatch", stamp,
+                lidar_message=message, receipt_sec=receipt_sec,
+            )
+            return
+        if message.pose_used_future:
+            with self._lock:
+                self._future_state_use_count += 1
+            self._set_invalid(
+                "lidar_used_future_pose", stamp,
+                lidar_message=message, receipt_sec=receipt_sec,
+            )
+            return
         if stamp <= 0.0 or frame != self._body_frame:
             detail = ";".join(message.diagnostics) or "stamp_or_frame_invalid"
             reason = (
@@ -387,6 +511,35 @@ class ObservationCNode:
                 self._trajectory_store.lookup_with_diagnostics(stamp)
             )
             previous_v_max, v_max_lookup = self._v_max_buffer.lookup(stamp)
+        if (
+            self._state_lookup_policy == "causal_at_or_before"
+            and kinematic_diagnostics.after_stamp_sec is not None
+            and kinematic_diagnostics.after_stamp_sec > stamp + 1.0e-9
+        ):
+            with self._lock:
+                self._future_state_use_count += 1
+            self._set_invalid(
+                "kinematic_lookup_used_future_state", stamp,
+                kinematic=kinematic_diagnostics,
+                trajectory=trajectory_diagnostics,
+                lidar_message=message,
+                receipt_sec=receipt_sec,
+            )
+            return
+        if (
+            trajectory is not None
+            and trajectory.start_time_sec > stamp + 1.0e-9
+        ):
+            with self._lock:
+                self._future_trajectory_use_count += 1
+            self._set_invalid(
+                "trajectory_future_leak", stamp,
+                kinematic=kinematic_diagnostics,
+                trajectory=trajectory_diagnostics,
+                lidar_message=message,
+                receipt_sec=receipt_sec,
+            )
+            return
         if not message.valid:
             detail = ";".join(message.diagnostics) or "unspecified"
             self._set_invalid(
@@ -479,7 +632,8 @@ class ObservationCNode:
         lidar_message, receipt_sec,
     ):
         message = ObservationCMessage()
-        message.header.stamp = rospy.Time.from_sec(observation.stamp_sec)
+        # Preserve the exact sec/nsec pair from the causal lidar packet.
+        message.header.stamp = lidar_message.header.stamp
         message.header.frame_id = observation.frame_id
         message.version = observation.version
         message.valid = True
@@ -524,6 +678,8 @@ class ObservationCNode:
             latest_v_max = self._v_max_buffer.latest
             previous_v_max = None if latest_v_max is None else latest_v_max[1]
             pending = len(self._pending_lidar)
+            generation = self._temporal_generation
+            barrier_stamp = self._reset_barrier_stamp
         age = math.inf if receive_time is None else max(0.0, now - receive_time)
         valid = observation is not None and not failure and age <= self._maximum_input_age
         if observation is not None and age > self._maximum_input_age:
@@ -531,13 +687,20 @@ class ObservationCNode:
             self._valid_pub.publish(Bool(data=False))
         status = DiagnosticStatus()
         status.name = rospy.get_name() + "/trajectory_fusion"
-        status.hardware_id = "EGO+FAST-LIO+Mid360(read-only)"
+        status.hardware_id = "EGO+{}+Mid360(read-only)".format(
+            self._state_source_type
+        )
         status.level = DiagnosticStatus.OK if valid else DiagnosticStatus.WARN
         status.message = "observation_c_ready" if valid else failure or "not_ready"
         values = {
             "contract_version": OBSERVATION_C_VERSION,
             "control_output": "none",
             "policy_backend": "none",
+            "state_source_type": self._state_source_type,
+            "state_contract_version": self._state_contract_version,
+            "state_velocity_source": self._state_velocity_source,
+            "state_lookup_policy": self._state_lookup_policy,
+            "require_lidar_state_provenance": self._require_lidar_state_provenance,
             "observation_stamp_sec": "" if observation is None else "{:.9f}".format(observation.stamp_sec),
             "output_frame": self._body_frame,
             "trajectory_source_frame": self._world_frame,
@@ -553,6 +716,15 @@ class ObservationCNode:
             "accepted_replans": self._accepted_replans,
             "rejected_trajectories": self._rejected_trajectories,
             "ros_time_reset_count": self._time_reset_count,
+            "temporal_generation": generation,
+            "reset_barrier_stamp_sec": "{:.9f}".format(barrier_stamp),
+            "pre_barrier_state_reject_count": self._pre_barrier_state_reject_count,
+            "pre_barrier_lidar_reject_count": self._pre_barrier_lidar_reject_count,
+            "pre_barrier_trajectory_reject_count": self._pre_barrier_trajectory_reject_count,
+            "pre_barrier_v_max_reject_count": self._pre_barrier_v_max_reject_count,
+            "generation_mismatch_count": self._generation_mismatch_count,
+            "future_state_use_count": self._future_state_use_count,
+            "future_trajectory_use_count": self._future_trajectory_use_count,
             "observation_age_sec": "inf" if not math.isfinite(age) else "{:.6f}".format(age),
         }
         status.values = [_key_value(key, value) for key, value in values.items()]

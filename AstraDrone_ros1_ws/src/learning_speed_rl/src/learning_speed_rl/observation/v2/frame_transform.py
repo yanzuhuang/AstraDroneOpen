@@ -29,6 +29,24 @@ def quaternion_to_matrix(quaternion_xyzw) -> np.ndarray:
     )
 
 
+def sensor_to_body(
+    points_sensor: np.ndarray,
+    translation_body_sensor,
+    rotation_body_sensor_xyzw,
+) -> np.ndarray:
+    """Apply one explicit rigid sensor-to-body extrinsic to row-vector points."""
+    points = np.asarray(points_sensor, dtype=np.float64)
+    translation = np.asarray(translation_body_sensor, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points_sensor must have shape [N,3]")
+    if translation.shape != (3,) or not np.all(np.isfinite(translation)):
+        raise ValueError("sensor translation must contain three finite values")
+    if not np.all(np.isfinite(points)):
+        raise ValueError("sensor points must be finite")
+    rotation_body_sensor = quaternion_to_matrix(rotation_body_sensor_xyzw)
+    return points @ rotation_body_sensor.T + translation
+
+
 def slerp_xyzw(first, second, ratio: float) -> np.ndarray:
     q0 = _unit_quaternion_xyzw(first)
     q1 = _unit_quaternion_xyzw(second)
@@ -131,3 +149,23 @@ class PoseBuffer:
             quaternion_xyzw=slerp_xyzw(before.quaternion_xyzw, after.quaternion_xyzw, ratio),
         )
         return pose, "interpolated"
+
+    def lookup_at_or_before(
+        self, stamp_sec: float, maximum_age_sec: float
+    ) -> Tuple[Optional[Pose3D], str]:
+        """Return an exact or causal past pose without consulting a future pose."""
+        if maximum_age_sec <= 0.0:
+            raise ValueError("maximum_age_sec must be positive")
+        if not self._poses:
+            return None, "pose_buffer_empty"
+        stamps = [pose.stamp_sec for pose in self._poses]
+        index = bisect_left(stamps, stamp_sec)
+        if index < len(stamps) and abs(stamps[index] - stamp_sec) <= 1.0e-9:
+            return self._poses[index], "exact"
+        previous_index = index - 1
+        if previous_index < 0:
+            return None, "cloud_precedes_pose_history"
+        previous = self._poses[previous_index]
+        if stamp_sec - previous.stamp_sec > maximum_age_sec + 1.0e-9:
+            return None, "causal_pose_too_old"
+        return previous, "causal_previous"

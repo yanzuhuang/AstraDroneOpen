@@ -13,6 +13,18 @@
   <arg name="body_frame" default="body"/>
   <arg name="sensor_frame" default="mid360_link"/>
   <arg name="trajectory_sampling_mode" default="distance"/>
+  <arg name="state_source_type" default="fast_lio_state_estimate"/>
+  <arg name="state_contract_version"
+       default="astradrone_planning_odometry_v1.0"/>
+  <arg name="state_velocity_source"
+       default="timestamped_state_position_difference_world"/>
+  <arg name="state_lookup_policy" default="interpolate"/>
+  <arg name="require_lidar_state_provenance" default="false"/>
+  <arg name="cloud_frame_mode" default="world_registered"/>
+  <arg name="v2_pose_lookup_policy" default="interpolate"/>
+  <arg name="sensor_translation_x" default="-0.011"/>
+  <arg name="sensor_translation_y" default="-0.02329"/>
+  <arg name="sensor_translation_z" default="0.04412"/>
 
   <include if="$(arg start_observation_v2)"
            file="$(find learning_speed_rl)/launch/observation_v2_lidar_surrogate.launch">
@@ -23,6 +35,13 @@
     <arg name="world_frame" value="$(arg world_frame)"/>
     <arg name="body_frame" value="$(arg body_frame)"/>
     <arg name="sensor_frame" value="$(arg sensor_frame)"/>
+    <arg name="state_source_type" value="$(arg state_source_type)"/>
+    <arg name="state_contract_version" value="$(arg state_contract_version)"/>
+    <arg name="cloud_frame_mode" value="$(arg cloud_frame_mode)"/>
+    <arg name="pose_lookup_policy" value="$(arg v2_pose_lookup_policy)"/>
+    <arg name="sensor_translation_x" value="$(arg sensor_translation_x)"/>
+    <arg name="sensor_translation_y" value="$(arg sensor_translation_y)"/>
+    <arg name="sensor_translation_z" value="$(arg sensor_translation_z)"/>
   </include>
 
   <group ns="$(arg namespace)">
@@ -37,6 +56,16 @@
       <param name="observation_c/frames/body" value="$(arg body_frame)"/>
       <param name="observation_c/trajectory_sampling_mode"
              value="$(arg trajectory_sampling_mode)"/>
+      <param name="observation_c/system_state/source_type"
+             value="$(arg state_source_type)"/>
+      <param name="observation_c/system_state/source_contract_version"
+             value="$(arg state_contract_version)"/>
+      <param name="observation_c/system_state/velocity_source"
+             value="$(arg state_velocity_source)"/>
+      <param name="observation_c/timing/state_lookup_policy"
+             value="$(arg state_lookup_policy)"/>
+      <param name="observation_c/timing/require_lidar_state_provenance"
+             value="$(arg require_lidar_state_provenance)"/>
     </node>
   </group>
 </launch>

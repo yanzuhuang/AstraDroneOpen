@@ -12,6 +12,9 @@ from learning_speed_rl.training import (
     PlannerFailureEpisodeTracker,
     PolicyStateProvenance,
     PolicyStateV1,
+    ProgressContextState,
+    ProgressRewardContext,
+    RunEpisodeProvenance,
     SacTransitionV1,
     TrackingSafetyMirror,
     causal_observation_receipt_time,
@@ -30,6 +33,28 @@ class TrainingDataContractTest(unittest.TestCase):
             previous_applied_v_max=0.12,
             provenance=PolicyStateProvenance(
                 stamp, receive, "uav1/body", "scheme_c_trajectory_fusion_v1.0", trajectory
+            ),
+        )
+
+    @staticmethod
+    def _progress_state(progress, receive, mission_state="NAVIGATING"):
+        return ProgressContextState(
+            mission_progress=progress,
+            progress_receipt_ros_time_sec=receive - 0.002,
+            mission_state=mission_state,
+            mission_state_receipt_ros_time_sec=receive - 0.003,
+            observation_receive_sec=receive,
+        )
+
+    def _reward_context(
+        self, progress_t=0.25, progress_t_plus_1=0.375,
+        receive_t=10.01, receive_t_plus_1=10.11,
+    ):
+        return ProgressRewardContext(
+            provenance=RunEpisodeProvenance("validation_A_v125", "mission_1"),
+            state_t=self._progress_state(progress_t, receive_t),
+            state_t_plus_1=self._progress_state(
+                progress_t_plus_1, receive_t_plus_1
             ),
         )
 
@@ -74,29 +99,51 @@ class TrainingDataContractTest(unittest.TestCase):
                 0.18, 10.02, 0.17, 10.03, 0.17, 10.04, trajectory
             ),
             state_t_plus_1=self._state(10.1, 10.11, trajectory),
+            reward_context=self._reward_context(),
             reward=None,
             reward_defined=False,
             terminated=False,
             truncated=False,
         )
         self.assertFalse(transition.training_ready)
-        self.assertIsNone(transition.to_record()["reward"])
+        record = transition.to_record()
+        self.assertIsNone(record["reward"])
+        self.assertEqual(record["reward_context"]["P_t"], 0.25)
+        self.assertEqual(record["reward_context"]["P_t_plus_1"], 0.375)
+        self.assertEqual(record["reward_context"]["Delta_P"], 0.125)
+        self.assertEqual(
+            record["reward_context"]["provenance"],
+            {"run_id": "validation_A_v125", "episode_id": "mission_1"},
+        )
+        self.assertNotIn("mission_progress", transition.state_t.policy_input())
+        self.assertNotIn("mission_state", transition.state_t.policy_input())
 
-    def test_rejects_state_built_from_non_latest_official_bspline(self):
+    def test_async_replan_between_state_and_action_preserves_both_provenances(self):
         old = OfficialTrajectoryIdentity(7, 9.0, "uav1/camera_init")
         latest = OfficialTrajectoryIdentity(8, 9.5, "uav1/camera_init")
-        with self.assertRaisesRegex(ValueError, "latest official B-spline"):
-            SacTransitionV1(
-                state_t=self._state(10.0, 10.01, old),
-                action_t=AppliedSpeedAction(
-                    0.18, 10.02, 0.17, 10.03, 0.17, 10.04, latest
-                ),
-                state_t_plus_1=self._state(10.1, 10.11, latest),
-                reward=None,
-                reward_defined=False,
-                terminated=False,
-                truncated=False,
-            )
+        transition = SacTransitionV1(
+            state_t=self._state(10.0, 10.01, old),
+            action_t=AppliedSpeedAction(
+                0.18, 10.02, 0.17, 10.03, 0.17, 10.04, latest
+            ),
+            state_t_plus_1=self._state(10.1, 10.11, latest),
+            reward_context=self._reward_context(),
+            reward=None,
+            reward_defined=False,
+            terminated=False,
+            truncated=False,
+        )
+        record = transition.to_record()
+        self.assertEqual(
+            record["state_t"]["provenance"]["official_trajectory"][
+                "trajectory_id"
+            ],
+            7,
+        )
+        self.assertEqual(
+            record["action_t"]["latest_official_trajectory"]["trajectory_id"],
+            8,
+        )
 
     def test_rejects_future_leakage_and_noncausal_action_order(self):
         trajectory = OfficialTrajectoryIdentity(7, 9.0, "uav1/camera_init")
@@ -109,6 +156,51 @@ class TrainingDataContractTest(unittest.TestCase):
                     0.1, 10.1, 0.1, 10.2, 0.1, 10.3, trajectory
                 ),
                 state_t_plus_1=self._state(10.4, 10.5, trajectory),
+                reward_context=self._reward_context(
+                    receive_t=10.2, receive_t_plus_1=10.5
+                ),
+                reward=None,
+                reward_defined=False,
+                terminated=False,
+                truncated=False,
+            )
+
+    def test_progress_context_rejects_future_receipts(self):
+        with self.assertRaisesRegex(ValueError, "progress was received after"):
+            ProgressContextState(
+                mission_progress=0.5,
+                progress_receipt_ros_time_sec=10.2,
+                mission_state="NAVIGATING",
+                mission_state_receipt_ros_time_sec=10.0,
+                observation_receive_sec=10.1,
+            )
+        with self.assertRaisesRegex(ValueError, "mission state was received after"):
+            ProgressContextState(
+                mission_progress=0.5,
+                progress_receipt_ros_time_sec=10.0,
+                mission_state="NAVIGATING",
+                mission_state_receipt_ros_time_sec=10.2,
+                observation_receive_sec=10.1,
+            )
+
+    def test_progress_context_preserves_raw_negative_delta_for_audit(self):
+        context = self._reward_context(0.75, 0.625)
+        self.assertAlmostEqual(context.delta_p, -0.125)
+        self.assertFalse(context.monotonic)
+        self.assertFalse(context.to_record()["monotonic"])
+
+    def test_transition_rejects_reward_context_bound_to_other_observations(self):
+        trajectory = OfficialTrajectoryIdentity(7, 9.0, "uav1/camera_init")
+        with self.assertRaisesRegex(ValueError, "not bound"):
+            SacTransitionV1(
+                state_t=self._state(10.0, 10.01, trajectory),
+                action_t=AppliedSpeedAction(
+                    0.18, 10.02, 0.17, 10.03, 0.17, 10.04, trajectory
+                ),
+                state_t_plus_1=self._state(10.1, 10.11, trajectory),
+                reward_context=self._reward_context(
+                    receive_t=10.0, receive_t_plus_1=10.11
+                ),
                 reward=None,
                 reward_defined=False,
                 terminated=False,

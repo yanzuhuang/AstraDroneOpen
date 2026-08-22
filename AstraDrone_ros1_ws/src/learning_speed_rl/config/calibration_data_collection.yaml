@@ -13,8 +13,10 @@ topics:
   official_trajectory: planning/bspline
   action_stamped: learning_speed/action_stamped
   applied_v_max: learning_speed/applied_v_max
+  applied_v_max_stamped: learning_speed/applied_v_max_stamped
   planner_status: planner/status
   mission_state: tower_mission/state
+  mission_progress: tower_mission/progress
   mission_success: tower_mission/mission_success
   mission_failure: tower_mission/mission_failure
   mission_done: tower_mission/mission_done

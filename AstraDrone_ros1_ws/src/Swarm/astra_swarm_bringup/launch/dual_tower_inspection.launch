@@ -38,6 +38,7 @@
   <arg name="learning_speed_config"
        default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
   <arg name="learning_speed_policy_mode" default="mock"/>
+  <arg name="learning_speed_mock_request_driven" default="false"/>
   <arg name="learning_speed_fixed_v_max" default="$(arg max_vel)"/>
   <arg name="uav1_bridge_config"
        default="$(find astra_swarm_bringup)/config/uav1_bridge.yaml"/>
@@ -367,6 +368,8 @@
     <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
     <arg name="learning_speed_policy_mode"
          value="$(arg learning_speed_policy_mode)"/>
+    <arg name="learning_speed_mock_request_driven"
+         value="$(arg learning_speed_mock_request_driven)"/>
     <arg name="learning_speed_fixed_v_max"
          value="$(arg learning_speed_fixed_v_max)"/>
     <arg name="entry_sector" value="$(arg uav1_entry_sector)"/>
@@ -441,6 +444,8 @@
     <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
     <arg name="learning_speed_policy_mode"
          value="$(arg learning_speed_policy_mode)"/>
+    <arg name="learning_speed_mock_request_driven"
+         value="$(arg learning_speed_mock_request_driven)"/>
     <arg name="learning_speed_fixed_v_max"
          value="$(arg learning_speed_fixed_v_max)"/>
     <arg name="entry_sector" value="$(arg uav2_entry_sector)"/>

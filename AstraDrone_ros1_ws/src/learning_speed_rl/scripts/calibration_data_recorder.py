@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only recorder for manual Learning Speed reward calibration.
+"""Read-only recorder for Learning Speed transitions with Stage 1 reward.
 
-The node has no publishers and never computes a reward.  It records diagnostic
-metrics and causally valid transition candidates under runtime_artifacts/.
+The node has no publishers.  It records diagnostics, forms the reviewed
+Stage1RewardInput from causal runtime signals, and delegates all reward
+calculation to Stage1Reward.evaluate().
 """
 
 import csv
@@ -15,17 +16,30 @@ from collections import Counter, defaultdict
 import numpy as np
 import rospy
 from astra_custom_msgs.msg import PlannerStatus
-from learning_speed_rl.msg import ObservationC, SpeedActionStamped
+from learning_speed_rl.msg import (
+    ObservationC,
+    SpeedActionStamped,
+    SpeedAppliedStamped,
+)
 from learning_speed_rl.training import (
     AppliedSpeedAction,
-    OfficialTrajectoryIdentity,
+    LIDAR_BINS,
     PlannerFailureEpisodeTracker,
-    PolicyStateProvenance,
-    PolicyStateV1,
+    ProgressContextState,
+    ProgressRewardContext,
+    RunEpisodeProvenance,
     SacTransitionV1,
     TrackingSafetyMirror,
+    actual_speed_mps_from_body_velocity,
     causal_observation_receipt_time,
+    is_causal_next_policy_state,
+    latest_official_trajectory_before,
     lidar_clutter_metrics,
+    official_trajectory_identity_from_bspline,
+    official_trajectory_identity_from_observation,
+    policy_state_from_observation_c,
+    reward_from_config,
+    stage1_reward_input_from_signals,
     validate_artifact_root,
 )
 from nav_msgs.msg import Odometry
@@ -36,6 +50,8 @@ from traj_utils.msg import Bspline
 
 
 SAMPLE_FIELDS = (
+    "run_id",
+    "episode_id",
     "environment",
     "training_active",
     "observation_stamp_sec",
@@ -65,6 +81,11 @@ SAMPLE_FIELDS = (
     "state_buffer_size",
     "state_buffer_coverage_sec",
     "latest_state_age_at_lookup_sec",
+    "state_source_type",
+    "state_contract_version",
+    "state_velocity_source",
+    "state_source_rate_hz",
+    "state_insert_rate_hz",
     "fast_lio_source_rate_hz",
     "fast_lio_state_insert_rate_hz",
     "state_insert_count",
@@ -115,6 +136,10 @@ SAMPLE_FIELDS = (
     "latest_applied_v_max_mps",
     "latest_applied_receive_sec",
     "mission_state",
+    "mission_state_receipt_ros_time_sec",
+    "mission_progress",
+    "progress_receipt_ros_time_sec",
+    "progress_context_available",
     "planner_state",
     "planner_failure_active",
     "planner_failure_reason",
@@ -147,10 +172,26 @@ class CalibrationDataRecorder:
     def __init__(self):
         self._lock = threading.RLock()
         self._run_id = str(rospy.get_param("~run_id", "manual")).strip()
+        self._episode_id = str(
+            rospy.get_param("~episode_id", "mission_1")
+        ).strip()
         self._environment = str(rospy.get_param("~environment", "")).strip()
         output_dir = str(rospy.get_param("~output_dir", "")).strip()
-        if not self._run_id or not output_dir:
-            raise rospy.ROSInitException("run_id and output_dir are required")
+        if not self._run_id or not self._episode_id or not output_dir:
+            raise rospy.ROSInitException(
+                "run_id, episode_id and output_dir are required"
+            )
+        self._run_episode = RunEpisodeProvenance(
+            run_id=self._run_id, episode_id=self._episode_id
+        )
+        try:
+            self._reward = reward_from_config(
+                {"reward": rospy.get_param("~reward")}
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise rospy.ROSInitException(
+                "invalid or missing Stage 1 reward configuration: {}".format(error)
+            )
         self._output_dir = validate_artifact_root(output_dir)
         if self._output_dir.exists() and any(self._output_dir.iterdir()):
             raise rospy.ROSInitException(
@@ -187,6 +228,8 @@ class CalibrationDataRecorder:
         self._ended_sec = None
 
         self._mission_state = ""
+        self._mission_state_receipt_ros_time_sec = None
+        self._latest_progress = None
         self._mission_started = False
         self._mission_success = False
         self._mission_failure = False
@@ -211,6 +254,8 @@ class CalibrationDataRecorder:
         self._latest_inflated_clearance = None
         self._last_clearance_stamp = {"raw": -math.inf, "inflated": -math.inf}
         self._latest_state = None
+        self._latest_reward_context = None
+        self._latest_reward_observation = None
         self._pending_transition = None
         self._last_state_key_used = None
         self._transition_terminal_written = False
@@ -222,11 +267,16 @@ class CalibrationDataRecorder:
         self._invalid_reason_counts = Counter()
         self._invalid_reason_by_phase = defaultdict(Counter)
         self._transition_candidates = 0
+        self._reward_defined_transitions = 0
+        self._reward_invalid_reasons = Counter()
         self._skipped_action_no_state = 0
-        self._skipped_action_stale_trajectory = 0
         self._skipped_action_pending = 0
         self._dropped_incomplete_transitions = 0
         self._ignored_unmatched_applied = 0
+        self._observations_missing_progress_context = 0
+        self._progress_messages = 0
+        self._progress_callback_decreases = 0
+        self._transition_negative_delta_p = 0
 
         sample_path = self._output_dir / "calibration_samples.csv"
         transition_path = self._output_dir / "transition_candidates.jsonl"
@@ -261,7 +311,16 @@ class CalibrationDataRecorder:
         rospy.Subscriber(
             topic("applied_v_max", "learning_speed/applied_v_max"),
             Float64,
-            self._applied,
+            self._applied_scalar,
+            queue_size=50,
+        )
+        rospy.Subscriber(
+            topic(
+                "applied_v_max_stamped",
+                "learning_speed/applied_v_max_stamped",
+            ),
+            SpeedAppliedStamped,
+            self._applied_stamped,
             queue_size=50,
         )
         rospy.Subscriber(
@@ -275,6 +334,12 @@ class CalibrationDataRecorder:
             String,
             self._state,
             queue_size=20,
+        )
+        rospy.Subscriber(
+            topic("mission_progress", "tower_mission/progress"),
+            Float64,
+            self._progress,
+            queue_size=50,
         )
         rospy.Subscriber(
             topic("mission_success", "tower_mission/mission_success"),
@@ -323,8 +388,9 @@ class CalibrationDataRecorder:
         )
         rospy.on_shutdown(self.finalize)
         rospy.logwarn(
-            "Learning Speed calibration recorder is read-only; output=%s; reward/SAC are disabled",
+            "Learning Speed recorder is read-only; output=%s; online reward=%s; SAC is disabled",
             self._output_dir,
+            self._reward.config.version,
         )
 
     @staticmethod
@@ -338,19 +404,11 @@ class CalibrationDataRecorder:
 
     @staticmethod
     def _trajectory_identity_from_bspline(message):
-        return OfficialTrajectoryIdentity(
-            trajectory_id=int(message.traj_id),
-            start_time_sec=message.start_time.to_sec(),
-            source_frame=message.frame_id.lstrip("/"),
-        )
+        return official_trajectory_identity_from_bspline(message)
 
     @staticmethod
     def _trajectory_identity_from_observation(message):
-        return OfficialTrajectoryIdentity(
-            trajectory_id=int(message.trajectory_id),
-            start_time_sec=message.trajectory_start_time.to_sec(),
-            source_frame=message.trajectory_source_frame.lstrip("/"),
-        )
+        return official_trajectory_identity_from_observation(message)
 
     def _trajectory(self, message):
         try:
@@ -374,7 +432,7 @@ class CalibrationDataRecorder:
         filtered_value = float(message.filtered_v_max)
         action_stamp = message.header.stamp.to_sec()
         if (
-            message.version != "learning_speed_action_v1.0"
+            message.version != "learning_speed_action_v1.1"
             or not math.isfinite(requested_value)
             or requested_value <= 0.0
             or not math.isfinite(filtered_value)
@@ -401,6 +459,9 @@ class CalibrationDataRecorder:
             if self._latest_state is None:
                 self._skipped_action_no_state += 1
                 return
+            if self._latest_reward_context is None:
+                self._skipped_action_no_state += 1
+                return
             state_key = (
                 self._latest_state.provenance.observation_stamp_sec,
                 self._latest_state.provenance.official_trajectory,
@@ -408,32 +469,29 @@ class CalibrationDataRecorder:
             if state_key == self._last_state_key_used:
                 self._skipped_action_no_state += 1
                 return
-            available = [
-                identity
-                for receive_sec, identity in self._official_trajectory_history
-                if receive_sec <= action_stamp + 1.0e-9
-            ]
-            latest_before_action = available[-1] if available else None
+            latest_before_action = latest_official_trajectory_before(
+                self._official_trajectory_history, action_stamp
+            )
             if self._latest_state.provenance.observation_receive_sec > action_stamp:
                 self._skipped_action_no_state += 1
                 return
-            if (
-                latest_before_action is None
-                or self._latest_state.provenance.official_trajectory
-                != latest_before_action
-            ):
-                self._skipped_action_stale_trajectory += 1
-                return
             self._pending_transition = {
                 "state": self._latest_state,
+                "reward_context": self._latest_reward_context,
+                "reward_observation": self._latest_reward_observation,
                 "latest_official_trajectory": latest_before_action,
                 "requested": (action_stamp, requested_value),
                 "filtered": (action_stamp, filtered_value),
                 "applied": None,
+                "identity": (
+                    str(message.episode_id),
+                    int(message.step_index),
+                    int(message.request_id),
+                ),
             }
             self._last_state_key_used = state_key
 
-    def _applied(self, message):
+    def _applied_scalar(self, message):
         value = self._finite_speed(message)
         if value is None:
             return
@@ -442,55 +500,57 @@ class CalibrationDataRecorder:
             if self._finalized:
                 return
             self._latest_applied = (now, value)
+
+    def _applied_stamped(self, message):
+        value = float(message.applied_v_max)
+        applied_stamp = message.header.stamp.to_sec()
+        now = self._now()
+        if (
+            message.version != "learning_speed_applied_v1.0"
+            or not math.isfinite(value)
+            or value <= 0.0
+            or not math.isfinite(applied_stamp)
+            or applied_stamp <= 0.0
+            or applied_stamp > now + 1.0e-6
+        ):
+            return
+        identity = (
+            str(message.episode_id),
+            int(message.step_index),
+            int(message.request_id),
+        )
+        with self._lock:
+            if self._finalized:
+                return
             if (
                 self._pending_transition is not None
                 and self._pending_transition["filtered"] is not None
                 and self._pending_transition["applied"] is None
-                and now >= self._pending_transition["filtered"][0]
             ):
-                expected = self._pending_transition["filtered"][1]
-                if abs(value - expected) <= self._applied_pair_tolerance:
-                    self._pending_transition["applied"] = (now, value)
+                filtered_stamp, expected = self._pending_transition["filtered"]
+                if (
+                    identity == self._pending_transition["identity"]
+                    and applied_stamp > filtered_stamp
+                    and abs(value - expected) <= self._applied_pair_tolerance
+                ):
+                    self._pending_transition["applied"] = (applied_stamp, value)
                 else:
                     self._ignored_unmatched_applied += 1
 
     def _policy_state(self, message, receive_sec):
-        if not message.valid:
-            return None
-        positions = np.asarray(
-            [[point.x, point.y, point.z] for point in message.future_positions_body],
-            dtype=np.float32,
-        )
-        velocity = message.actual_velocity_body
-        tracking = message.tracking_error_body
-        trajectory = self._trajectory_identity_from_observation(message)
-        return PolicyStateV1(
-            lidar_surrogate=np.asarray(message.lidar_surrogate, dtype=np.float32),
-            future_positions_body=positions,
-            actual_velocity_body=np.asarray(
-                [velocity.x, velocity.y, velocity.z], dtype=np.float32
-            ),
-            tracking_error_body=np.asarray(
-                [tracking.x, tracking.y, tracking.z], dtype=np.float32
-            ),
-            previous_applied_v_max=float(message.previous_v_max),
-            provenance=PolicyStateProvenance(
-                observation_stamp_sec=message.header.stamp.to_sec(),
-                observation_receive_sec=receive_sec,
-                body_frame=message.header.frame_id.lstrip("/"),
-                observation_version=message.version,
-                official_trajectory=trajectory,
-            ),
-        )
+        return policy_state_from_observation_c(message, receive_sec)
 
-    def _maybe_write_transition(self, next_state):
+    def _maybe_write_transition(self, next_state, next_reward_context):
         pending = self._pending_transition
-        if pending is None or pending["filtered"] is None or pending["applied"] is None:
-            return
         if (
-            next_state.provenance.observation_stamp_sec
-            <= pending["state"].provenance.observation_stamp_sec
-            or next_state.provenance.observation_receive_sec < pending["applied"][0]
+            pending is None
+            or next_reward_context is None
+            or pending["filtered"] is None
+            or pending["applied"] is None
+        ):
+            return
+        if not is_causal_next_policy_state(
+            pending["state"], next_state, pending["applied"][0]
         ):
             return
         requested_stamp, requested_value = pending["requested"]
@@ -519,15 +579,51 @@ class CalibrationDataRecorder:
                 latest_official_trajectory=pending["latest_official_trajectory"],
             ),
             state_t_plus_1=next_state,
+            reward_context=ProgressRewardContext(
+                provenance=self._run_episode,
+                state_t=pending["reward_context"],
+                state_t_plus_1=next_reward_context,
+            ),
             reward=None,
             reward_defined=False,
             terminated=bool(dangerous or mission_terminal),
             truncated=False,
             terminal_reason=";".join(reasons),
+            dangerous_terminal=dangerous,
         )
+        reward_input = stage1_reward_input_from_signals(
+            nearest_obstacle_distance_m=pending["reward_observation"][
+                "nearest_obstacle_distance_m"
+            ],
+            known_obstacle_bin_fraction=pending["reward_observation"][
+                "known_obstacle_bin_fraction"
+            ],
+            unknown_bin_count=pending["reward_observation"]["unknown_bin_count"],
+            lidar_bin_count=LIDAR_BINS,
+            applied_v_max_mps=transition.action_t.applied_v_max,
+            previous_applied_v_max_mps=transition.state_t.previous_applied_v_max,
+            actual_speed_mps=actual_speed_mps_from_body_velocity(
+                transition.state_t.actual_velocity_body
+            ),
+            dangerous_terminal=transition.dangerous_terminal,
+            terminated=transition.terminated,
+            observation_valid=True,
+            same_episode=(
+                transition.reward_context.provenance == self._run_episode
+            ),
+            truncated=transition.truncated,
+        )
+        evaluation = self._reward.evaluate(reward_input)
+        if evaluation.reward_valid:
+            transition = transition.with_defined_reward(evaluation)
+            self._reward_defined_transitions += 1
+        else:
+            self._reward_invalid_reasons[evaluation.invalid_reason] += 1
         self._transition_stream.write(json.dumps(transition.to_record()) + "\n")
         self._transition_stream.flush()
         self._transition_candidates += 1
+        if not transition.reward_context.monotonic:
+            self._transition_negative_delta_p += 1
         if transition.terminated or transition.truncated:
             self._transition_terminal_written = True
         self._pending_transition = None
@@ -568,9 +664,21 @@ class CalibrationDataRecorder:
             except (TypeError, ValueError) as error:
                 state_error = "contract_invalid:{}".format(error)
             if state is not None:
-                self._latest_state = state
                 self._valid_observations += 1
-                self._maybe_write_transition(state)
+                clutter = lidar_clutter_metrics(
+                    message.lidar_surrogate, message.lidar_semantic
+                )
+                reward_context = self._progress_context_state(receive_sec)
+                if reward_context is None:
+                    self._observations_missing_progress_context += 1
+                else:
+                    self._latest_state = state
+                    self._latest_reward_context = reward_context
+                    self._latest_reward_observation = clutter
+                    self._maybe_write_transition(state, reward_context)
+            else:
+                clutter = None
+                reward_context = self._progress_context_state(receive_sec)
 
             reasons = list(message.diagnostics)
             if state_error:
@@ -588,6 +696,8 @@ class CalibrationDataRecorder:
                 self._invalid_reason_by_phase[self._mission_state or "<empty>"][reason_key] += 1
             row.update(
                 {
+                    "run_id": self._run_id,
+                    "episode_id": self._episode_id,
                     "environment": self._environment,
                     "training_active": int(training_active),
                     "observation_stamp_sec": stamp,
@@ -640,6 +750,11 @@ class CalibrationDataRecorder:
                         "" if message.state_buffer_newest_missing
                         else message.latest_state_age_at_lookup_sec
                     ),
+                    "state_source_type": message.state_source_type,
+                    "state_contract_version": message.state_contract_version,
+                    "state_velocity_source": message.state_velocity_source,
+                    "state_source_rate_hz": message.state_source_rate_hz,
+                    "state_insert_rate_hz": message.state_insert_rate_hz,
                     "fast_lio_source_rate_hz": message.fast_lio_source_rate_hz,
                     "fast_lio_state_insert_rate_hz": message.fast_lio_state_insert_rate_hz,
                     "state_insert_count": message.state_insert_count,
@@ -676,7 +791,25 @@ class CalibrationDataRecorder:
                     "lidar_history_frames": message.lidar_history_frames,
                     "lidar_source_rate_hz": message.lidar_source_rate_hz,
                     "lidar_build_duration_ms": message.lidar_build_duration_ms,
-                    "mission_state": self._mission_state,
+                    "mission_state": (
+                        self._mission_state
+                        if reward_context is None
+                        else reward_context.mission_state
+                    ),
+                    "mission_state_receipt_ros_time_sec": (
+                        ""
+                        if reward_context is None
+                        else reward_context.mission_state_receipt_ros_time_sec
+                    ),
+                    "mission_progress": (
+                        "" if reward_context is None else reward_context.mission_progress
+                    ),
+                    "progress_receipt_ros_time_sec": (
+                        ""
+                        if reward_context is None
+                        else reward_context.progress_receipt_ros_time_sec
+                    ),
+                    "progress_context_available": int(reward_context is not None),
                     "planner_state": self._planner_state,
                     "planner_failure_active": int(self._planner_failure_active),
                     "planner_failure_reason": self._planner_failure_reason,
@@ -717,9 +850,6 @@ class CalibrationDataRecorder:
                 }
             )
             if state is not None:
-                clutter = lidar_clutter_metrics(
-                    message.lidar_surrogate, message.lidar_semantic
-                )
                 velocity = state.actual_velocity_body
                 tracking = state.tracking_error_body
                 row.update(clutter)
@@ -742,6 +872,8 @@ class CalibrationDataRecorder:
             self._sample_writer.writerow(row)
             self._sample_stream.flush()
             diagnostic_record = {
+                "run_id": self._run_id,
+                "episode_id": self._episode_id,
                 "environment": self._environment,
                 "training_active": training_active,
                 "observation_stamp_sec": stamp,
@@ -770,6 +902,11 @@ class CalibrationDataRecorder:
                     "buffer_size": message.state_buffer_size,
                     "buffer_coverage_sec": message.state_buffer_coverage_sec,
                     "latest_state_age_at_lookup_sec": row["latest_state_age_at_lookup_sec"],
+                    "state_source_type": message.state_source_type,
+                    "state_contract_version": message.state_contract_version,
+                    "state_velocity_source": message.state_velocity_source,
+                    "state_source_rate_hz": message.state_source_rate_hz,
+                    "state_insert_rate_hz": message.state_insert_rate_hz,
                     "fast_lio_source_rate_hz": message.fast_lio_source_rate_hz,
                     "state_insert_rate_hz": message.fast_lio_state_insert_rate_hz,
                     "insert_count": message.state_insert_count,
@@ -803,6 +940,9 @@ class CalibrationDataRecorder:
                 "lidar_unknown_mask": list(message.lidar_unknown_mask),
                 "lidar_semantic": list(message.lidar_semantic),
                 "mission_state": self._mission_state,
+                "reward_context": (
+                    None if reward_context is None else reward_context.to_record()
+                ),
                 "planner_state": self._planner_state,
                 "planner_failure_reason": self._planner_failure_reason,
                 "raw_filtered_nearest_point_distance_m": self._pair_value(
@@ -906,11 +1046,52 @@ class CalibrationDataRecorder:
                 int(message.consecutive_plan_failures),
             )
 
+    def _progress_context_state(self, observation_receive_sec):
+        if (
+            self._latest_progress is None
+            or not self._mission_state
+            or self._mission_state_receipt_ros_time_sec is None
+        ):
+            return None
+        progress_receipt, progress = self._latest_progress
+        if (
+            progress_receipt > observation_receive_sec
+            or self._mission_state_receipt_ros_time_sec > observation_receive_sec
+        ):
+            return None
+        return ProgressContextState(
+            mission_progress=progress,
+            progress_receipt_ros_time_sec=progress_receipt,
+            mission_state=self._mission_state,
+            mission_state_receipt_ros_time_sec=(
+                self._mission_state_receipt_ros_time_sec
+            ),
+            observation_receive_sec=observation_receive_sec,
+        )
+
     def _state(self, message):
+        now = self._now()
         with self._lock:
             self._mission_state = message.data
+            self._mission_state_receipt_ros_time_sec = now
             if message.data not in ("", "WAIT_INPUTS"):
                 self._mission_started = True
+
+    def _progress(self, message):
+        value = float(message.data)
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            return
+        now = self._now()
+        with self._lock:
+            if self._finalized:
+                return
+            if (
+                self._latest_progress is not None
+                and value < self._latest_progress[1] - 1.0e-12
+            ):
+                self._progress_callback_decreases += 1
+            self._latest_progress = (now, value)
+            self._progress_messages += 1
 
     def _success(self, message):
         with self._lock:
@@ -1009,11 +1190,16 @@ class CalibrationDataRecorder:
                 else "incomplete"
             )
             summary = {
-                "schema_version": "learning_speed_calibration_v1.0",
+                "schema_version": "learning_speed_calibration_v1.2",
                 "run_id": self._run_id,
+                "episode_id": self._episode_id,
                 "started_sec": self._started_sec,
                 "ended_sec": self._ended_sec,
-                "reward_defined": False,
+                "reward_defined": bool(
+                    self._transition_candidates > 0
+                    and self._reward_defined_transitions
+                    == self._transition_candidates
+                ),
                 "training_started": False,
                 "observation_c": {
                     "messages": self._observation_messages,
@@ -1042,12 +1228,43 @@ class CalibrationDataRecorder:
                 },
                 "transitions": {
                     "candidates": self._transition_candidates,
-                    "training_ready": 0,
+                    "training_ready": self._reward_defined_transitions,
+                    "reward_defined": self._reward_defined_transitions,
+                    "reward_undefined": (
+                        self._transition_candidates
+                        - self._reward_defined_transitions
+                    ),
                     "skipped_action_no_new_state": self._skipped_action_no_state,
-                    "skipped_action_latest_trajectory_mismatch": self._skipped_action_stale_trajectory,
                     "skipped_action_pending": self._skipped_action_pending,
                     "dropped_incomplete": self._dropped_incomplete_transitions,
                     "ignored_unmatched_applied_ack": self._ignored_unmatched_applied,
+                    "observations_missing_progress_context": self._observations_missing_progress_context,
+                    "negative_delta_p": self._transition_negative_delta_p,
+                },
+                "progress_reward_context": {
+                    "topic": "tower_mission/progress",
+                    "messages": self._progress_messages,
+                    "callback_decreases": self._progress_callback_decreases,
+                    "latest_progress": (
+                        None
+                        if self._latest_progress is None
+                        else self._latest_progress[1]
+                    ),
+                    "latest_receipt_ros_time_sec": (
+                        None
+                        if self._latest_progress is None
+                        else self._latest_progress[0]
+                    ),
+                    "used_by_stage1_reward": False,
+                    "policy_input": False,
+                },
+                "stage1_reward": {
+                    "mode": self._reward.config.mode,
+                    "version": self._reward.config.version,
+                    "defined_transitions": self._reward_defined_transitions,
+                    "invalid_evaluations": dict(self._reward_invalid_reasons),
+                    "config_source": "config/stage1_reward.yaml via private reward params",
+                    "implementation": "Stage1Reward.evaluate",
                 },
                 "safety": {
                     "collision_proxy_terminal": self._collision_terminal,

@@ -1,6 +1,7 @@
 <launch>
   <arg name="namespace" default="uav1"/>
   <arg name="run_id" default="manual"/>
+  <arg name="episode_id" default="mission_1"/>
   <arg name="environment" default=""/>
   <arg name="output_dir"
        default="$(find learning_speed_rl)/../../../runtime_artifacts/learning_speed/calibration/manual"/>
@@ -12,6 +13,8 @@
   <arg name="sensor_frame" default="$(arg namespace)/mid360_link"/>
   <arg name="config_file"
        default="$(find learning_speed_rl)/config/calibration_data_collection.yaml"/>
+  <arg name="reward_config_file"
+       default="$(find learning_speed_rl)/config/stage1_reward.yaml"/>
 
   <!-- Observation C remains read-only.  Set false when an instance is already
        running in this namespace. -->
@@ -33,7 +36,9 @@
           name="learning_speed_calibration_recorder" output="screen"
           required="true">
       <rosparam command="load" file="$(arg config_file)"/>
+      <rosparam command="load" file="$(arg reward_config_file)"/>
       <param name="run_id" value="$(arg run_id)"/>
+      <param name="episode_id" value="$(arg episode_id)"/>
       <param name="environment" value="$(arg environment)"/>
       <param name="output_dir" value="$(arg output_dir)"/>
       <rosparam subst_value="true">

@@ -4,6 +4,7 @@
        default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
   <arg name="static_max_vel" default="0.20"/>
   <arg name="policy_mode" default="mock"/>
+  <arg name="mock_request_driven" default="false"/>
   <arg name="fixed_v_max" default="$(arg static_max_vel)"/>
   <arg name="odom_topic" default="Odometry"/>
   <arg name="occupancy_topic" default="stage3/occupancy_inflate"/>
@@ -17,6 +18,8 @@
       <param name="safety/v_max_max" value="$(arg static_max_vel)"/>
       <param name="safety/initial_v_max" value="$(arg fixed_v_max)"/>
       <param name="policy/mode" value="$(arg policy_mode)"/>
+      <param name="timing/mock_request_driven"
+             value="$(arg mock_request_driven)"/>
       <param name="policy/fixed_v_max" value="$(arg fixed_v_max)"/>
       <param name="policy/mock_default_v_max" value="$(arg static_max_vel)"/>
       <param name="topics/odom" value="$(arg odom_topic)"/>

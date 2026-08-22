@@ -1,7 +1,7 @@
 """Observation v2: Mid360 history point-cloud surrogate."""
 
 from .angular_partition import AngularPartition, AngularPartitionSpec
-from .frame_transform import Pose3D, PoseBuffer
+from .frame_transform import Pose3D, PoseBuffer, sensor_to_body
 from .history_buffer import CloudFrame, CloudHistoryBuffer
 from .lidar_surrogate import LidarSurrogateBuilder, LidarSurrogateConfig
 from .timestamp import preserve_source_stamp
@@ -29,4 +29,5 @@ __all__ = [
     "Pose3D",
     "PoseBuffer",
     "preserve_source_stamp",
+    "sensor_to_body",
 ]

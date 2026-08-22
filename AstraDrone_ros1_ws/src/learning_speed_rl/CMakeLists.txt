@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  std_srvs
   traj_utils
   visualization_msgs
 )
@@ -21,7 +22,9 @@ add_message_files(
   FILES
   LidarSurrogateStamped.msg
   ObservationC.msg
+  SpeedAppliedStamped.msg
   SpeedActionStamped.msg
+  SpeedRequestStamped.msg
 )
 
 generate_messages(
@@ -33,7 +36,7 @@ generate_messages(
 catkin_package(
   CATKIN_DEPENDS astra_custom_msgs diagnostic_msgs geometry_msgs message_runtime nav_msgs
                  quadrotor_msgs rospy sensor_msgs std_msgs traj_utils
-                 visualization_msgs
+                 std_srvs visualization_msgs
 )
 
 catkin_install_python(PROGRAMS
@@ -51,6 +54,8 @@ catkin_install_python(PROGRAMS
   scripts/summarize_observation_c_final.py
   scripts/high_speed_parameter_preflight.py
   scripts/summarize_high_speed_progressive_qualification.py
+  scripts/replay_stage1_reward.py
+  scripts/astra_drone_episode_runner.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -66,8 +71,11 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_safety_filter.py)
   catkin_add_nosetests(test/test_training_artifacts.py)
   catkin_add_nosetests(test/test_training_data_contract.py)
+  catkin_add_nosetests(test/test_stage1_reward.py)
+  catkin_add_nosetests(test/test_astra_drone_env.py)
   catkin_add_nosetests(test/test_high_speed_parameter_chain.py)
   add_rostest(test/observation_c_integration.test)
   add_rostest(test/observation_v2_stamp_integration.test)
   add_rostest(test/speed_action_integration.test)
+  add_rostest(test/mock_request_driven_integration.test)
 endif()

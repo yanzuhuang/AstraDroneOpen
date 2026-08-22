@@ -43,7 +43,7 @@ AstraDroneOpen 是一个以 ROS1 为核心的无人机自主巡检研究工程�
 - D435 RGB-D 仿真接口与独立 PPE YOLO 感知；
 - Learning Speed：在不改变任务目标和安全边界的前提下，研究 EGO 最大速度约束的自适应。
 
-当前工程阶段可概括为：**三机低空绕塔工程基线已完成并有真实 SITL 闭环证据；当前活跃研究转向 Learning Speed 的 pre-reward / pre-training 数据与 Observation C 质量闭环。** 真机、正式 SAC 训练、动态障碍预测和三机视觉巡检业务闭环仍未完成。
+当前工程阶段可概括为：**三机低空绕塔工程基线已完成并有真实 SITL 闭环证据；Learning Speed Stage 1 Reward、paper-aligned 0.1 s causal transition、Episode v0.1 与 10 Hz scheduler/action identity runtime 已通过；独立 Hector training-only execution backend 已完成默认 PID 下的 EGO trajectory 与 20 次 controller reset runtime qualification。** Episode request、`SpeedActionStamped` 和 EGO applied acknowledgement 现用同一 `episode_id/step_index/request_id`；最终 UAV1 runtime 为 100 request/action/applied/transition 严格一一对应、10.0 Hz、0 timeout/causal mismatch/deadline miss，并真实到达 `max_episode_steps` truncated 边界。Hector 资格链只覆盖 `EGO -> traj_server -> PositionCommand -> Pose/Twist controllers -> Gazebo`，允许下一步独立接入 training truth odometry；正式 truth-odom、Observation C training backend、checkpoint/reset、SAC 和 full training environment 仍未实现。该 Episode run 在边界后的完整任务保留了一次 final-home `NO_FEASIBLE_TRAJECTORY` mission failure 和安全降落，不能写成 full-mission PASS；真机、正式 SAC 训练、Stage 2、动态障碍预测和三机视觉巡检业务闭环仍未完成。
 
 核心任务、规划、安全和 Learning Speed 接口不得写死 Gazebo API；仿真假设和真机契约必须分开描述。
 
@@ -73,6 +73,7 @@ AstraDroneOpen 是一个以 ROS1 为核心的无人机自主巡检研究工程�
 | `AstraDrone_ros1_ws/` | 主 ROS1 catkin 工作空间；`build/`、`devel/` 是生成物，禁止手改 |
 | `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/` | 单机巡塔任务层：八扇区、候选、ENTRY/EXIT、多层、HOLD/重试/返航与任务证据 |
 | `AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/` | `PositionCommand` 到 MAVROS raw-local 的安全执行桥、控制权检查和飞行状态机 |
+| `AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend/` | 独立 training-only `PositionCommand -> Hector Pose/Twist -> Gazebo` 后端、显式 engage/hover lifecycle 与 qualification-only reset 工具；默认不启动控制 |
 | `AstraDrone_ros1_ws/src/Planner/ego-planner/` | 当前 EGO-Swarm vendor-derived 规划核心、B 样条、traj_server 和共享轨迹接口 |
 | `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/` | Mid-360 激光惯性里程计、注册点云和 `camera_init -> body` |
 | `AstraDrone_ros1_ws/src/Swarm/` | 三机 bringup、manager、safety、TF、感知过滤和多机消息 |
@@ -216,11 +217,16 @@ Learning Speed 只研究一个受限动作：EGO 的最大速度约束 `v_max`�
 
 ```text
 fixed/mock request
-  -> SpeedSafetyFilter（clamp、hysteresis、slew、低通）
+  -> SpeedSafetyFilter（finite validation + reviewed min/max clamp）
   -> /uavN/learning_speed/v_max
-  -> EGO 动态速度上限 + 必要时连续重规划
+  -> EGO 动态速度上限；相邻 action delta 超出 [-0.3,+0.5] m/s 时额外强制一次重规划
   -> /uavN/learning_speed/applied_v_max 回执
 ```
+
+合法范围内 action 不再做 slew、low-pass、hysteresis 或 maximum-step 动态
+整形，因此正常语义是 `requested_v_max == filtered_v_max == applied_v_max`。
+区间内未触发 Learning Speed 强制重规划时，EGO 保持自身原生 replanning
+rules；旧的 replan delta、cooldown 和 filtered-speed 累计机制已删除。
 
 它不选择 waypoint，不生成轨迹，不负责碰撞检查、三机协调、MAVROS/PX4 控制或安全状态机。默认关闭；启用后也只能在 launch 审核过的静态上限内降低/恢复速度。
 
@@ -242,22 +248,44 @@ mission/planner 状态、clearance、clutter/density、lidar masks 和 diagnosti
 
 ### 8.3 Training Data Contract
 
-`learning_speed_sac_transition_v1.0` 已冻结：
+`learning_speed_sac_transition_v1.3` 已冻结：
 
 ```text
 state_t -> requested_v_max -> filtered_v_max -> applied_v_max
         -> state_t+1 -> reward -> terminated/truncated
 ```
 
-采集器检查 Observation C、正式 B 样条、action 和 applied acknowledgement 的因果顺序；真实任务/规划/安全失败必须保留，只有基础设施失败允许重试。当前每条候选仍是：
+五项 policy input 保持不变。新增的
+`learning_speed_progress_reward_context_v1.0` 只作 reward context：在
+`state_t/state_t+1` 各自记录 headerless `/tower_mission/progress`、mission
+state 及两者 receipt ROS time，并记录 run/episode provenance、`P_t`、
+`P_t_plus_1` 和 `Delta_P`；它们不进入 Observation C 或 policy input。
+采集器检查 Observation C、正式 B 样条、action、applied acknowledgement
+和 progress context 的因果顺序；真实任务/规划/安全失败必须保留，只有基础设施失败允许重试。当前 recorder 对 valid、同 episode、非 truncated 候选在线写入：
 
 ```text
-reward = null
-reward_defined = false
-training_ready = false
+reward = finite Stage 1 r_t
+reward_defined = true
+training_ready = true
 ```
 
-仓库没有 SAC actor/critic、replay/PER、训练循环或已选模型；`inference/model_runner.py` 只是未来 reviewed model 的 fail-closed 边界。**Reward stage 1 / stage 2 当前均未定义、未实现、未开始，不得猜测 φ1/φ2 或权重。**
+`astradrone_stage1_reward_v1.0` 仍只在 `training/reward.py` 实现，并由现有 `config/stage1_reward.yaml` 选择 `reward.mode=stage1`；recorder 只把与 offline replay 同语义的 runtime signals 构造成 `Stage1RewardInput` 并调用 `Stage1Reward.evaluate()`，没有第二套公式、Reward node/service/topic。v1.3 contract 只允许 valid、同 episode、非 truncated transition 绑定 versioned 分项 reward；invalid/truncated 仍不得变成 training-ready。输出保留 `reward_total/reward_speed/reward_smoothing/reward_danger/phi_1/phi_2/complexity_context`，progress context 仍不进入 Stage 1 reward。历史冻结 calibration 工件保持 reward-null，不回写。该 online 路径已通过 unit/offline 一致性验证。
+
+Stage 1 使用 Candidate C 的连续 N+D+Unknown `phi_2` 与 `phi_1=1.75-phi_2`（Unknown 固定 `phi_1=1.25, phi_2=0.5`），并连续混合论文 Eq. (10) 三个分支；最终项目标定值为 `lambda_phi_1/2=0.65/0.35`、`lambda_speed_1/2/3=1.00/0.80/0.25`、`lambda_smoothing=0.10`、`lambda_danger=2.00`。这些都是 AstraDroneOpen-specific，不是论文原参数。Reward 不含 tracking/progress；danger 只在冻结的 collision proxy / emergency / continuous tracking-safety terminal 上按当前实际速度平方产生。现有 tracking gate 不变。
+
+仓库仍没有 SAC actor/critic、replay/PER、训练循环或已选模型；`inference/model_runner.py` 只是未来 reviewed model 的 fail-closed 边界。Stage 2 未定义、未实现、未开始。
+
+`training/astra_drone_env.py` 现有唯一正式入口是 `run_episode()`：按 0.1 s ROS/sim-time grid 发布 request，不等待上一 transition 闭合；每个 pending step 独立保存 episode/step ID、strict causal state、request marker、atomic action、applied ack、trajectory provenance 与 post-hold next Observation，并一次性消费 action/applied/next-state event。Episode start 要求 valid Observation C、mission active、bridge `TRACK_EGO`、planner `EXEC_TRAJ` 和实际速度门；已有 mission success/failure、collision proxy、EGO emergency 与连续 tracking gate 负责 terminated，max-step/max-duration 负责 Episode truncated。`reset()` 仍不可用。
+
+SpeedAdapter 的 Episode 专用 `mock_request_driven=true` 模式禁用独立 mock timer；每个 `SpeedRequestStamped` 立即经过同一 `MockSpeedPolicy -> SpeedSafetyFilter -> SpeedActionStamped -> EGO` 核心。request、action 和 `SpeedAppliedStamped` 都携带相同 `episode_id/step_index/request_id`；EGO 直接消费 stamped action，scalar `v_max/applied_v_max` 只保留为状态镜像，不构成第二套正式 pairing。100 Hz repeated-value burst rostest 为 ID 1..100 的 100/100 exact FIFO action。最终 UAV1 runtime 为 100 scheduled request、100 action、100 applied ack、100 transition，10.0 Hz，median/p95 均约 0.100 s，scheduler 0 deadline miss/drop、0 timeout、0 causal mismatch，Episode window Observation C 102/102 valid（bag 宽窗口 107/107）、0 collision/emergency，100/100 finite reward；`max_episode_steps` 正确形成 `terminated=false, truncated=true`。该次 full mission 在 Episode 完成后因 final-home `NO_FEASIBLE_TRAJECTORY` 进入 mission failure landing，最终 disarmed/ON_GROUND；失败保持为 Episode-window 外的真实结果，不覆盖 identity/causal PASS，也不写成 full-mission PASS。
+
+Progress reward context 已用独立 instrumentation run
+`progress_ctx_A_v125_r01`（Environment A、1.25 m/s）完成一次完整闭环验证：
+原始 progress 为 `0 -> 1` 且无下降，waypoint `8 -> 1` 时不 reset；452
+条 transition 的 progress/state receipt、run/episode provenance、
+`P_t/P_t_plus_1/Delta_P` 因果检查全通过，负 `Delta_P` 为 0；EXIT/return/
+landing 保持 progress=1。该 run 不属于、也未修改当前 16-cell calibration
+matrix。详见 `stage1_progress_transition_validation.md`。
 
 ### 8.4 Environment A/B 与数据质量
 
@@ -280,14 +308,17 @@ training_ready = false
 
 ### 8.5 下一步边界
 
-velocity execution chain 排查已经闭环，可以进入 Stage 1 Reward 的独立设计/审计阶段；2.5 collision-proxy FAIL、actual speed、tracking、terminal 与 obstacle context 必须作为真实边界输入，不能重标或被 configured `v_max` 代替。该结论只授权设计/审计：在项目负责人进一步明确 Reward 语义前，不实现 Reward、不开始 SAC、不定义 φ1/φ2/权重，也不让任何未审查模型进入控制链。
+Stage 1 Reward 已离线验证通过：16-source frozen allowlist 有 9,670 条 active replay transition，enhanced/repeat 有 2,402 条，invalid Observation 生成 0 条 reward，NaN/inf 为 0；五个 dangerous event 尺度检查均显著为负，2.5 collision-proxy 仅作外部边界且未并入正式矩阵。online recorder 与 offline replay 的同 transition 输入/输出一致性已通过；0.1 s blocking causal contract 仍为 48/48 PASS。Episode v0.1 的 request identity runtime blocker 已解除，下一步可独立进入 Checkpoint + Soft Reset integration；checkpoint/reset、SAC、Gazebo RL training 和 Stage 2 仍未实现，且不得让未审查模型进入控制链。
+
+Hector training-only backend 已在 `0.40 m/s`、`0.80 m/s²` 的低速 EGO 资格轨迹上完成 hover、直线、转弯、连续 replan、cancel/hold、20/20 controller stop/teleport/start/engage reset 及 reset 后再跟踪；默认 Hector PID 未调，单个 Gazebo 实例内没有观察到 controller state leakage，planned-vs-actual error 保持非零。该结果只放行 training truth-odom integration，不等于正式 reset 或 full training environment。
 
 ## 9. 已实现但仍属部分验证 / 待验证
 
 - YOLO：三路推理接口已通过；三机绕塔中的非空 PPE 检测、覆盖率和业务告警闭环待验证。
 - outdoor_village：三机初始化和 UAV1 Learning Speed 飞行已通过；三机任务闭环待验证。
 - Observation C：接口与定向数据质量门通过；修复后的完整 12-run A/B 矩阵未重跑。
-- Learning Speed：fixed/mock 动态限速链和固定速度标定已通过；4.0/3.0 高速代际在 Environment B 验证到 2.0 m/s，2.5 collision-proxy FAIL 后停止；最终速度执行链排查已闭环，可进入 Stage 1 Reward 设计/审计，但 Reward/SAC 尚未实现，模型推理与泛化也未完成。
+- Learning Speed：fixed/mock 动态限速链、固定速度标定、Stage 1 Reward、online recorder、paper-aligned 0.1 s causal step 及 Episode v0.1 的 100-step identity runtime 已通过；Checkpoint + Soft Reset 可进入独立集成，但尚未实现。4.0/3.0 高速代际在 Environment B 验证到 2.0 m/s，2.5 collision-proxy FAIL 后停止。SAC、Stage 2、模型推理与泛化均未实现或验证。
+- Training simulator：Hector execution backend 的 PositionCommand adapter、默认 Pose/Twist controller lifecycle、低速 EGO tracking 和 20 次 reset qualification 已通过；正式 truth odometry adapter、simulated Mid360/Observation C training binding、SAC、Episode scheduler 与 production reset 均未实现。
 - D435：三机 RGB-D topics/TF 和 YOLO 彩色输入已接通；不参与当前规划，真实硬件外参/同步待验证。
 - 动态障碍：没有可靠目标跟踪、未来状态预测和时空动态避障闭环；静态占据更新不能称为动态避障。
 - 连续螺旋、QGIS/Cloud、ROS2、真机、集群部署和干净 clone 复现不属于当前已验收能力。
@@ -303,6 +334,7 @@ velocity execution chain 排查已经闭环，可以进入 Stage 1 Reward 的独
 | 固定航线环塔 | `scripts/run_sh/fixed_orbit_inspection.sh`；默认 preview |
 | Learning Speed 固定速度矩阵 | `scripts/run_sh/learning_speed_manual_batch.sh`；真实飞行前检查场景、路线指纹和进程 |
 | 单次固定速度标定/qualification | `scripts/run_sh/learning_speed_manual_run.sh`；Environment A/B、速度、ceiling/acceleration 代际为显式参数；高速档仍需 `--control` 与 live preflight |
+| Hector training-only backend | `hector_ego_training_backend/launch/hector_ego_training_backend.launch`；默认 `enable_control=false`、`run_qualification=false`，必须显式授权才执行 qualification；不启动 PX4/MAVROS/FAST-LIO/bridge |
 | 三路 YOLO | `AstraDrone_ros1_ws/src/Detection/yolo_detect/launch/ppe_yolo_three_uav.launch`；必须显式给模型路径/Python/设备 |
 
 `three_uav_inspection.sh` 的 `light/full` 录制写入 `runtime_artifacts/`，`none` 不创建正式结果目录。不要仅相信 wrapper 的“started/success”文字；应检查 `roslaunch.log`、`gzserver/gzclient`、MAVROS 状态、任务节点和 setpoint publisher。
@@ -376,6 +408,17 @@ git diff -- <相关文件>
 - `high_speed_parameter_chain_update_report.md`：4.0 m/s ceiling、3.0 m/s² acceleration、bridge 逐轴/范数一致性与静态 qualification 边界。
 - `high_speed_progressive_qualification_report.md`：Environment B 逐级高速结果、2.5 m/s collision-proxy failure、Observation C/控制链趋势与 Reward 前置结论。
 - `final_velocity_execution_chain_audit_report.md`：三档 request→EGO→bridge→PX4→actual 最终审计、隐藏速度限幅排除与 Stage 1 Reward 设计入口结论。
+- `stage1_progress_transition_validation.md`：transition v1.1 progress reward context、Environment A/1.25 单次 instrumentation flight 与 `PROGRESS REWARD CONTEXT READY` 结论。
+- `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_reward_v1_report.md`：Stage 1 Reward 的论文对应、AstraDroneOpen-specific `phi/lambda`、实现、单测、frozen/enhanced/repeat 离线 replay 与 `READY FOR GAZEBO SAC INTEGRATION` 边界。
+- `runtime_artifacts/stage3_online_reward_transition_integration_report.md`：Stage 1 Reward 接入 transition recorder、online/offline 一致性、package tests 与 `AstraDroneEnv.step()` 下一阶段边界。
+- `runtime_artifacts/astra_drone_env_step_v01_report.md`：UAV1 最小 causal `step()`、mock action/ack matching、ROS-time hold、timeout 单测与 runtime timing 验证边界。
+- `runtime_artifacts/astra_drone_env_runtime_step_timing_report.md`：0.5/1.0 s 首轮真实 runtime timing、pre-action trajectory race、旧动态 action shaping 与 NO-GO 边界。
+- `runtime_artifacts/learning_speed_replan_paper_alignment_report.md`：论文 Section VI-A force-replan 对齐、旧 filter/replan 清理、回归与 causality revalidation 入口。
+- `runtime_artifacts/astra_drone_env_paper_aligned_causality_report.md`：async causal contract、旧 latest-B-spline/0.5/1.0 逻辑清理、UAV1 0.1 s active-motion 结果与 Episode integration 边界。
+- `runtime_artifacts/astra_drone_episode_v01_report.md`：Episode v0.1、10 Hz action stream、多个 in-flight transition runtime mismatch、NO-GO 与 request correlation blocker。
+- `runtime_artifacts/astra_drone_action_identity_episode_revalidation_report.md`：versioned request/action/applied identity、100/100 10 Hz runtime、真实 truncated Episode、边界后 mission failure 与 Soft Reset GO 边界。
+- `runtime_artifacts/hector_ego_trajectory_backend_audit.md`：Hector controller/dynamics、EGO PositionCommand 与 reset suitability 的只读架构 GO。
+- `runtime_artifacts/hector_ego_runtime_qualification_report.md`：training-only adapter、默认 Hector PID 下的 EGO tracking、20 次 controller reset 与 truth-odom integration GO 边界。
 - `clearance_semantics_cleanup_report.md`、`pre_entry_clearance_root_cause_report.md`：净空语义与历史残余清理。
 - `worksite_mid360_startup_root_cause_report.md`：worksite terrain collision、Mid-360 和 1/2/3 机启动根因。
 - `ego_planner_工程落地学习.md`、`legacy_ego_integration.md`：历史学习路线，仅作背景，不作为当前完成度入口。
