@@ -431,7 +431,7 @@ class SpeedAdapterNode:
             str(message.episode_id),
             int(message.step_index),
             int(message.request_id),
-            stamp_sec,
+            message.header.stamp,
         )
         with self._lock:
             previous = self._last_request_identity.get(identity[0])
@@ -570,10 +570,19 @@ class SpeedAdapterNode:
     def _publish_action_outputs(self, now_sec, raw_v_max, safe_v_max, identity):
         """Atomic output implementation shared by both policy schedules."""
 
-        episode_id, step_index, request_id, request_stamp_sec = identity
+        episode_id, step_index, request_id, request_stamp = identity
+        request_stamp_sec = (
+            request_stamp.to_sec()
+            if hasattr(request_stamp, "to_sec")
+            else float(request_stamp)
+        )
         self._raw_pub.publish(Float64(data=raw_v_max))
         action = SpeedActionStamped()
-        action.header.stamp = rospy.Time.from_sec(request_stamp_sec)
+        action.header.stamp = (
+            rospy.Time(request_stamp.secs, request_stamp.nsecs)
+            if hasattr(request_stamp, "secs")
+            else rospy.Time.from_sec(request_stamp_sec)
+        )
         action.version = "learning_speed_action_v1.1"
         action.source_mode = self._policy_mode
         action.episode_id = episode_id

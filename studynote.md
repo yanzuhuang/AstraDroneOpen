@@ -872,3 +872,262 @@ rostopic echo -n 1 /uav1/Odometry
 ```
 
 排查顺序：先确认 `world` 到三架机的 `map` 都存在；再确认每架机都有 `map -> camera_init -> body`；最后检查机体和传感器静态分支。若 RViz 中三机重叠、点云漂移或 EGO-Swarm 误判队友位置，优先核对消息的 `header.frame_id`、`world -> uavN/map` 初始平移，以及 `map -> camera_init` 是否仍满足对齐条件。
+
+# 强化学习训练启动与参数修改
+
+本节只说明当前正式的 `worksite.world + Hector + SAC` training-only 路径。
+它不会启动 PX4、MAVROS、FAST-LIO 或 `ego_mavros_bridge`。当前 10k 旧 pilot
+已经 fail-closed，禁止从旧 checkpoint/replay 继续；下面的命令用于以后创建一个
+新的、独立 output directory 并从空 Replay Buffer 开始。
+
+## 1. 环境准备
+
+当前 Hector checkout 是只读外部依赖，源码位于：
+
+```text
+/home/yanzu/rl_reference/controllers/hector-quadrotor-noetic
+```
+
+Hector 的 Gazebo xacro 有构建期生成文件，因此不要直接在老师 checkout 中构建。
+首次使用或 `/tmp` 被清空后，用临时 overlay 构建最小依赖：
+
+```bash
+export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
+export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
+
+mkdir -p "$HECTOR_OVERLAY/src"
+if [ ! -f "$HECTOR_OVERLAY/devel/setup.bash" ]; then
+  cp -a /home/yanzu/rl_reference/controllers/hector-quadrotor-noetic/. \
+    "$HECTOR_OVERLAY/src/"
+  cd "$HECTOR_OVERLAY"
+  source /opt/ros/noetic/setup.bash
+  catkin_make -j2 \
+    -DCATKIN_WHITELIST_PACKAGES='hector_uav_msgs;hector_gazebo_plugins;hector_quadrotor_model;hector_quadrotor_controller;hector_quadrotor_controller_gazebo;hector_quadrotor_gazebo_plugins;hector_quadrotor_description;hector_quadrotor_gazebo;message_to_tf'
+fi
+```
+
+构建 Astra 的两个 training package：
+
+```bash
+cd "$ASTRA_ROOT"
+source /opt/ros/noetic/setup.bash
+source "$ASTRA_ROOT/simulation/sim_workspace/devel/setup.bash"
+source "$HECTOR_OVERLAY/devel/setup.bash" --extend
+
+cd "$ASTRA_ROOT/AstraDrone_ros1_ws"
+catkin_make -j2 \
+  -DCATKIN_WHITELIST_PACKAGES='hector_ego_training_backend;learning_speed_rl'
+```
+
+每个新训练终端都执行以下环境设置：
+
+```bash
+export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
+export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
+
+source /opt/ros/noetic/setup.bash
+source "$ASTRA_ROOT/simulation/sim_workspace/devel/setup.bash"
+source "$ASTRA_ROOT/AstraDrone_ros1_ws/devel/setup.bash"
+source "$HECTOR_OVERLAY/devel/setup.bash" --extend
+
+export PYTHONPATH="$ASTRA_ROOT/runtime_artifacts/sac_python_packages${PYTHONPATH:+:$PYTHONPATH}"
+export ROS_HOME=/tmp/astra_sac_user
+export ROS_LOG_DIR=/tmp/astra_sac_user/logs
+mkdir -p "$ROS_LOG_DIR"
+
+cd "$ASTRA_ROOT"
+```
+
+当前 PyTorch training dependency 已位于
+`runtime_artifacts/sac_python_packages`；固定/Mock 和 full-stack 不依赖它。启动前
+先用只读命令确认没有另一套训练 stack 占用默认 ROS/Gazebo master：
+
+```bash
+ps -eo pid,stat,cmd | rg 'rosmaster|roslaunch|gzserver|gzclient|sac_training_runner'
+```
+
+若已有用户运行，不要直接杀进程；先停止自己的旧运行或在另一个终端显式配置一组
+未占用的 `ROS_MASTER_URI`/`GAZEBO_MASTER_URI`。
+
+## 2. 启动强化训练
+
+正式 launch 文件真实存在于：
+
+```text
+AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend/
+  launch/hector_worksite_sac_training.launch
+```
+
+它现在默认加载 `learning_speed_rl/config/sac_training_v1.yaml`。Headless 新训练：
+
+```bash
+export RUN_ID="sac_controlled_$(date +%Y%m%d_%H%M%S)"
+export SAC_OUTPUT="$ASTRA_ROOT/runtime_artifacts/$RUN_ID"
+mkdir -p "$SAC_OUTPUT/logs/ros"
+export ROS_LOG_DIR="$SAC_OUTPUT/logs/ros"
+
+roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
+  output_dir:="$SAC_OUTPUT" \
+  gui:=false \
+  runner_mode:=pilot \
+  episode_count:=20 \
+  max_episode_time:=55.0 \
+  run_id:="$RUN_ID" \
+  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml"
+```
+
+需要 Gazebo GUI 时只改 `gui:=true`：
+
+```bash
+roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
+  output_dir:="$SAC_OUTPUT" \
+  gui:=true \
+  runner_mode:=pilot \
+  episode_count:=20 \
+  max_episode_time:=55.0 \
+  run_id:="$RUN_ID" \
+  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml"
+```
+
+当前 launch **没有** `target_valid_transitions:=...` 参数。训练 target 从
+`sac_training_v1.yaml` 的 `training.target_valid_transitions` 读取；当前是 10000。
+若开启一个新的实验并修改 target，还要同步检查：
+
+- `episode.max_steps=500`；无真实 early terminal 时，`episode_count` 至少应覆盖
+  `target / 500`；
+- `training.checkpoint_steps` 不能超过 target，且应包含最终 target；
+- 每次必须使用全新 `RUN_ID`/`SAC_OUTPUT`，不能覆盖或续接旧 pilot。
+
+当前建议先运行 qualification 或小规模受控实验并检查 checkpoint/evaluation，再
+决定是否做新的 10k；不要把上述命令扩成 100k/1M 默认流程。
+
+## 3. 如何停止训练
+
+正常停止方式是在启动 `roslaunch` 的终端按一次 `Ctrl-C`，等待 Gazebo、controller
+和 ROS nodes 完成 teardown。不要把 `kill -9` 当正常停止方法。
+
+pilot 只在 `training.checkpoint_steps` 指定的 environment step 保存 checkpoint；
+任意时刻 `Ctrl-C` **不会承诺额外保存一个最新 checkpoint**。因此中止后应保留：
+
+- 已经落盘的 `sac_checkpoint_step_*.pt`；
+- `sac_checkpoint_manifest.json`；
+- `sac_transition_audit.jsonl`、`sac_learner_metrics.jsonl`；
+- Episode/reset/qualification JSON 与 `logs/`。
+
+所有输出都在本次 `$SAC_OUTPUT` 下；不得移动到 `test_evidence/`，也不得覆盖历史
+runtime directory。
+
+## 4. Checkpoint
+
+pilot checkpoint 直接保存在本次 output root：
+
+```text
+$SAC_OUTPUT/sac_checkpoint_step_00000.pt
+$SAC_OUTPUT/sac_checkpoint_step_02000.pt
+...
+$SAC_OUTPUT/sac_checkpoint_manifest.json
+```
+
+qualification 模式使用名称 `sac_smoke_checkpoint.pt`。checkpoint 包含 Actor、
+Q1/Q2、target Q1/Q2、actor/critic/alpha optimizer、log-alpha、environment/update
+counters 和完整 SAC config。
+
+**当前 training resume 未实现。** `runner_mode:=pilot` 总是从新 agent 与空 Replay
+Buffer 开始，不能把 `evaluation_checkpoint_path` 冒充训练 resume。
+
+当前支持只读 deterministic evaluation，不写 training replay、不更新网络。示例：
+
+```bash
+export EVAL_ID="sac_eval_$(date +%Y%m%d_%H%M%S)"
+export EVAL_OUTPUT="$ASTRA_ROOT/runtime_artifacts/$EVAL_ID"
+
+roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
+  output_dir:="$EVAL_OUTPUT" \
+  gui:=false \
+  runner_mode:=evaluation \
+  episode_count:=3 \
+  run_id:="$EVAL_ID" \
+  evaluation_checkpoint_path:="$SAC_OUTPUT/sac_checkpoint_step_02000.pt" \
+  evaluation_checkpoint_step:=2000 \
+  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml"
+```
+
+checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。
+
+## 5. 参数在哪里修改
+
+除非开启一个新的实验，优先只改 `sac_training_v1.yaml` 中明确属于 SAC 的字段。
+路径均相对项目根目录。
+
+| 参数 | 当前值 | 文件路径 | 字段名 | 含义 | 是否建议轻易修改 |
+|---|---:|---|---|---|---|
+| total valid transitions | `10000` | `AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml` | `training.target_valid_transitions` | 新 pilot 的 valid experience target | 否；先用受控规模和 evaluation 决定 |
+| Replay Buffer capacity | `100000` | 同上 | `replay.capacity` | 最多保留多少条 transition，不是训练步数 | 否 |
+| learning starts | `1000` | 同上 | `training.learning_starts` | 到多少条经验后启用 learner/stochastic training | 否 |
+| batch size | `64` | 同上 | `sac.batch_size` | 每次 gradient update 的 replay 样本数 | 一般否 |
+| actor LR | `1e-5` | 同上 | `sac.policy_learning_rate` | Actor Adam learning rate；已针对 raw 3267-D 输入做 stability qualification | 不建议 |
+| critic LR | `1e-3` | 同上 | `sac.critic_learning_rate` | twin Q Adam learning rate | 不建议 |
+| alpha LR | `1e-3` | 同上 | `sac.alpha_learning_rate` | automatic entropy coefficient learning rate | 不建议单独试改 |
+| gamma | `0.99` | 同上 | `sac.gamma` | discounted return | 否 |
+| tau | `0.005` | 同上 | `sac.tau` | target critic Polyak update rate | 否 |
+| target entropy | `-1.0` | 同上 | `sac.target_entropy` | 一维 tanh policy 的 entropy target | 不建议 |
+| log-std range | `[-3,-1]` | 同上 | `sac.log_std_min/max` | Normal exploration std 的可训练范围 | 不建议；旧 `[-5,2]` 已失败 |
+| critic-only startup | `100 updates` | 同上 | `sac.critic_warmup_updates` | 隔离随机 critic transient 后才更新 actor/alpha | 不建议 |
+| learner update Hz | `5.0` | 同上 | `sac.updates_per_second` | 独立 wall-time learner 频率 | 一般否；需复验 10 Hz scheduler |
+| policy update frequency | `2` | 同上 | `sac.policy_frequency` | warm-up 后每 2 个 learner update 更新一次 actor/alpha | 否 |
+| seed | `1` | 同上 | `sac.seed` | NumPy/PyTorch/replay sampling seed | 比较实验可显式换，但必须记录 |
+| checkpoint steps | `[0,2000,...,10000]` | 同上 | `training.checkpoint_steps` | runner 实际保存 checkpoint 的 step allowlist | 修改 target 时同步修改 |
+| checkpoint interval | `2000` | 同上 | `training.checkpoint_interval` | 当前为实验元数据；runner 真正读取 `checkpoint_steps` | 不要只改这一项 |
+| evaluation interval | `2000` | 同上 | `training.evaluation_interval` / `evaluation_steps` | 当前为编排元数据；runner 不自动启动 evaluation | 用独立 evaluation 命令 |
+| action minimum | `0.05 m/s` | `.../config/speed_adapter.yaml` 与 `sac_training_v1.yaml` | `safety.v_max_min` / `action.expected_v_max_min` | live safety 下限及 SAC 一致性门 | 不建议 |
+| action maximum | `0.40 m/s` | worksite SAC launch 与 `sac_training_v1.yaml` | `v_max_max` / `action.expected_v_max_max` | training EGO/SafetyFilter 静态上限 | 不建议 |
+| Hover | `(0,0,3)` | `.../launch/hector_worksite_training_episode_reset.launch` | `hover_x/y/z/yaw` include args | worksite reset checkpoint | 否 |
+| ENTRY_GATE | `(-4.3148485145,5.8522070123,3)` | 同上 | `entry_x/y/z` include args | worksite 正式 Episode goal | 否 |
+| max Episode time | `55 s` coordinator；`500 steps` env | `hector_worksite_sac_training.launch` / `sac_training_v1.yaml` | `max_episode_time` / `episode.max_steps` | 最先达到者形成 terminal/truncation | 谨慎，二者一起审计 |
+| Observation C | `3267` | `.../config/observation_c_trajectory_fusion.yaml` | `expected_lidar_bins=3200`, `trajectory_sample_count=20` | 3200 + 60 + 3 + 3 + 1 | 禁止随意修改 |
+| Mid360 rate | `10 Hz` | `.../urdf/quadrotor_mid360_training.gazebo.xacro` | `sensor/update_rate` | training raw PointCloud2 source rate | 否 |
+| lidar history | `5 frames` | `.../config/observation_v2_lidar_surrogate.yaml` | `history_frames`, `minimum_history_frames` | truth-pose causal aligned history | 禁止随意修改 |
+| Stage 1 Reward | 当前 calibrated v1 | `AstraDrone_ros1_ws/src/learning_speed_rl/config/stage1_reward.yaml` | `reward.*` | 唯一正式 Reward 配置 | 本轮不修改 |
+| Reset coordinator | worksite overrides + base defaults | `.../config/training_episode_reset.yaml` 与 worksite launch | `hover_pose`, `entry_goal`, barriers/timeouts | terminal、teleport、generation 和 readiness owner | 禁止随意修改 |
+
+表中的 `...` 分别指 `AstraDrone_ros1_ws/src/learning_speed_rl` 或
+`AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend` 的对应前缀。
+
+## 6. 关键概念
+
+- `1 step = 1 transition = Replay Buffer 中 1 条经验`；前提是 identity、causality、
+  Observation 和 reward 合同全部闭合。
+- `Replay Buffer capacity` 是最多保留多少条经验，**不等于** total training
+  steps。当前 capacity 100000，pilot target 10000。
+- 一个 Episode 由若干 step 组成；当前最多 500 step，也可能因真实 terminal 提前
+  结束。真实 planner/collision/tracking failure 不得补跑来凑数。
+- `gradient update` 从 Replay Buffer 抽一个 batch 更新网络，**不等于** environment
+  step。当前 learner 约 5 update/s，而 environment scheduler 是 10 step/s。
+- `learning_starts=1000` 表示先收集 1000 条 experience；达到后才启用 learner。
+  当前又额外先做 100 次 critic-only update，再更新 actor/alpha。
+
+## 7. 当前推荐训练流程
+
+1. 使用当前 `sac_training_v1.yaml` 做 package tests 和 launch expansion。
+2. 先做 5-Episode qualification，确认至少覆盖 1000 warm-up、正式 stochastic
+   SAC 和多个 Episode；检查 action std/log-std/alpha/entropy、delta、planner、
+   reset、10 Hz、identity、replay 与 numerical gates。
+3. qualification PASS 后，创建**新的空 replay**受控训练；不要加载旧 10k pilot。
+4. 到 checkpoint step 后停止或做独立 deterministic evaluation；比较 return、
+   action distribution、planner/terminal 与 seed，而不是只看 loss。
+5. 只有多个 checkpoint/evaluation 仍稳定且真实 failure 边界清楚，才讨论扩大规模。
+   当前不默认启动 100k/1M。
+
+## 8. 不要随意修改的项目
+
+- Observation C 3267 contract；
+- 3200-bin surrogate、semantic 和 unknown estimator；
+- EGO core、clearance 和 planner 参数；
+- Hector model、Pose/Twist PID；
+- Learning Speed dynamic-`v_max` force-replan thresholds；
+- SpeedSafetyFilter `[0.05,0.40]` 与禁止 slew/low-pass/hysteresis 的合同；
+- request/action/applied Episode identity、reset generation 和 causal barriers；
+- full-stack FAST-LIO + PX4/MAVROS 路径及其独立 provenance。
+
+如需修改其中任何一项，应开启新的显式实验，使用全新 runtime ID，并保留真实
+失败；不得为了让 SAC 实验 PASS 而顺手改变它们。

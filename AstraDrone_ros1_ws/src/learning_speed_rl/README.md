@@ -251,7 +251,8 @@ part of the future model version contract.
 ## Training and artifacts
 
 `training/` contains environment/artifact boundaries, the versioned transition
-contract and the reviewed framework-neutral Stage 1 reward;
+contract, the reviewed framework-neutral Stage 1 reward, and an optional
+training-only PyTorch SAC learner;
 `inference/` contains fail-closed reviewed-model loading. Formal flight launch
 files never import training code.
 
@@ -385,8 +386,9 @@ fully closed transition. The frozen v1.3 transition remains non-truncated and
 reward-defined; the Episode boundary is recorded separately so Stage 1 reward
 semantics are not changed.
 
-`reset()` still raises `NotImplementedError`. There is no SAC, Replay Buffer,
-checkpoint, Soft/Hard Reset, teleport, normalization or multi-UAV RL. The old
+`reset()` still raises `NotImplementedError`; reset remains owned by the
+training-only Hector coordinator. `AstraDroneEnv` itself does not own a SAC
+learner, Replay Buffer, checkpoint, teleport, normalization or multi-UAV RL. The old
 blocking `step()` API, sequential wait helper, 0.2 s fallback and unused
 pre-step observation timeout were removed. Historical 0.5/1.0 s and blocking
 0.1 s runtime artifacts remain unchanged as evidence.
@@ -398,6 +400,37 @@ transition and a real `max_episode_steps` truncated boundary. The later full
 mission ended in a preserved planner-failure landing after the Episode window;
 it is not rewritten as Episode termination. See
 `runtime_artifacts/astra_drone_action_identity_episode_revalidation_report.md`.
+
+## Training-only SAC integration
+
+`training/sac.py` and `training/sac_replay.py` provide the optional SAC
+training path. They are not imported by `speed_adapter_node.py` and do not add
+a neural inference mode to flight/full-stack launches. The worksite entry is:
+
+```bash
+PYTHONPATH=/path/to/pytorch/site-packages:$PYTHONPATH \
+roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
+  output_dir:=/absolute/path/below/runtime_artifacts
+```
+
+It uses the existing request-driven adapter, `AstraDroneEnv` causal scheduler,
+Stage 1 reward, and Hector Episode/reset coordinator. The coordinator's
+`action_owner` defaults to `fixed`; the SAC launch explicitly selects `sac`,
+so fixed and SAC providers cannot own one Episode simultaneously. During
+reset, a separate `__sac_warmup_generation_N__` fixed bootstrap restores only
+the cleared applied-speed scalar and never enters a formal Episode or replay.
+
+The Actor and twin critics are 3267→256→256 MLPs. Actor output is a
+tanh-squashed one-dimensional normalized action; live SpeedSafetyFilter params
+define its affine `v_max` mapping. Learner-side normalization is disabled in
+the formal config. The current exploration-stability profile uses Actor LR
+`1e-5`, 100 critic-only startup updates and log-std `[-3,-1]`; the launch
+defaults to `config/sac_training_v1.yaml`. The former smoke config is retained
+only as the historical integration baseline. PyTorch is an optional training
+dependency pinned in `requirements-sac.txt`; fixed/mock and full-stack defaults
+remain usable without it. The consolidated runtime history and current
+training boundary are in
+`runtime_artifacts/AstraDroneOpen_强化学习训练环境与SAC交接汇总.md`.
 
 Attach the read-only manual calibration recorder to an already running stack:
 

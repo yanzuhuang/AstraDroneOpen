@@ -1,0 +1,69 @@
+<launch>
+  <!-- Formal training-only Episode + teleport reset integration profile. -->
+  <arg name="gui" default="false"/>
+  <arg name="paused" default="false"/>
+  <arg name="episode_count" default="5"/>
+  <arg name="fixed_v_max" default="0.40"/>
+  <arg name="action_owner" default="fixed"/>
+  <arg name="output_dir" default=""/>
+  <arg name="require_automated_acceptance" default="false"/>
+  <arg name="coordinator_required" default="false"/>
+  <arg name="world_name"
+       default="$(find hector_ego_training_backend)/worlds/training_observation_validation.world"/>
+  <arg name="hover_x" default="0.0"/>
+  <arg name="hover_y" default="0.0"/>
+  <arg name="hover_z" default="1.5"/>
+  <arg name="hover_yaw" default="0.0"/>
+  <arg name="entry_x" default="2.0"/>
+  <arg name="entry_y" default="0.0"/>
+  <arg name="entry_z" default="1.5"/>
+  <arg name="use_truth_registered_ego_cloud" default="false"/>
+  <arg name="max_episode_time" default="15.0"/>
+  <arg name="spawn_wall_delay" default="0.0"/>
+
+  <include file="$(find hector_ego_training_backend)/launch/hector_training_observation_c.launch">
+    <arg name="enable_control" value="true"/>
+    <arg name="run_qualification" value="false"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="fixed_v_max" value="$(arg fixed_v_max)"/>
+    <arg name="speed_policy_mode" value="mock"/>
+    <arg name="mock_request_driven" value="true"/>
+    <arg name="coordinator_managed_goals" value="true"/>
+    <arg name="world_name" value="$(arg world_name)"/>
+    <arg name="hover_x" value="$(arg hover_x)"/>
+    <arg name="hover_y" value="$(arg hover_y)"/>
+    <arg name="hover_z" value="$(arg hover_z)"/>
+    <arg name="hover_yaw" value="$(arg hover_yaw)"/>
+    <arg name="ego_cloud_topic"
+         value="$(eval 'training/cloud_registered' if arg('use_truth_registered_ego_cloud') else 'qualification/cloud')"/>
+    <arg name="start_truth_cloud_registration"
+         value="$(arg use_truth_registered_ego_cloud)"/>
+    <arg name="spawn_wall_delay" value="$(arg spawn_wall_delay)"/>
+  </include>
+
+  <group ns="uav1">
+    <node pkg="hector_ego_training_backend"
+          type="training_episode_reset_coordinator.py"
+          name="training_episode_reset_coordinator"
+          output="screen" required="$(arg coordinator_required)">
+      <rosparam command="load"
+                file="$(find hector_ego_training_backend)/config/training_episode_reset.yaml"/>
+      <param name="episode_count" value="$(arg episode_count)"/>
+      <param name="fixed_v_max" value="$(arg fixed_v_max)"/>
+      <param name="action_owner" value="$(arg action_owner)"/>
+      <param name="output_dir" value="$(arg output_dir)"/>
+      <param name="require_automated_acceptance"
+             value="$(arg require_automated_acceptance)"/>
+      <param name="max_episode_time" value="$(arg max_episode_time)"/>
+      <rosparam param="hover_pose" subst_value="true">[$(arg hover_x), $(arg hover_y), $(arg hover_z), $(arg hover_yaw)]</rosparam>
+      <rosparam param="entry_goal" subst_value="true">[$(arg entry_x), $(arg entry_y), $(arg entry_z)]</rosparam>
+      <param name="publish_synthetic_ego_cloud"
+             value="$(eval not arg('use_truth_registered_ego_cloud'))"/>
+      <param name="require_registered_ego_cloud"
+             value="$(arg use_truth_registered_ego_cloud)"/>
+      <param name="truth_cloud_clear_service"
+             value="$(eval '/uav1/truth_cloud_registration_adapter/clear_temporal_history' if arg('use_truth_registered_ego_cloud') else '')"/>
+    </node>
+  </group>
+</launch>

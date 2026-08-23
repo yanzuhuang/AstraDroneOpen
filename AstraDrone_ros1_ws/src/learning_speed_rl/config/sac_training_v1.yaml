@@ -1,0 +1,174 @@
+# AstraDroneOpen formal SAC pilot baseline v1.
+# CleanRL-derived values are reference defaults/structure, not Learning Speed
+# paper parameters. Runtime-verified means verified by the 2026-08-23 SAC
+# training-loop qualification unless a more specific source is stated.
+sac:
+  observation_dim: 3267
+  action_dim: 1
+  hidden_dim: 256
+  gamma: 0.99
+  tau: 0.005
+  batch_size: 64
+  # 2026-08-23 exploration-stability fix: 0.0003 caused a one-update actor
+  # mean collapse on the real 3267-D replay even after critic warm-up.  1e-5
+  # preserved finite learning without tanh boundary saturation in offline
+  # replay.  AstraDroneOpen calibrated; not a Learning Speed paper value.
+  policy_learning_rate: 0.00001
+  critic_learning_rate: 0.001
+  alpha_learning_rate: 0.001
+  policy_frequency: 2
+  # The failed 10k pilot and qualification02 both showed extreme actor output
+  # while the randomly initialized critics were still oscillating.  Hold only
+  # actor/alpha updates for the first 100 learner updates; critics and target
+  # critics continue updating, and environment interaction remains stochastic.
+  # This is an AstraDroneOpen startup guard, not a Learning Speed paper value.
+  critic_warmup_updates: 100
+  target_network_frequency: 1
+  # 2026-08-23 action-exploration stability fix.  The 10k pilot used [-5, 2]
+  # and showed log_std -5 -> -0.051 on a preserved real Observation while
+  # alpha accumulated 0.2 -> about 1.6; stochastic actions then reached both
+  # bounds and triggered repeated negative-delta replans.  [-3, -1] keeps the
+  # target entropy inside a trainable interval while bounding per-state Normal
+  # std to exp(-3)..exp(-1).  This is AstraDroneOpen calibrated, not paper data.
+  log_std_min: -3.0
+  log_std_max: -1.0
+  automatic_entropy_tuning: true
+  initial_alpha: 0.2
+  target_entropy: -1.0
+  device: cpu
+  torch_num_threads: 1
+  seed: 1
+  learner_side_normalization: false
+  updates_per_second: 5.0
+
+replay:
+  capacity: 100000
+  initial_allocation: 4096
+  intervention_tolerance_mps: 0.005
+
+action:
+  expected_v_max_min: 0.05
+  expected_v_max_max: 0.40
+
+episode:
+  policy_period_sec: 0.1
+  # Twenty 500-step training Episodes produce exactly 10,000 valid steps when
+  # no genuine terminal occurs. A genuine early terminal is retained and makes
+  # the 10k target NO-GO rather than being hidden by extra Episodes.
+  max_steps: 500
+  max_duration_sec: 80.0
+  start_timeout_sec: 30.0
+  completion_timeout_sec: 30.0
+  deadline_tolerance_sec: 0.02
+  maximum_in_flight: 16
+  minimum_active_speed_mps: 0.05
+
+step:
+  duration_sec: 0.1
+  action_timeout_sec: 3.0
+  applied_timeout_sec: 4.0
+  hold_timeout_sec: 30.0
+  next_observation_timeout_sec: 5.0
+  requested_match_tolerance_mps: 1.0e-6
+  applied_pair_tolerance_mps: 0.005
+
+tracking_safety:
+  limit_m: 1.0
+  duration_sec: 1.0
+
+training:
+  mode: pilot
+  target_valid_transitions: 10000
+  learning_starts: 1000
+  warmup_action_sampling: deterministic_actor_mean
+  checkpoint_steps: [0, 2000, 4000, 6000, 8000, 10000]
+  checkpoint_interval: 2000
+  evaluation_steps: [0, 2000, 4000, 6000, 8000, 10000]
+  evaluation_interval: 2000
+  evaluation_episodes: 3
+
+evaluation:
+  checkpoint_path: ""
+  checkpoint_step: 0
+  deterministic_actor: true
+  write_training_replay: false
+  network_updates: false
+
+numerical_safety:
+  # Fail-closed thresholds are deliberately far outside the smoke envelope
+  # (Q about [-55, 13], critic gradient max about 5.95e3). They detect clear
+  # numerical runaway without treating normal SAC variance as divergence.
+  q_abs_limit: 1000.0
+  q_consecutive_limit: 5
+  gradient_abs_limit: 100000.0
+  loss_abs_limit: 100000000.0
+
+qualification:
+  episode_count: 20
+  phase_a_min_transitions: 1000
+  phase_a_deterministic_actor: true
+  phase_b_min_updates: 100
+  phase_b_update_timeout_wall: 90.0
+  # Qualification-only fail-closed gates.  They do not shape actions.
+  stochastic_min_transitions: 500
+  stochastic_action_std_max: 0.45
+  stochastic_boundary_fraction_max: 0.01
+  stochastic_force_replan_delta_max: 0
+
+parameter_provenance:
+  observation_action_dimensions:
+    value: "3267 / 1"
+    source: "frozen AstraDroneOpen Observation C and Learning Speed action contract"
+    runtime_verified: true
+  hidden_dims:
+    value: [256, 256]
+    source: "reviewed CleanRL SAC structure; AstraDroneOpen smoke baseline"
+    runtime_verified: true
+  gamma_tau:
+    value: [0.99, 0.005]
+    source: "reviewed CleanRL defaults; AstraDroneOpen smoke baseline"
+    runtime_verified: true
+  actor_critic_learning_rates:
+    value: [0.00001, 0.001]
+    source: "AstraDroneOpen real-replay audit plus qualification03"
+    runtime_verified: true
+  alpha_learning_rate:
+    value: 0.001
+    source: "AstraDroneOpen smoke implementation using critic learning rate"
+    runtime_verified: true
+  entropy_and_log_std:
+    value: "automatic; initial alpha 0.2; target -1; log_std [-3,-1]"
+    source: "AstraDroneOpen 10k pilot audit plus qualification03"
+    runtime_verified: true
+  batch_size:
+    value: 64
+    source: "AstraDroneOpen explicit smoke setting"
+    runtime_verified: true
+  update_frequencies:
+    value: "learner 5/s wall time; 100 critic-only startup updates; policy every 2 updates thereafter; target every update"
+    source: "AstraDroneOpen 10k pilot audit plus qualification03"
+    runtime_verified: true
+  learning_starts:
+    value: 1000
+    source: "AstraDroneOpen smoke Phase A threshold and formal pilot request"
+    runtime_verified: true
+  warmup_exploration:
+    value: deterministic_actor_mean
+    source: "AstraDroneOpen smoke; avoids untrained stochastic large-delta replan bursts"
+    runtime_verified: true
+  replay_capacity:
+    value: 100000
+    source: "formal pilot request; logical capacity with grow-on-demand storage"
+    runtime_verified: false
+  checkpoint_evaluation_interval:
+    value: 2000
+    source: "formal pilot request"
+    runtime_verified: false
+  random_seed:
+    value: 1
+    source: "AstraDroneOpen smoke baseline"
+    runtime_verified: true
+  action_bounds_mps:
+    value: [0.05, 0.40]
+    source: "live reviewed worksite SpeedSafetyFilter bounds"
+    runtime_verified: true

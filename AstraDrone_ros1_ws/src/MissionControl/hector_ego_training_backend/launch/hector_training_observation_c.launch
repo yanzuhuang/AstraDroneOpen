@@ -6,6 +6,20 @@
   <arg name="gui" default="false"/>
   <arg name="paused" default="false"/>
   <arg name="fixed_v_max" default="0.40"/>
+  <arg name="speed_policy_mode" default="fixed"/>
+  <arg name="mock_request_driven" default="false"/>
+  <arg name="coordinator_managed_goals" default="false"/>
+  <arg name="world_name"
+       default="$(find hector_ego_training_backend)/worlds/training_observation_validation.world"/>
+  <arg name="hover_x" default="0.0"/>
+  <arg name="hover_y" default="0.0"/>
+  <arg name="hover_z" default="1.5"/>
+  <arg name="hover_yaw" default="0.0"/>
+  <arg name="ego_cloud_topic" default="qualification/cloud"/>
+  <arg name="start_truth_cloud_registration" default="false"/>
+  <arg name="truth_cloud_config"
+       default="$(find hector_ego_training_backend)/config/truth_cloud_registration.yaml"/>
+  <arg name="spawn_wall_delay" default="0.0"/>
 
   <include file="$(find hector_ego_training_backend)/launch/hector_ego_training_backend.launch">
     <arg name="enable_control" value="$(arg enable_control)"/>
@@ -13,20 +27,37 @@
     <arg name="qualification_output_dir" value="$(arg qualification_output_dir)"/>
     <arg name="gui" value="$(arg gui)"/>
     <arg name="paused" value="$(arg paused)"/>
-    <arg name="world_name"
-         value="$(find hector_ego_training_backend)/worlds/training_observation_validation.world"/>
+    <arg name="world_name" value="$(arg world_name)"/>
     <arg name="model_xacro"
          value="$(find hector_ego_training_backend)/urdf/quadrotor_mid360_training.gazebo.xacro"/>
     <arg name="dynamic_speed_limit_enabled" value="true"/>
     <arg name="require_training_observation_c" value="true"/>
     <arg name="qualification_required" value="true"/>
+    <arg name="coordinator_managed_goals"
+         value="$(arg coordinator_managed_goals)"/>
+    <arg name="hover_x" value="$(arg hover_x)"/>
+    <arg name="hover_y" value="$(arg hover_y)"/>
+    <arg name="hover_z" value="$(arg hover_z)"/>
+    <arg name="hover_yaw" value="$(arg hover_yaw)"/>
+    <arg name="ego_cloud_topic" value="$(arg ego_cloud_topic)"/>
+    <arg name="spawn_wall_delay" value="$(arg spawn_wall_delay)"/>
   </include>
+
+  <group ns="uav1" if="$(arg start_truth_cloud_registration)">
+    <node pkg="hector_ego_training_backend"
+          type="truth_cloud_registration_adapter.py"
+          name="truth_cloud_registration_adapter"
+          output="screen" required="true">
+      <rosparam command="load" file="$(arg truth_cloud_config)"/>
+    </node>
+  </group>
 
   <include file="$(find learning_speed_rl)/launch/speed_adapter.launch">
     <arg name="namespace" value="uav1"/>
     <arg name="static_max_vel" value="$(arg fixed_v_max)"/>
     <arg name="fixed_v_max" value="$(arg fixed_v_max)"/>
-    <arg name="policy_mode" value="fixed"/>
+    <arg name="policy_mode" value="$(arg speed_policy_mode)"/>
+    <arg name="mock_request_driven" value="$(arg mock_request_driven)"/>
     <arg name="odom_topic" value="Odometry"/>
     <arg name="occupancy_topic" value="qualification/cloud"/>
     <arg name="position_command_topic" value="planning/pos_cmd"/>

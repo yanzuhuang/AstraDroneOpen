@@ -230,6 +230,8 @@ class ActionRequestToken:
     request_id: int
     publish_ros_time_sec: float
     requested_v_max: float
+    publish_ros_secs: Optional[int] = None
+    publish_ros_nsecs: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -254,12 +256,14 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
         wall_clock: Callable[[], float] = time.monotonic,
         tracking_limit_m: float = 1.0,
         tracking_duration_sec: float = 1.0,
+        ros_stamp_clock: Optional[Callable[[], object]] = None,
     ):
         if not callable(publish_requested_v_max) or not callable(ros_clock):
             raise ValueError("publisher and ROS clock must be callable")
         self._publish_requested_v_max = publish_requested_v_max
         self._ros_clock = ros_clock
         self._wall_clock = wall_clock
+        self._ros_stamp_clock = ros_stamp_clock
         self._reward = reward
         self.config = config or AstraDroneStepConfig()
         self._run_episode = RunEpisodeProvenance(run_id, episode_id)
@@ -300,6 +304,11 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
         self._collision_terminal_receipt_sec = None
         self._emergency_terminal = False
         self._emergency_terminal_receipt_sec = None
+        self._external_truncated = False
+        self._external_truncated_receipt_sec = None
+        self._external_truncated_reason = ""
+        self._expected_reset_generation = None
+        self._generation_mismatch_observations = 0
         self._tracking_mirror = TrackingSafetyMirror(
             tracking_limit_m, tracking_duration_sec
         )
@@ -312,6 +321,65 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
     def request_shutdown(self):
         with self._condition:
             self._shutdown_requested = True
+            self._condition.notify_all()
+
+    def begin_external_episode(self, run_id, episode_id, reset_generation):
+        """Rebind one coordinator-owned Episode without implementing reset here."""
+
+        generation = int(reset_generation)
+        if not str(run_id) or not str(episode_id) or generation < 0:
+            raise ValueError("external Episode identity is invalid")
+        with self._episode_lock:
+            with self._condition:
+                self._run_episode = RunEpisodeProvenance(
+                    str(run_id), str(episode_id)
+                )
+                self._expected_reset_generation = generation
+                self._observations.clear()
+                self._actions.clear()
+                self._applied.clear()
+                self._seen_action_keys.clear()
+                self._seen_applied_keys.clear()
+                self._last_action_id_by_episode.clear()
+                self._last_applied_id_by_episode.clear()
+                self._trajectory_history.clear()
+                self._latest_official_trajectory = None
+                self._identity_violation = ""
+                self._mission_state = ""
+                self._mission_state_receipt_sec = None
+                self._latest_progress = None
+                self._mission_started = False
+                self._mission_done = False
+                self._mission_done_receipt_sec = None
+                self._mission_success = False
+                self._mission_success_receipt_sec = None
+                self._mission_failure = False
+                self._mission_failure_receipt_sec = None
+                self._bridge_state = ""
+                self._planner_state = ""
+                self._collision_terminal = False
+                self._collision_terminal_receipt_sec = None
+                self._emergency_terminal = False
+                self._emergency_terminal_receipt_sec = None
+                self._external_truncated = False
+                self._external_truncated_receipt_sec = None
+                self._external_truncated_reason = ""
+                self._generation_mismatch_observations = 0
+                self._tracking_mirror = TrackingSafetyMirror(
+                    self._tracking_mirror.limit_m,
+                    self._tracking_mirror.duration_sec,
+                )
+                self._condition.notify_all()
+
+    def record_external_truncation(self, reason, receive_sec=None):
+        receipt = self._now_ros() if receive_sec is None else float(receive_sec)
+        if not math.isfinite(receipt) or receipt <= 0.0 or not str(reason):
+            raise ValueError("external truncation is invalid")
+        with self._condition:
+            if not self._external_truncated:
+                self._external_truncated = True
+                self._external_truncated_receipt_sec = receipt
+                self._external_truncated_reason = str(reason)
             self._condition.notify_all()
 
     @staticmethod
@@ -622,6 +690,15 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
             message.lookup_receipt_time.to_sec(),
             message.header.stamp.to_sec(),
         )
+        if self._expected_reset_generation is not None and (
+            int(message.temporal_generation) != self._expected_reset_generation
+            or int(message.lidar_temporal_generation)
+            != self._expected_reset_generation
+        ):
+            with self._condition:
+                self._generation_mismatch_observations += 1
+            self.record_invalid_observation()
+            return None
         try:
             state = policy_state_from_observation_c(message, receive_sec)
             if state is None:
@@ -650,25 +727,29 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
     def ingest_action_stamped(self, message):
         if message.version != "learning_speed_action_v1.1":
             return None
+        stamp_sec = message.header.stamp.to_sec()
         return self.record_action_stamped(
-            stamp_sec=message.header.stamp.to_sec(),
+            stamp_sec=stamp_sec,
             episode_id=message.episode_id,
             step_index=message.step_index,
             request_id=message.request_id,
             source_mode=message.source_mode,
             requested_v_max=message.requested_v_max,
             filtered_v_max=message.filtered_v_max,
+            receive_sec=max(self._now_ros(), stamp_sec),
         )
 
     def ingest_applied_stamped(self, message):
         if message.version != "learning_speed_applied_v1.0":
             return None
+        stamp_sec = message.header.stamp.to_sec()
         return self.record_applied_stamped(
-            stamp_sec=message.header.stamp.to_sec(),
+            stamp_sec=stamp_sec,
             episode_id=message.episode_id,
             step_index=message.step_index,
             request_id=message.request_id,
             applied_v_max=message.applied_v_max,
+            receive_sec=max(self._now_ros(), stamp_sec),
         )
 
     def _terminal_snapshot(self, not_after_ros_time_sec=None):
@@ -763,7 +844,14 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
         self, requested_v_max, scheduled_sec, step_index, state_t
     ):
         requested = self._positive_finite(requested_v_max, "requested_v_max")
-        publish_sec = self._now_ros()
+        publish_stamp = (
+            None if self._ros_stamp_clock is None else self._ros_stamp_clock()
+        )
+        publish_sec = (
+            self._now_ros()
+            if publish_stamp is None
+            else float(publish_stamp.to_sec())
+        )
         with self._condition:
             if (
                 state_t.state.provenance.observation_receive_sec
@@ -781,6 +869,12 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
             request_id=request_id,
             publish_ros_time_sec=publish_sec,
             requested_v_max=requested,
+            publish_ros_secs=(
+                None if publish_stamp is None else int(publish_stamp.secs)
+            ),
+            publish_ros_nsecs=(
+                None if publish_stamp is None else int(publish_stamp.nsecs)
+            ),
         )
         self._publish_requested_v_max(token)
         return PendingCausalStep(
@@ -930,7 +1024,18 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
                         < pending.state_t.state.provenance.observation_receive_sec
                     ):
                         raise AstraDroneStepCausalityError(
-                            "action identity matched but timestamp order is invalid"
+                            "action identity matched but timestamp order is invalid: "
+                            "episode={} step={} request={} request_publish={:.9f} "
+                            "action_stamp={:.9f} action_receive={:.9f} "
+                            "state_receive={:.9f}".format(
+                                pending.request.episode_id,
+                                pending.request.step_index,
+                                pending.request.request_id,
+                                pending.request.publish_ros_time_sec,
+                                event.stamp_sec,
+                                event.receive_sec,
+                                pending.state_t.state.provenance.observation_receive_sec,
+                            )
                         )
                     pending.action_event = self._actions.pop(key)
                     pending.latest_trajectory = latest_official_trajectory_before(
@@ -1013,11 +1118,13 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
             return "state_t_plus_1", self.config.next_observation_timeout_sec
         return None
 
-    def run_episode(self, action_provider, config=None):
+    def run_episode(self, action_provider, config=None, transition_consumer=None):
         """Run the sole Episode v0.1 scheduler over one continuous mission."""
 
         if not callable(action_provider):
             raise ValueError("action_provider must be callable")
+        if transition_consumer is not None and not callable(transition_consumer):
+            raise ValueError("transition_consumer must be callable")
         episode_config = config or AstraDroneEpisodeConfig()
         if not isinstance(episode_config, AstraDroneEpisodeConfig):
             raise TypeError("config must be AstraDroneEpisodeConfig")
@@ -1101,6 +1208,8 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
                     ):
                         completed_records.append(pending.transition_record)
                         episode_return += float(pending.reward)
+                        if transition_consumer is not None:
+                            transition_consumer(pending.transition_record)
                         if pending.terminated and terminal_result is None:
                             terminal_result = pending
                             stop_scheduling = True
@@ -1132,6 +1241,19 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
                     if terminal_now.terminated and not stop_scheduling:
                         stop_scheduling = True
                         stop_reason = terminal_now.terminal_reason
+                        completion_deadline = (
+                            self._wall_clock()
+                            + episode_config.completion_timeout_sec
+                        )
+
+                    with self._condition:
+                        external_truncated = self._external_truncated
+                        external_truncated_reason = (
+                            self._external_truncated_reason
+                        )
+                    if external_truncated and not stop_scheduling:
+                        stop_scheduling = True
+                        stop_reason = external_truncated_reason
                         completion_deadline = (
                             self._wall_clock()
                             + episode_config.completion_timeout_sec
@@ -1252,8 +1374,11 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
             truncated = bool(
                 status == "completed"
                 and not terminated
-                and stop_reason
-                in ("max_episode_duration", "max_episode_steps")
+                and (
+                    self._external_truncated
+                    or stop_reason
+                    in ("max_episode_duration", "max_episode_steps")
+                )
             )
             terminal_reason = (
                 terminal_result.terminal_reason
@@ -1367,6 +1492,9 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
                     "maximum_observed_in_flight": maximum_observed_in_flight,
                     "valid_observation_count": valid_observations,
                     "invalid_observation_count": invalid_observations,
+                    "generation_mismatch_observation_count": (
+                        self._generation_mismatch_observations
+                    ),
                     "observation_valid_rate": (
                         float(valid_observations) / observation_total
                         if observation_total
@@ -1453,8 +1581,12 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
 
         def publish_request(token):
             message = SpeedRequestStamped()
-            message.header.stamp = rospy.Time.from_sec(
-                token.publish_ros_time_sec
+            message.header.stamp = (
+                rospy.Time.from_sec(token.publish_ros_time_sec)
+                if token.publish_ros_secs is None
+                else rospy.Time(
+                    token.publish_ros_secs, token.publish_ros_nsecs
+                )
             )
             message.version = "learning_speed_request_v1.0"
             message.episode_id = token.episode_id
@@ -1478,6 +1610,7 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
             tracking_duration_sec=float(
                 rospy.get_param("~tracking_safety/duration_sec", 1.0)
             ),
+            ros_stamp_clock=rospy.Time.now,
         )
         env._ros_handles.extend(
             [

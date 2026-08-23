@@ -1,0 +1,3 @@
+# Optional training-only dependency. Keep outside the default fixed/mock runtime.
+# Version matches the already documented AstraDroneOpen YOLO PyTorch baseline.
+torch==2.4.1

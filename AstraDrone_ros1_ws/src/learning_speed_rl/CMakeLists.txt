@@ -56,6 +56,8 @@ catkin_install_python(PROGRAMS
   scripts/summarize_high_speed_progressive_qualification.py
   scripts/replay_stage1_reward.py
   scripts/astra_drone_episode_runner.py
+  scripts/sac_training_runner.py
+  scripts/summarize_sac_10k_pilot.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -73,6 +75,8 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_training_data_contract.py)
   catkin_add_nosetests(test/test_stage1_reward.py)
   catkin_add_nosetests(test/test_astra_drone_env.py)
+  catkin_add_nosetests(test/test_sac.py)
+  catkin_add_nosetests(test/test_sac_replay.py)
   catkin_add_nosetests(test/test_high_speed_parameter_chain.py)
   add_rostest(test/observation_c_integration.test)
   add_rostest(test/observation_v2_stamp_integration.test)

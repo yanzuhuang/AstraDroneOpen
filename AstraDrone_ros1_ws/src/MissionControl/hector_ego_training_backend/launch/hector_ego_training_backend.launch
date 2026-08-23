@@ -18,11 +18,17 @@
   <arg name="planning_frame" default="world"/>
   <arg name="body_frame" default="base_link"/>
   <arg name="hover_z" default="1.5"/>
+  <arg name="hover_x" default="0.0"/>
+  <arg name="hover_y" default="0.0"/>
+  <arg name="hover_yaw" default="0.0"/>
+  <arg name="ego_cloud_topic" default="qualification/cloud"/>
+  <arg name="spawn_wall_delay" default="0.0"/>
   <arg name="max_vel" default="0.40"/>
   <arg name="max_acc" default="0.80"/>
   <arg name="dynamic_speed_limit_enabled" default="false"/>
   <arg name="require_training_observation_c" default="false"/>
   <arg name="qualification_required" default="false"/>
+  <arg name="coordinator_managed_goals" default="false"/>
 
   <param name="/use_sim_time" value="true"/>
 
@@ -35,14 +41,15 @@
     <arg name="debug" value="false"/>
   </include>
 
-  <include file="$(find hector_quadrotor_gazebo)/launch/spawn_quadrotor.launch">
+  <include file="$(find hector_ego_training_backend)/launch/hector_spawn_training_quadrotor.launch">
     <arg name="name" value="$(arg model_name)"/>
-    <arg name="x" value="0.0"/>
-    <arg name="y" value="0.0"/>
+    <arg name="x" value="$(arg hover_x)"/>
+    <arg name="y" value="$(arg hover_y)"/>
     <arg name="z" value="$(arg hover_z)"/>
     <arg name="world_frame" value="$(arg planning_frame)"/>
     <arg name="model" value="$(arg model_xacro)"/>
     <arg name="base_link_frame" value="$(arg body_frame)"/>
+    <arg name="spawn_wall_delay" value="$(arg spawn_wall_delay)"/>
     <arg name="use_ground_truth_for_tf" value="true"/>
     <arg name="use_ground_truth_for_control" value="true"/>
     <arg name="controller_definition"
@@ -76,7 +83,7 @@
       <arg name="odometry_topic" value="$(arg training_odom_topic)"/>
       <arg name="camera_pose_topic" value="qualification/unused_pose"/>
       <arg name="depth_topic" value="qualification/unused_depth"/>
-      <arg name="cloud_topic" value="qualification/cloud"/>
+      <arg name="cloud_topic" value="$(arg ego_cloud_topic)"/>
       <arg name="cx" value="321.04638671875"/>
       <arg name="cy" value="243.44969177246094"/>
       <arg name="fx" value="387.229248046875"/>
@@ -138,7 +145,12 @@
       <rosparam command="load"
                 file="$(find hector_ego_training_backend)/config/adapter.yaml"/>
       <param name="enable_control" value="$(arg enable_control)"/>
+      <param name="coordinator_managed_goals"
+             value="$(arg coordinator_managed_goals)"/>
       <param name="reset_hover_z" value="$(arg hover_z)"/>
+      <param name="reset_hover_x" value="$(arg hover_x)"/>
+      <param name="reset_hover_y" value="$(arg hover_y)"/>
+      <param name="reset_hover_yaw" value="$(arg hover_yaw)"/>
       <param name="topics/position_command" value="planning/pos_cmd"/>
       <param name="topics/odometry" value="$(arg training_odom_topic)"/>
       <param name="topics/goal" value="planning/goal"/>
@@ -176,6 +188,9 @@
       <param name="raw_truth_topic" value="$(arg raw_truth_topic)"/>
       <param name="adapted_odom_topic" value="$(arg training_odom_topic)"/>
       <param name="reset_hover_z" value="$(arg hover_z)"/>
+      <param name="reset_hover_x" value="$(arg hover_x)"/>
+      <param name="reset_hover_y" value="$(arg hover_y)"/>
+      <param name="reset_hover_yaw" value="$(arg hover_yaw)"/>
       <param name="require_training_observation_c"
              value="$(arg require_training_observation_c)"/>
       <param name="observation_v2_clear_service"

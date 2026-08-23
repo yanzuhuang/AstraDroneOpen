@@ -43,7 +43,7 @@ AstraDroneOpen 是一个以 ROS1 为核心的无人机自主巡检研究工程�
 - D435 RGB-D 仿真接口与独立 PPE YOLO 感知；
 - Learning Speed：在不改变任务目标和安全边界的前提下，研究 EGO 最大速度约束的自适应。
 
-当前工程阶段可概括为：**三机低空绕塔工程基线已完成并有真实 SITL 闭环证据；Learning Speed Stage 1 Reward、paper-aligned 0.1 s causal transition、Episode v0.1 与 10 Hz scheduler/action identity runtime 已通过；独立 Hector training-only execution backend 已完成默认 PID 下的 EGO trajectory 与 20 次 controller reset runtime qualification。** Episode request、`SpeedActionStamped` 和 EGO applied acknowledgement 现用同一 `episode_id/step_index/request_id`；最终 UAV1 runtime 为 100 request/action/applied/transition 严格一一对应、10.0 Hz、0 timeout/causal mismatch/deadline miss，并真实到达 `max_episode_steps` truncated 边界。Hector 资格链只覆盖 `EGO -> traj_server -> PositionCommand -> Pose/Twist controllers -> Gazebo`，允许下一步独立接入 training truth odometry；正式 truth-odom、Observation C training backend、checkpoint/reset、SAC 和 full training environment 仍未实现。该 Episode run 在边界后的完整任务保留了一次 final-home `NO_FEASIBLE_TRAJECTORY` mission failure 和安全降落，不能写成 full-mission PASS；真机、正式 SAC 训练、Stage 2、动态障碍预测和三机视觉巡检业务闭环仍未完成。
+当前工程阶段可概括为：**三机低空绕塔工程基线已有真实 SITL 闭环证据；Learning Speed 的 Stage 1 Reward、0.1 s causal transition、Episode identity、training-only Hector execution/truth odometry/Mid360 Observation C/worksite teleport reset 与 SAC training loop 均已集成。** 首次 10k pilot 在 4207 valid transitions 因真实 `NO_FEASIBLE_TRAJECTORY` 与 action exploration instability fail-closed；随后完成 SAC 根因审计和 2500-transition 短程资格验证，当前 exploration stability 配置已通过，但旧 pilot 不允许 resume，也不能把短程 PASS 写成收敛或长期训练安全。Training backend 与 FAST-LIO + PX4/MAVROS full-stack 保持 launch/process/publisher 互斥；后者仍用于后续高保真验证。真机、长程 SAC 收敛、Stage 2、动态障碍预测和三机视觉巡检业务闭环仍未完成。
 
 核心任务、规划、安全和 Learning Speed 接口不得写死 Gazebo API；仿真假设和真机契约必须分开描述。
 
@@ -61,7 +61,7 @@ AstraDroneOpen 是一个以 ROS1 为核心的无人机自主巡检研究工程�
 | 规划 | 项目适配的 EGO-Swarm 核心；包/节点仍沿用 `ego_planner` / `ego_planner_node` 名称 |
 | 相机 | 三机各一套 D435 RGB-D 仿真接口，默认启用 |
 | 视觉检测 | ROS1 `yolo_detect` + Ultralytics YOLO，模型权重由外部路径显式提供 |
-| Learning Speed | Python/ROS 节点 + EGO 动态 `v_max` 小接口；当前只有 fixed/mock source，无 SAC policy |
+| Learning Speed | Python/ROS + PyTorch SAC；动作仅为 EGO 动态 `v_max`，training-only 与 full-stack backend 互斥 |
 | 构建 | catkin、CMake 3.16.3、GCC 9.4、Python 3.8 |
 
 外部 PX4 位于 `/home/yanzu/PX4-Autopilot`，当前为 detached `99c40407ffd7ac184e2d7b4b293f36f10fe561ef`、`v1.15.4-dirty`。仓库只保存定制 PX4/Gazebo 资产，不包含完整 PX4 源码。未经项目负责人批准，不得修改、清理、切换、升级外部 PX4，也不得升级 ROS、MAVROS、Gazebo、EGO-Swarm、FAST-LIO 或第三方依赖。
@@ -73,11 +73,11 @@ AstraDroneOpen 是一个以 ROS1 为核心的无人机自主巡检研究工程�
 | `AstraDrone_ros1_ws/` | 主 ROS1 catkin 工作空间；`build/`、`devel/` 是生成物，禁止手改 |
 | `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/` | 单机巡塔任务层：八扇区、候选、ENTRY/EXIT、多层、HOLD/重试/返航与任务证据 |
 | `AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/` | `PositionCommand` 到 MAVROS raw-local 的安全执行桥、控制权检查和飞行状态机 |
-| `AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend/` | 独立 training-only `PositionCommand -> Hector Pose/Twist -> Gazebo` 后端、显式 engage/hover lifecycle 与 qualification-only reset 工具；默认不启动控制 |
+| `AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend/` | 独立 training-only Hector 执行、Gazebo truth odometry、truth cloud registration、worksite Episode/teleport reset 与 SAC launch；默认基础入口不启动控制 |
 | `AstraDrone_ros1_ws/src/Planner/ego-planner/` | 当前 EGO-Swarm vendor-derived 规划核心、B 样条、traj_server 和共享轨迹接口 |
 | `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/` | Mid-360 激光惯性里程计、注册点云和 `camera_init -> body` |
 | `AstraDrone_ros1_ws/src/Swarm/` | 三机 bringup、manager、safety、TF、感知过滤和多机消息 |
-| `AstraDrone_ros1_ws/src/learning_speed_rl/` | Observation v1/v2/C、fixed/mock speed adapter、数据合同、标定记录与未来推理边界 |
+| `AstraDrone_ros1_ws/src/learning_speed_rl/` | Observation v1/v2/C、speed adapter、Reward/transition、AstraDroneEnv、SAC/replay/checkpoint 与推理边界 |
 | `AstraDrone_ros1_ws/src/Detection/yolo_detect/` | 参数化、只读的单机/三机 PPE YOLO 推理节点 |
 | `AstraDrone_ros1_ws/src/Utils/astra_custom_msgs/` | 项目消息，包括 YOLO 检测消息；不是完整 Cloud/QGIS 业务接口 |
 | `simulation/sim_workspace/` | 下层传感器/Gazebo 插件工作空间，含 Mid-360 与 RealSense 插件 |
@@ -233,8 +233,8 @@ rules；旧的 replan delta、cooldown 和 filtered-speed 累计机制已删除�
 ### 8.2 Observation 状态
 
 - Observation v1：保留 `[4,16,48,48]` 地图张量 + 22 维低维向量合同，但当前 EGO 导出不能完整区分 free/unknown，完整轨迹通道也不足，所以 `observation_ready=false`。
-- Observation v2：只读 Mid-360 球面 surrogate，80×40=3200 bins，区分 obstacle/free/unknown；使用带时间戳的 FAST-LIO pose 历史，输出不被 policy/EGO/控制链消费。
-- Observation C：把原子 v2 surrogate、EGO 官方 `/planning/bspline` 未来位置、时间对齐的 FAST-LIO 实际速度、tracking error 和 previous applied `v_max` 融合到同一 body frame/stamp。任何缺失、越界、frame/stamp 不一致或未来数据都会 fail closed。
+- Observation v2：Mid-360 球面 surrogate，80×40=3200 bins，区分 obstacle/free/unknown；full-stack 使用 FAST-LIO pose history，training 使用 `gazebo_truth_training` causal pose history。
+- Observation C：把原子 v2 surrogate、EGO 官方 `/planning/bspline` 未来位置、时间对齐的实际速度、tracking error 和 previous applied `v_max` 融合到同一 body frame/stamp。五项值合同不随 backend 改变；source metadata 必须真实，任何缺失、越界、frame/stamp 不一致或未来数据都会 fail closed。
 
 Observation C 的五项 policy input 已冻结为：
 
@@ -273,9 +273,9 @@ training_ready = true
 
 Stage 1 使用 Candidate C 的连续 N+D+Unknown `phi_2` 与 `phi_1=1.75-phi_2`（Unknown 固定 `phi_1=1.25, phi_2=0.5`），并连续混合论文 Eq. (10) 三个分支；最终项目标定值为 `lambda_phi_1/2=0.65/0.35`、`lambda_speed_1/2/3=1.00/0.80/0.25`、`lambda_smoothing=0.10`、`lambda_danger=2.00`。这些都是 AstraDroneOpen-specific，不是论文原参数。Reward 不含 tracking/progress；danger 只在冻结的 collision proxy / emergency / continuous tracking-safety terminal 上按当前实际速度平方产生。现有 tracking gate 不变。
 
-仓库仍没有 SAC actor/critic、replay/PER、训练循环或已选模型；`inference/model_runner.py` 只是未来 reviewed model 的 fail-closed 边界。Stage 2 未定义、未实现、未开始。
+仓库已有 training-only Gaussian Actor、twin Q/target Q、automatic entropy、Replay Buffer、异步 learner、checkpoint 与 qualification/pilot/evaluation runner；没有 PER、已收敛模型、生产 inference 策略或 Stage 2。`inference/model_runner.py` 仍只是 reviewed model 的 fail-closed 边界。
 
-`training/astra_drone_env.py` 现有唯一正式入口是 `run_episode()`：按 0.1 s ROS/sim-time grid 发布 request，不等待上一 transition 闭合；每个 pending step 独立保存 episode/step ID、strict causal state、request marker、atomic action、applied ack、trajectory provenance 与 post-hold next Observation，并一次性消费 action/applied/next-state event。Episode start 要求 valid Observation C、mission active、bridge `TRACK_EGO`、planner `EXEC_TRAJ` 和实际速度门；已有 mission success/failure、collision proxy、EGO emergency 与连续 tracking gate 负责 terminated，max-step/max-duration 负责 Episode truncated。`reset()` 仍不可用。
+`training/astra_drone_env.py` 的正式入口是 `run_episode()`：按 0.1 s ROS/sim-time grid 发布 request，不等待上一 transition 闭合；每个 pending step 独立保存 episode/step ID、strict causal state、request marker、atomic action、applied ack、trajectory provenance 与 post-hold next Observation，并一次性消费 action/applied/next-state event。full-stack readiness 使用 mission/bridge/planner；training profile 使用 Hector coordinator/adapter identity。`AstraDroneEnv.reset()` 仍不直接拥有 reset，正式 training reset 由外部 coordinator 独占。
 
 SpeedAdapter 的 Episode 专用 `mock_request_driven=true` 模式禁用独立 mock timer；每个 `SpeedRequestStamped` 立即经过同一 `MockSpeedPolicy -> SpeedSafetyFilter -> SpeedActionStamped -> EGO` 核心。request、action 和 `SpeedAppliedStamped` 都携带相同 `episode_id/step_index/request_id`；EGO 直接消费 stamped action，scalar `v_max/applied_v_max` 只保留为状态镜像，不构成第二套正式 pairing。100 Hz repeated-value burst rostest 为 ID 1..100 的 100/100 exact FIFO action。最终 UAV1 runtime 为 100 scheduled request、100 action、100 applied ack、100 transition，10.0 Hz，median/p95 均约 0.100 s，scheduler 0 deadline miss/drop、0 timeout、0 causal mismatch，Episode window Observation C 102/102 valid（bag 宽窗口 107/107）、0 collision/emergency，100/100 finite reward；`max_episode_steps` 正确形成 `terminated=false, truncated=true`。该次 full mission 在 Episode 完成后因 final-home `NO_FEASIBLE_TRAJECTORY` 进入 mission failure landing，最终 disarmed/ON_GROUND；失败保持为 Episode-window 外的真实结果，不覆盖 identity/causal PASS，也不写成 full-mission PASS。
 
@@ -306,19 +306,40 @@ matrix。详见 `stage1_progress_transition_validation.md`。
 - `runtime_artifacts/learning_speed/calibration/manual_calibration_analysis.json`；
 - `runtime_artifacts/learning_speed/calibration/observation_c_final_data_quality_report.md`。
 
-### 8.5 下一步边界
+### 8.5 强化学习 / Learning Speed Training
 
-Stage 1 Reward 已离线验证通过：16-source frozen allowlist 有 9,670 条 active replay transition，enhanced/repeat 有 2,402 条，invalid Observation 生成 0 条 reward，NaN/inf 为 0；五个 dangerous event 尺度检查均显著为负，2.5 collision-proxy 仅作外部边界且未并入正式矩阵。online recorder 与 offline replay 的同 transition 输入/输出一致性已通过；0.1 s blocking causal contract 仍为 48/48 PASS。Episode v0.1 的 request identity runtime blocker 已解除，下一步可独立进入 Checkpoint + Soft Reset integration；checkpoint/reset、SAC、Gazebo RL training 和 Stage 2 仍未实现，且不得让未审查模型进入控制链。
+研究目标仍是只用一维 SAC action 自适应 EGO `v_max`，不让 policy 选择 waypoint、生成轨迹或直接控制 Hector/PX4。当前 training-only 正式链是：
 
-Hector training-only backend 已在 `0.40 m/s`、`0.80 m/s²` 的低速 EGO 资格轨迹上完成 hover、直线、转弯、连续 replan、cancel/hold、20/20 controller stop/teleport/start/engage reset 及 reset 后再跟踪；默认 Hector PID 未调，单个 Gazebo 实例内没有观察到 controller state leakage，planned-vs-actual error 保持非零。该结果只放行 training truth-odom integration，不等于正式 reset 或 full training environment。
+```text
+worksite.world + Hector UAV
+  -> Gazebo truth odometry (`gazebo_truth_training`, world/base_link)
+  + simulated Mid360 PointCloud2 (10 Hz, mid360_link)
+  -> truth-pose five-frame alignment -> frozen 3200 surrogate
+  -> Observation C 3267
+  -> SAC normalized action -> v_max [0.05, 0.40] m/s
+  -> SpeedSafetyFilter -> stamped EGO dynamic v_max
+  -> EGO -> traj_server -> Hector Pose/Twist controllers
+  -> terminal -> controller stop/pause/teleport zero-twist/start/engage
+  -> generation barrier + five-frame warm-up -> next Episode
+```
+
+Training backend 不启动 FAST-LIO、PX4、MAVROS 或 EgoMavrosBridge。Full-stack 仍是 `Mid360 -> FAST-LIO -> EGO -> bridge -> MAVROS/PX4`，用于后续高保真验证；两条 `/uav1/Odometry`/execution path 必须通过 launch、process 和 publisher 互斥，不能同时运行。
+
+已完成里程碑：Hector trajectory backend；Gazebo truth 替代 training FAST-LIO state；Mid360 + truth pose 的五帧 3200 surrogate 与 Observation C 3267；正式 worksite Episode/teleport reset；SAC actor/critic/replay/checkpoint training-loop integration；一次 fail-closed 10k pilot；随后 action exploration stability 根因修复与短程 PASS。详细历史统一见 `runtime_artifacts/AstraDroneOpen_强化学习训练环境与SAC交接汇总.md`。
+
+当前正式 SAC 配置是 `learning_speed_rl/config/sac_training_v1.yaml`：Replay Buffer logical capacity `100000`，`learning_starts=1000`，batch `64`，Actor/Critic LR `1e-5/1e-3`，alpha LR `1e-3`，100 次 critic-only startup update，log-std `[-3,-1]`，automatic alpha/target entropy `-1`，action/v_max `[0.05,0.40] m/s`。这些是 AstraDroneOpen 经 runtime 校准的工程值，不是 Learning Speed 论文参数。正式 launch 默认加载该配置；`sac_training_smoke.yaml` 只保留旧 integration 基线。
+
+10k pilot 在 4207 valid transitions fail-closed，旧 checkpoint/replay 不允许恢复继续。修复后的 qualification 覆盖 2500 transitions、1500 stochastic steps、5 Episodes，action boundary/delta force-replan、planner/collision、reset、identity、10 Hz、replay、loss/Q/gradient/checkpoint 门均通过。该 PASS 只放行**新的、从空 replay 开始的受控训练**；下一步应先看 checkpoint 和 deterministic evaluation，再决定是否扩大规模，不能默认直接进入 100k/1M。training resume 当前未实现；Stage 2、PER、模型部署、full-stack transfer 和真机验证均待完成。
+
+长期规则：不得为训练 PASS 给 SafetyFilter 加 slew/low-pass/hysteresis，不改 `[0.05,0.40]`、Learning Speed replan 阈值、Reward、Observation C、EGO core 或 Hector PID；真实 planner/collision/tracking failure 必须保留。SAC exploration 参数必须写入 config 并经独立 runtime 资格验证。
 
 ## 9. 已实现但仍属部分验证 / 待验证
 
 - YOLO：三路推理接口已通过；三机绕塔中的非空 PPE 检测、覆盖率和业务告警闭环待验证。
 - outdoor_village：三机初始化和 UAV1 Learning Speed 飞行已通过；三机任务闭环待验证。
 - Observation C：接口与定向数据质量门通过；修复后的完整 12-run A/B 矩阵未重跑。
-- Learning Speed：fixed/mock 动态限速链、固定速度标定、Stage 1 Reward、online recorder、paper-aligned 0.1 s causal step 及 Episode v0.1 的 100-step identity runtime 已通过；Checkpoint + Soft Reset 可进入独立集成，但尚未实现。4.0/3.0 高速代际在 Environment B 验证到 2.0 m/s，2.5 collision-proxy FAIL 后停止。SAC、Stage 2、模型推理与泛化均未实现或验证。
-- Training simulator：Hector execution backend 的 PositionCommand adapter、默认 Pose/Twist controller lifecycle、低速 EGO tracking 和 20 次 reset qualification 已通过；正式 truth odometry adapter、simulated Mid360/Observation C training binding、SAC、Episode scheduler 与 production reset 均未实现。
+- Learning Speed：fixed/mock、Reward、causal Episode identity、training-only SAC loop 和 action exploration 短程稳定性均已通过；长程收敛、resume、Stage 2、模型推理、full-stack transfer 与泛化未验证。4.0/3.0 高速代际在 Environment B 验证到 2.0 m/s，2.5 collision-proxy FAIL 后停止。
+- Training simulator：Hector execution、truth odometry、Mid360/Observation C、worksite Episode/teleport reset 与 SAC 已集成；这是 lightweight training backend，不等于 PX4/FAST-LIO high-fidelity 或 production reset。
 - D435：三机 RGB-D topics/TF 和 YOLO 彩色输入已接通；不参与当前规划，真实硬件外参/同步待验证。
 - 动态障碍：没有可靠目标跟踪、未来状态预测和时空动态避障闭环；静态占据更新不能称为动态避障。
 - 连续螺旋、QGIS/Cloud、ROS2、真机、集群部署和干净 clone 复现不属于当前已验收能力。
@@ -335,6 +356,7 @@ Hector training-only backend 已在 `0.40 m/s`、`0.80 m/s²` 的低速 EGO 资�
 | Learning Speed 固定速度矩阵 | `scripts/run_sh/learning_speed_manual_batch.sh`；真实飞行前检查场景、路线指纹和进程 |
 | 单次固定速度标定/qualification | `scripts/run_sh/learning_speed_manual_run.sh`；Environment A/B、速度、ceiling/acceleration 代际为显式参数；高速档仍需 `--control` 与 live preflight |
 | Hector training-only backend | `hector_ego_training_backend/launch/hector_ego_training_backend.launch`；默认 `enable_control=false`、`run_qualification=false`，必须显式授权才执行 qualification；不启动 PX4/MAVROS/FAST-LIO/bridge |
+| Worksite SAC training | `hector_ego_training_backend/launch/hector_worksite_sac_training.launch`；默认 headless、正式 config 为 `sac_training_v1.yaml`，必须显式给 `output_dir`；不支持从旧 pilot resume |
 | 三路 YOLO | `AstraDrone_ros1_ws/src/Detection/yolo_detect/launch/ppe_yolo_three_uav.launch`；必须显式给模型路径/Python/设备 |
 
 `three_uav_inspection.sh` 的 `light/full` 录制写入 `runtime_artifacts/`，`none` 不创建正式结果目录。不要仅相信 wrapper 的“started/success”文字；应检查 `roslaunch.log`、`gzserver/gzclient`、MAVROS 状态、任务节点和 setpoint publisher。
@@ -417,8 +439,7 @@ git diff -- <相关文件>
 - `runtime_artifacts/astra_drone_env_paper_aligned_causality_report.md`：async causal contract、旧 latest-B-spline/0.5/1.0 逻辑清理、UAV1 0.1 s active-motion 结果与 Episode integration 边界。
 - `runtime_artifacts/astra_drone_episode_v01_report.md`：Episode v0.1、10 Hz action stream、多个 in-flight transition runtime mismatch、NO-GO 与 request correlation blocker。
 - `runtime_artifacts/astra_drone_action_identity_episode_revalidation_report.md`：versioned request/action/applied identity、100/100 10 Hz runtime、真实 truncated Episode、边界后 mission failure 与 Soft Reset GO 边界。
-- `runtime_artifacts/hector_ego_trajectory_backend_audit.md`：Hector controller/dynamics、EGO PositionCommand 与 reset suitability 的只读架构 GO。
-- `runtime_artifacts/hector_ego_runtime_qualification_report.md`：training-only adapter、默认 Hector PID 下的 EGO tracking、20 次 controller reset 与 truth-odom integration GO 边界。
+- `runtime_artifacts/AstraDroneOpen_强化学习训练环境与SAC交接汇总.md`：Hector lightweight backend、truth odometry、Mid360/Observation C、Episode/reset、worksite、SAC integration、10k NO-GO 与 action stability PASS 的统一交接入口。
 - `clearance_semantics_cleanup_report.md`、`pre_entry_clearance_root_cause_report.md`：净空语义与历史残余清理。
 - `worksite_mid360_startup_root_cause_report.md`：worksite terrain collision、Mid-360 和 1/2/3 机启动根因。
 - `ego_planner_工程落地学习.md`、`legacy_ego_integration.md`：历史学习路线，仅作背景，不作为当前完成度入口。

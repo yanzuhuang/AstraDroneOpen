@@ -73,6 +73,9 @@ class PositionCommandToHector:
             rospy.get_param("~hover_ready_duration", 1.0)
         )
         self._auto_engage = bool(rospy.get_param("~auto_engage", True))
+        self._coordinator_managed_goals = bool(
+            rospy.get_param("~coordinator_managed_goals", False)
+        )
         self._reset_hover = (
             float(rospy.get_param("~reset_hover_x", 0.0)),
             float(rospy.get_param("~reset_hover_y", 0.0)),
@@ -110,6 +113,7 @@ class PositionCommandToHector:
         self._output_enabled = self._enable_control
         self._accept_commands = False
         self._goal_stamp = rospy.Time(0)
+        self._trajectory_gate_armed = not self._coordinator_managed_goals
         self._cancelled_trajectory_id = 0
         self._required_trajectory_id_gt = 0
         self._last_rejection = ""
@@ -227,6 +231,10 @@ class PositionCommandToHector:
         self._engage_service = rospy.Service(
             "~engage", Trigger, self._engage_service_callback
         )
+        self._activate_trajectory_service = rospy.Service(
+            "~activate_trajectory", Trigger,
+            self._activate_trajectory_service_callback,
+        )
 
         self._acceleration_consumed_pub.publish(Bool(data=False))
         self._command_timer = rospy.Timer(
@@ -335,12 +343,17 @@ class PositionCommandToHector:
                 # generation. Never jump back to the startup/reset hover.
                 self._latch_hold_locked(self._actual_odom)
             self._goal_stamp = message.header.stamp
-            self._accept_commands = True
+            self._trajectory_gate_armed = not self._coordinator_managed_goals
+            self._accept_commands = self._trajectory_gate_armed
             self._last_command = None
             self._last_command_sample = None
             self._last_rejection = ""
             if self._mode not in ("RESET_PAUSED", "DISABLED"):
-                self._mode = "WAIT_NEW_TRAJECTORY"
+                self._mode = (
+                    "WAIT_NEW_TRAJECTORY"
+                    if self._accept_commands
+                    else "WAIT_EPISODE_ACTIVATION"
+                )
 
     def _cancel_callback(self, _message):
         with self._lock:
@@ -350,6 +363,8 @@ class PositionCommandToHector:
                     self._last_command_sample.trajectory_id,
                 )
             self._accept_commands = False
+            self._trajectory_gate_armed = False
+            self._goal_stamp = rospy.Time(0)
             self._last_command = None
             self._last_command_sample = None
             self._required_trajectory_id_gt = max(
@@ -428,6 +443,8 @@ class PositionCommandToHector:
             self._last_command = None
             self._last_command_sample = None
             self._accept_commands = False
+            self._trajectory_gate_armed = False
+            self._goal_stamp = rospy.Time(0)
             self._mode = "STALE_HOLD"
             self._last_rejection = "command_stream_stale"
             self._stale_hold_count += 1
@@ -563,6 +580,8 @@ class PositionCommandToHector:
                 return TriggerResponse(False, "odometry unavailable")
             self._latch_hold_locked(self._actual_odom)
             self._accept_commands = False
+            self._trajectory_gate_armed = False
+            self._goal_stamp = rospy.Time(0)
             self._last_command = None
             self._last_command_sample = None
             self._mode = "SERVICE_HOLD"
@@ -572,6 +591,8 @@ class PositionCommandToHector:
     def _prepare_reset_callback(self, _request):
         with self._lock:
             self._accept_commands = False
+            self._trajectory_gate_armed = False
+            self._goal_stamp = rospy.Time(0)
             self._last_command = None
             self._last_command_sample = None
             self._output_enabled = False
@@ -589,6 +610,8 @@ class PositionCommandToHector:
             self._configured_reset_hold_locked()
             self._output_enabled = True
             self._accept_commands = False
+            self._trajectory_gate_armed = False
+            self._goal_stamp = rospy.Time(0)
             self._last_command = None
             self._last_command_sample = None
             self._mode = "RESET_HOLD"
@@ -611,6 +634,28 @@ class PositionCommandToHector:
             if already:
                 return TriggerResponse(True, "already engaged for controller generation")
         return TriggerResponse(success, message)
+
+    def _activate_trajectory_service_callback(self, _request):
+        if not self._coordinator_managed_goals:
+            return TriggerResponse(
+                False, "coordinator_managed_goals is disabled"
+            )
+        with self._lock:
+            if not self._enable_control or not self._output_enabled:
+                return TriggerResponse(False, "adapter output is disabled")
+            if self._goal_stamp.is_zero():
+                return TriggerResponse(False, "no fresh goal is armed")
+            if not self._controllers_running_locked():
+                return TriggerResponse(False, "controllers are not running")
+            if self._engaged_generation != self._controller_generation:
+                return TriggerResponse(False, "controllers are not engaged")
+            self._trajectory_gate_armed = True
+            self._accept_commands = True
+            self._last_command = None
+            self._last_command_sample = None
+            self._mode = "WAIT_NEW_TRAJECTORY"
+            self._last_rejection = ""
+        return TriggerResponse(True, "fresh episode trajectory gate activated")
 
     def _state_payload_locked(self, now):
         odom_age = (
@@ -676,6 +721,8 @@ class PositionCommandToHector:
             "ready": self._ready,
             "enable_control": self._enable_control,
             "output_enabled": self._output_enabled,
+            "coordinator_managed_goals": self._coordinator_managed_goals,
+            "trajectory_gate_armed": self._trajectory_gate_armed,
             "controllers_running": controllers_running,
             "pose_controller_state": self._controller_states.get(
                 self._pose_controller, "missing"

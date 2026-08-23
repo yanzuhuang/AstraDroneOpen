@@ -13,5 +13,6 @@ reset_hover_y: 0.0
 reset_hover_z: 1.5
 reset_hover_yaw: 0.0
 auto_engage: true
+coordinator_managed_goals: false
 pose_controller: controller/pose
 twist_controller: controller/twist

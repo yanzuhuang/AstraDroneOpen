@@ -1,0 +1,26 @@
+qualification_only: true
+episode_count: 5
+require_automated_acceptance: false
+fixed_v_max: 0.40
+action_owner: fixed
+sac_closure_timeout_wall: 30.0
+max_episode_time: 15.0
+startup_timeout_wall: 30.0
+trajectory_timeout_wall: 8.0
+observation_timeout_wall: 8.0
+reset_timeout_wall: 12.0
+terminal_hold_timeout_wall: 5.0
+entry_goal: [2.0, 0.0, 1.5]
+hover_pose: [0.0, 0.0, 1.5, 0.0]
+goal_position_tolerance: 0.25
+goal_speed_tolerance: 0.20
+goal_sustain_time: 0.30
+observation_freshness: 0.35
+invalid_observation_grace: 0.50
+truth_freshness: 0.20
+lidar_freshness: 0.30
+reset_position_tolerance: 0.25
+reset_speed_tolerance: 0.35
+reset_roll_pitch_tolerance: 0.30
+collision_min_z: 0.40
+controller_names: [controller/pose, controller/twist]

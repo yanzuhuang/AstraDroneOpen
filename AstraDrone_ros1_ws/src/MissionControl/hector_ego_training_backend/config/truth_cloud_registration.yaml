@@ -1,0 +1,14 @@
+expected_sensor_frame: mid360_link
+world_frame: world
+pose_history_capacity: 400
+pending_cloud_capacity: 5
+maximum_pose_lag: 0.05
+point_stride: 1
+minimum_range: 0.2
+maximum_range: 40.0
+sensor_translation: [0.0, 0.0, 0.13]
+route_start: [0.0, 0.0, 3.0]
+route_goal: [-4.3148485145, 5.8522070123, 3.0]
+corridor_half_height: 0.75
+corridor_radius: 2.00
+diagnostics_rate: 2.0

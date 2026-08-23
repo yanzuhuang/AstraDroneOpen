@@ -46,9 +46,13 @@ class MockRequestDrivenIntegrationTest(unittest.TestCase):
             baseline_count = len(self._actions)
 
         publish_rate = rospy.Rate(100)
+        request_stamp_pairs = []
         for request_id in requests:
             request = SpeedRequestStamped()
             request.header.stamp = rospy.Time.now()
+            request_stamp_pairs.append(
+                (request.header.stamp.secs, request.header.stamp.nsecs)
+            )
             request.version = "learning_speed_request_v1.0"
             request.episode_id = "burst_repeated_value"
             request.step_index = request_id - 1
@@ -90,6 +94,10 @@ class MockRequestDrivenIntegrationTest(unittest.TestCase):
             [action.step_index for action in actions], list(range(100))
         )
         stamps = [action.header.stamp.to_sec() for action in actions]
+        self.assertEqual(
+            [(action.header.stamp.secs, action.header.stamp.nsecs) for action in actions],
+            request_stamp_pairs,
+        )
         self.assertTrue(all(stamp > 0.0 for stamp in stamps))
         self.assertTrue(
             all(later > earlier for earlier, later in zip(stamps, stamps[1:]))
