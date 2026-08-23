@@ -1,4 +1,4 @@
-"""Pure mode and step schedule contract for formal SAC training/evaluation."""
+"""Pure mode and Episode schedule contract for formal SAC training/evaluation."""
 
 from dataclasses import dataclass
 
@@ -12,64 +12,69 @@ def mode_uses_training_replay(mode):
     return mode != "evaluation"
 
 
-def mode_updates_networks(mode):
-    if mode not in SUPPORTED_RUNNER_MODES:
-        raise ValueError("unsupported SAC runner mode")
-    return mode != "evaluation"
+def learning_started(valid_transitions, learning_starts):
+    """Keep the learner gate explicitly transition-based."""
+
+    transitions = int(valid_transitions)
+    threshold = int(learning_starts)
+    if transitions < 0 or threshold <= 0:
+        raise ValueError("transition learning-start counts are invalid")
+    return transitions >= threshold
+
+
+def checkpoint_filename(completed_episode):
+    """Return the unambiguous Episode-based formal checkpoint name."""
+
+    episode = int(completed_episode)
+    if episode <= 0:
+        raise ValueError("checkpoint Episode must be positive")
+    return "sac_checkpoint_episode_{:04d}.pt".format(episode)
 
 
 @dataclass(frozen=True)
 class FormalTrainingSchedule:
-    target_valid_transitions: int
-    checkpoint_steps: tuple
-    checkpoint_interval: int
-    evaluation_during_training: bool
+    total_training_episodes: int
+    checkpoint_episodes: tuple
 
     def validate(self):
-        target = int(self.target_valid_transitions)
-        steps = tuple(sorted(set(int(value) for value in self.checkpoint_steps)))
-        if target <= 0 or self.checkpoint_interval <= 0:
-            raise ValueError("training target/checkpoint interval must be positive")
-        if not steps or any(value <= 0 or value > target for value in steps):
-            raise ValueError("checkpoint steps must be inside the training target")
-        if steps[-1] != target:
-            raise ValueError("final target must be an explicit checkpoint step")
-        if any(value % self.checkpoint_interval != 0 for value in steps):
-            raise ValueError("checkpoint steps disagree with checkpoint interval")
-        if self.evaluation_during_training:
-            raise ValueError("formal training must not run evaluation")
+        target = int(self.total_training_episodes)
+        episodes = tuple(
+            sorted(set(int(value) for value in self.checkpoint_episodes))
+        )
+        if target <= 0:
+            raise ValueError("total training Episodes must be positive")
+        if not episodes or any(value <= 0 or value > target for value in episodes):
+            raise ValueError(
+                "checkpoint Episodes must be inside the training Episode target"
+            )
+        if episodes[-1] != target:
+            raise ValueError(
+                "final training Episode must be an explicit checkpoint"
+            )
 
-    def checkpoint_due(self, environment_step):
+    def checkpoint_due(self, completed_episodes):
         self.validate()
-        return int(environment_step) in self.checkpoint_steps
+        return int(completed_episodes) in self.checkpoint_episodes
 
-    def next_transition_step(self, completed_transitions):
-        """Return the only legal next Replay/environment step."""
+    def next_episode_number(self, completed_episodes):
+        """Return the only legal next Episode number."""
 
         self.validate()
-        completed = int(completed_transitions)
-        if completed < 0 or completed >= self.target_valid_transitions:
-            raise ValueError("training has no remaining valid transition budget")
+        completed = int(completed_episodes)
+        if completed < 0 or completed >= self.total_training_episodes:
+            raise ValueError("training has no remaining Episode budget")
         return completed + 1
 
-    def episode_step_budget(self, completed_transitions, configured_max_steps):
-        """Cap one Episode so in-flight work cannot cross the formal target."""
+    def complete_episode(self, completed_episodes, terminal_transition_closed):
+        """Count exactly one Episode only after its terminal transition closes."""
 
-        self.validate()
-        completed = int(completed_transitions)
-        if completed < 0 or completed >= self.target_valid_transitions:
-            raise ValueError("training has no remaining valid transition budget")
-        remaining = self.target_valid_transitions - completed
-        if configured_max_steps is None:
-            return remaining
-        configured = int(configured_max_steps)
-        if configured <= 0:
-            raise ValueError("configured Episode step limit must be positive")
-        return min(remaining, configured)
+        if not bool(terminal_transition_closed):
+            raise ValueError("an unclosed Episode cannot count as completed")
+        return self.next_episode_number(completed_episodes)
 
-    def stop_due(self, environment_step):
+    def stop_due(self, completed_episodes):
         self.validate()
-        value = int(environment_step)
-        if value > self.target_valid_transitions:
-            raise ValueError("training exceeded target valid transitions")
-        return value == self.target_valid_transitions
+        value = int(completed_episodes)
+        if value < 0 or value > self.total_training_episodes:
+            raise ValueError("training exceeded the completed Episode target")
+        return value == self.total_training_episodes

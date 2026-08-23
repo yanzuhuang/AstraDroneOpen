@@ -408,10 +408,19 @@ training path. They are not imported by `speed_adapter_node.py` and do not add
 a neural inference mode to flight/full-stack launches. The worksite entry is:
 
 ```bash
-PYTHONPATH=/path/to/pytorch/site-packages:$PYTHONPATH \
-roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
-  output_dir:=/absolute/path/below/runtime_artifacts
+cd /home/yanzu/AstraDroneOpen
+scripts/run_sh/learning_speed_sac_training.sh
 ```
+
+Every formal training run uses a unique directory below
+`runtime_artifacts/rl_training/`; the runner refuses to reuse a prior training
+directory. The operator script performs preflight, creates the run directory,
+launches the unchanged formal SAC stack, saves the full console, and follows
+key runner/coordinator Episode, transition, reset, checkpoint and failure logs
+in the same terminal. Independent evaluation reads a checkpoint from that training run
+and writes to a separate `runtime_artifacts/rl_evaluation/<EVAL_ID>/` directory.
+The existing `runtime_artifacts/sac_python_packages/` directory remains the
+Python dependency location and is not a training run directory.
 
 It uses the existing request-driven adapter, `AstraDroneEnv` causal scheduler,
 Stage 1 reward, and Hector Episode/reset coordinator. The coordinator's
@@ -425,8 +434,8 @@ tanh-squashed one-dimensional normalized action; live SpeedSafetyFilter params
 define its affine `v_max` mapping. Learner-side normalization is disabled in
 the formal config. The current exploration-stability profile uses Actor LR
 `1e-5`, 100 critic-only startup updates and log-std `[-3,-1]`; the launch
-defaults to `config/sac_training_v1.yaml`. The former smoke config is retained
-only as the historical integration baseline. The first formal run is 10,000
+defaults to the sole maintained profile, `config/sac_training_v1.yaml`. The
+first formal run is 10,000
 valid transitions from an empty Replay Buffer, with checkpoints only at 5,000
 and 10,000 and no evaluation inside training. Training disables the fixed
 Episode count and continues through early terminal/reset boundaries until the

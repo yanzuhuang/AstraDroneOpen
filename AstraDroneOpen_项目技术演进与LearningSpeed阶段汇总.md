@@ -1,8 +1,8 @@
 # AstraDroneOpen 项目技术演进与 Learning Speed 阶段汇总
 
-> 更新日期：2026-08-23
+> 更新日期：2026-08-24
 >
-> 当前边界：正式 SAC 10k 已完成代码、配置和静态验证；正式 training、正式 evaluation 均未启动
+> 当前边界：10000-Episode/500-checkpoint/100-evaluation 与 `v_max=[0.30,1.75]` 已完成代码/config/静态验证；fixed terminal-convergence bug 已最小修复，lightweight fixed-v_max 六档最终 PASS；正式 training、evaluation 均未启动，fixed PASS 不等于 SAC transition-closure runtime PASS
 >
 > 证据原则：当前源码/配置/launch 优先于旧报告；历史 FAIL/NO-GO 不改写为 PASS；training-only 结论不外推到 PX4/FAST-LIO full-stack 或真机
 
@@ -202,14 +202,15 @@ trajectory、重复 request 均 fail closed。Random sampler 不改变 ledger id
 nominal Hover `(0,0,3)`，ENTRY_GATE `(-4.3148485145,5.8522070123,3)`。Episode 1
 用 nominal spawn；training 后续以 seed 1001 在 X/Y offset `[-1,+1] m` 安全矩形采样，
 z=3、yaw=0 固定，最多 32 次。最不利角点静态审计仍约有 1.33 m 余量。
-这是 code/config/static-test ready；新 random reset 正式 10k 尚无 runtime PASS。
+这是 code/config/static-test ready；新 random reset 正式 10000-Episode 尚无 runtime PASS。
 Evaluation 关闭随机化，固定 nominal Hover。
 
 ## 17. SAC training-loop integration
 
 已有 Gaussian Actor、twin Q/target Q、automatic entropy、Replay、异步 learner、
-checkpoint 与 qualification/training/evaluation runner。SAC 一维 action 映射到
-`[0.05,0.40] m/s`，Replay 只收完整 causal identity transition。
+checkpoint 与 qualification/training/evaluation runner。该轮集成时一维 action 使用旧
+`[0.05,0.40] m/s`；当前正式候选已由第 20–22 节替换为 `[0.30,1.75]`。Replay 始终只收
+完整 causal identity transition。
 
 短程 qualification 覆盖 2500 transitions、1500 stochastic steps、5 Episodes，通过
 identity、10 Hz、Replay、loss/Q/gradient、checkpoint、reset 与 planner/collision 门。
@@ -230,90 +231,141 @@ EGO、Hector PID、SafetyFilter 和 v_max，只把 Actor LR 改为 `1e-5`、log-
 `[-3,-1]`，并先做 100 个 critic-only updates。短程结论为
 `SAC ACTION EXPLORATION STABILITY PASS`；不等于 10k 完成或多 seed 收敛。
 
-## 20. 正式 10k 配置与停止条件修复
+## 20. 正式 10000-Episode 配置与停止条件
 
-正式目标是累计 `10000 valid active-Episode transitions`。历史 launch 把
-`episode_count=20` 与 `max_steps=500` 相乘，错误假设 Episode 都跑满；success/
-failure/truncated/random Hover 会使 20 Episode 少于 10000。该方案已废弃。
+当前正式候选以 completed Episode 数作为唯一正常停止单位：
 
 ```text
-1 environment step = 1 valid transition = 1 Replay experience
-reset / warm-up / readiness 不计数
-PRIMARY STOP: valid_transition_count == target_valid_transitions == 10000
+PRIMARY STOP: completed_episode_count == total_training_episodes == 10000
+checkpoint: every 500 completed Episodes, 500 ... 10000 (20 total)
+1 valid environment step = 1 transition = 1 Replay experience
 ```
 
-Training 给 coordinator 的 `episode_count=0`，表示禁用固定 Episode 正常停止；
-`max_training_episodes=1000` 只是异常 fail-safe。Episode 提前结束会 closure/reset，继续
-Episode 21、22……直到精确 10000。Evaluation 仍按 `episode_count`（正式命令为 3）。
+每 Episode 保持 `max_steps=500` 和 `max_episode_time=55 s`。Episode 9999 不能正常结束
+training；Episode 10000 的 terminal transition、Replay boundary 和 closure 完成后才正常
+结束，保存 final checkpoint，且 coordinator 不 reset、不启动 Episode 10001。success、
+collision、planner terminal、max-steps/max-time truncated 等真实 terminal 均保留并在正式
+closure 后计为一个 completed Episode；基础设施、identity、causality、Observation、
+controller、Replay 或 checkpoint 异常仍 fail closed。
 
-Runner 每个 Episode 按剩余 transition 收紧 step budget，防止 in-flight request 跨过
-目标；第 10000 条先写 Replay、停止 learner、保存 final checkpoint，再发布带 episode/
-generation 身份的 target signal。Coordinator 以 `training_target_reached` 截断、等待
-formal closure、取消轨迹并结束；不额外 reset，不产生/写入第 10001 条。summary 记录
-`completion_reason=training_target_reached`。SAC runner 是 required node；正常返回后由
-roslaunch 统一 teardown training stack。
+`learning_starts=1000` 的单位保持 transition：前 1000 条 experience 进入 Replay，达到
+第 1000 条才启用 learner，不是等待 1000 Episodes。Replay capacity 100000、batch 64、
+100 critic-only startup updates 保持。Training 分支没有 evaluation 调用；evaluation 只能
+独立运行 100 Episodes，固定 nominal Hover、deterministic Actor、无 learner/network
+update、无 training Replay。
 
-## 21. 当前正式配置
+## 21. 当前正式候选配置
 
 | 项目 | 当前值 |
 |---|---|
-| target / Replay | 10000 valid transitions / capacity 100000 |
-| learning starts / batch | 1000 / 64 |
+| normal stop / Replay | 10000 completed Episodes / capacity 100000 |
+| Episode ceiling | 500 steps；`max_episode_time=55 s`；不是正常 stop owner |
+| learning starts / batch | 1000 transitions / 64 |
+| startup | 100 critic-only updates |
 | Actor/Critic/alpha LR | `1e-5 / 1e-3 / 1e-3` |
 | gamma / tau | `0.99 / 0.005` |
-| startup / entropy / log-std | 100 critic-only updates / `-1` / `[-3,-1]` |
-| learner / policy update | 5 Hz wall / every 2 updates |
-| action / v_max | normalized `[-1,1]` / `[0.05,0.40] m/s` |
-| seed | SAC 1；environment 1001 |
-| Episode ceiling | 500 steps；不是正常 stop |
-| training Episode count / fail-safe | disabled (`0`) / 1000 |
-| checkpoint | 5000、10000，各一次 |
-| evaluation during training | false |
-| evaluation | deterministic、3 Episodes、fixed Hover、no update、no Replay |
+| entropy / log-std | target `-1` / `[-3,-1]` |
+| normalized action / v_max | `[-1,1]` / `[0.30,1.75] m/s` |
+| mapping | `v_max = 1.025 + 0.725 * action` |
+| checkpoint | 每 500 completed Episodes；500…10000，共 20 个；10000 为 final |
+| evaluation during training | 无调用路径 |
+| independent evaluation | 100 Episodes、deterministic、fixed Hover、no update、no Replay |
+| training/evaluation root | `runtime_artifacts/rl_training/<RUN_ID>/` / `runtime_artifacts/rl_evaluation/<EVAL_ID>/` |
 
-最新正式 training 命令（本轮未执行）：
+最新命令已同步到 `studynote.md`。正式 training 操作者入口仍是：
 
 ```bash
-roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
-  output_dir:="$SAC_OUTPUT" \
-  gui:=false \
-  runner_mode:=training \
-  target_valid_transitions:=10000 \
-  max_training_episodes:=1000 \
-  max_episode_time:=55.0 \
-  run_id:="$RUN_ID" \
-  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml"
+/home/yanzu/AstraDroneOpen/scripts/run_sh/learning_speed_sac_training.sh
 ```
 
-完整环境准备、全新 `RUN_ID/SAC_OUTPUT`、可写 ROS 目录和 evaluation 命令见
-`studynote.md`。
+命令只是准备完成；本轮没有执行正式 training。Final checkpoint 命名为
+`sac_checkpoint_episode_10000.pt`；其他 checkpoint 例如 Episode 500 为
+`sac_checkpoint_episode_0500.pt`。独立 evaluation 只读引用选定 training checkpoint，
+自身写入 `runtime_artifacts/rl_evaluation/<EVAL_ID>/`。
 
-## 22. 已废弃方案
+## 22. 新 v_max 链与 lightweight fixed-v_max qualification
 
-- `20 × 500` 作为 10k 正常结束条件；旧 pilot resume；training 内自动 evaluation；
-- headerless/value/timestamp/receipt-order action pairing；native replan rejection gate；
-- 合法 action 的 slew/low-pass/hysteresis；伪装 FAST-LIO provenance；
-- training 用 Mid360 CustomMsg type 3；直接 `/cmd_vel` 或第二套 B-spline/PID；
-- teleport 单独复用为 PX4/FAST-LIO production reset；
-- progress/tracking 加入 Reward 或五项 policy input；
-- 把 2.5 mission success 改写为 qualification PASS。
+正式展开检查确认 Actor → `SpeedRequestStamped` → `SpeedActionStamped` →
+SpeedSafetyFilter → `SpeedAppliedStamped` → EGO dynamic `v_max` 的 active bounds 均为
+`[0.30,1.75]`；EGO `manager/max_vel`、optimization/bspline ceiling 与 dynamic maximum
+展开为 1.75，dynamic minimum 与 SpeedSafetyFilter minimum 展开为 0.30。旧 0.05/0.40
+没有作为正式 active clamp。源码仍有 generic fallback、传感器时间门、feasibility
+tolerance 和 `minimum_active_speed_mps=0.05` 等同值 literal；它们不是正式 action bound，
+且正式 launch 的 action bounds 已显式覆盖。未加入 slew、low-pass、hysteresis、cooldown
+或 action shaping，force-replan delta 语义未改。
 
-## 23. 当前未完成事项
+2026-08-24 首轮复用现有 worksite Episode/reset coordinator 做六档、每档 2 Episodes 的短程
+qualification；Episode 1 nominal Hover，Episode 2 使用 seed 1001 random Hover。只把 EGO
+静态 ceiling 设为新正式上限 1.75，其余 EGO 参数、Hector PID、Reward、Observation C、
+random Hover 范围和安全门均未改。
 
-- 新正式 10k training、5000/10000 正式 checkpoint、deterministic evaluation 均未启动；
-- random Hover 新正式配置尚无 10k runtime PASS；
-- resume、PER、Stage 2、production inference、长程多 seed 收敛未完成；
-- full-stack transfer、真机、动态障碍预测、三机视觉业务闭环、outdoor 三机任务未完成；
-- planner random fallback 的失败当次完整 cost/gradient 可观测性仍不足。
+| fixed v_max | 结果 | Episode | Obs C valid | tracking p95/max m | actual p95/max m/s | accepted replans | reset |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0.30 | PASS | 2/2 success | 1.000 | 0.0178 / 0.0675 | 0.2099 / 0.3023 | 76 | 2/2 |
+| 0.75 | PASS | 2/2 success | 1.000 | 0.0568 / 0.1051 | 0.5315 / 0.5538 | 30 | 2/2 |
+| 1.00 | NO-GO | 0/2；continuous invalid | 0.9828 | 0.0896 / 0.1304 | 0.7372 / 0.7891 | 21 | 2/2 |
+| 1.25 | NO-GO | 0/2；continuous invalid | 0.9826 | 0.1146 / 0.1482 | 0.9690 / 1.0212 | 17 | 2/2 |
+| 1.50 | NO-GO | 0/2；continuous invalid | 0.9810 | 0.1442 / 0.1816 | 1.2168 / 1.3622 | 15 | 2/2 |
+| 1.75 | NO-GO | 0/2；continuous invalid | 0.9789 | 0.1699 / 0.2041 | 1.5630 / 1.6972 | 13 | 2/2 |
 
-## 24. 下一阶段路线
+六档 planner failure、`NO_FEASIBLE_TRAJECTORY`、collision、controller/reset failure 均为
+0；12/12 reset 成功。1.00–1.75 的每个 Episode 都在 terminal convergence 对齐到
+`trajectory_unavailable`，超过冻结的 invalid grace 后以
+`invalid_observation:continuous` fail-closed；真实失败不重跑、不降门限。0.75 首次 q01
+在 0 Episode 因 gzserver exit 139/physical readiness timeout 属基础设施无效，保留原工件，
+只以新 ID q02 重试一次并得到上述有效结果。
 
-1. 全新 run ID、空 Replay 启动受控 10k，不改 SafetyFilter、Reward、Observation、
-   EGO、Hector PID 或 random Hover 范围。
-2. 监控 identity、10 Hz、Replay exact count、reset generation、planner/collision、loss/Q/
-   gradient 与 checkpoint；真实失败 fail closed。
-3. 完成后分别对 5000/10000 checkpoint 做独立 deterministic 3-Episode evaluation。
-4. 多 checkpoint/evaluation 和多 seed 稳定后才讨论更大规模；当前不默认 50k/100k/1M。
+首轮结论为最高稳定通过速度 0.75 m/s，完整 `[0.30,1.75]` 动作范围 NO-GO。现有固定速度
+Reward 标定数据覆盖 0.30–1.75 m/s，Stage 1 配置的 speed anchors 为
+0.75/1.25/1.75，公式接受正速度，未发现明显速度域缺口；本轮 Reward 文件和实现均未改。
+这只支持单独讨论是否保持 Reward，不覆盖 runtime qualification。
+
+随后用外部 rosbag 对 0.75 PASS 与 1.00 NO-GO 各建立最后 100 个 Observation step
+时间线。1.00 的 B-spline 在 sim 11952.795 正常结束；第一帧
+`trajectory_unavailable` 为 11952.825，此时 UAV 距 ENTRY 0.0771 m、速度 0.2447 m/s，
+尚未满足 success 速度门。UAV 到 11952.985 才进入原 0.25 m/0.20 m/s 包络，pre-fix
+11953.106 failure latch 时只保持约 0.121 s，未达到原 0.30 s sustain。因此不存在
+“success 已满足却先检查 invalid”的简单 ordering bug，也没有 EGO/traj_server 过早停止：
+traj_server 始终以相同 trajectory ID、READY flag 持续发布终点零速 PositionCommand。
+
+确认的 bug 是 fixed Episode coordinator 缺少 post-B-spline terminal convergence 语义：
+Observation C 正确拒绝无 future trajectory 的样本，但 coordinator 把“正式轨迹已结束、
+PositionCommand 健康持有 ENTRY、Hector 正在消除 tracking lag”的预期终端阶段当作正常
+飞行轨迹丢失。最小修复只在 `action_owner=fixed` 增加严格 terminal-hold guard：必须是
+fresh 且唯一 reason 为 `trajectory_unavailable`、lookup=`no_active_trajectory_at_stamp`、
+source stamp 晚于正式 trajectory end、Observation/B-spline/PositionCommand ID 一致、
+fresh READY PositionCommand 在原 ENTRY/速度容差内、实际位置已在原 ENTRY 容差内，且
+planner/collision/controller 门已先通过。Observation C 仍保持 invalid；原 0.5 s invalid
+grace、0.25 m/0.20 m/s/0.30 s success、EGO/Hector/Reward/random Hover/SAC/v_max/replan
+均未改。SAC action-owner 不启用该 fixed-only guard。
+
+修复后严格按 1.00→1.25→1.50→1.75 顺序各跑 2 Episodes（nominal + random）：四档均
+2/2 PASS、合计 8/8 reset，planner/collision/controller failure 全为 0。terminal hold 使用
+次数为 2/2、2/2、2/2、1/2；1.75 nominal 未使用 guard 即正常 success，证明不是无条件
+放行。结合此前 0.30/0.75 各 2/2 PASS，当前 lightweight fixed-v_max 六档
+`[0.30,1.75]` 最终 **PASS**。fixed path 没有 AstraDroneEnv transition/Replay/SAC closure，
+所以该结论不外推为正式 SAC training runtime PASS。完整诊断见
+`trajectory_terminal_timing_diagnosis_report.md`。
+
+## 23. RL Legacy Code Cleanup 与废弃边界
+
+当前只维护 `sac_training_v1.yaml`、`sac_training_runner.py` 和正式 Episode/reset owner。
+旧 transition-count normal stop、transition checkpoint、100-Episode/20间隔配置、旧 pilot
+resume、training 内 evaluation、headerless/value/timestamp pairing、合法 action shaping、
+伪 FAST-LIO provenance 与第二套 B-spline/PID 均废弃。Checkpoint 只由显式 20 个 Episode
+allowlist 在 closure 后触发；独立 evaluation mode 才加载 checkpoint，并硬编码为
+deterministic、无 training Replay、无 learner/network update。
+
+## 24. 当前边界与下一阶段
+
+- 正式 10000-Episode training：**未启动**；fixed-v_max blocker 已清除，但本轮没有启动或
+  runtime 验证 SAC action-owner/transition closure，也不自动构成正式 training 授权；
+- 正式 100-Episode evaluation：**未启动，且没有正式 checkpoint 可评估**；
+- random Hover fixed-v_max reset 与完整新动作范围六档均已通过；
+- fixed-only terminal hold 不改变 Observation C valid 规则，也未验证 SAC pending transition
+  在同类终端阶段的 closure；若后续获准正式 training，仍须以全新 RUN_ID、空 Replay、
+  fail-closed 监控开始，不能 resume 旧 pilot；
+- training 完成并产生正式 checkpoint 后，才可独立执行 100-Episode evaluation。
 
 ## 25. Source Manifest 与章节映射
 

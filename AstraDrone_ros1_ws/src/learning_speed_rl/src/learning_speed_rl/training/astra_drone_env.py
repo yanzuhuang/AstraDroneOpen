@@ -1383,7 +1383,6 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
                     in (
                         "max_episode_duration",
                         "max_episode_steps",
-                        "training_target_reached",
                     )
                 )
             )

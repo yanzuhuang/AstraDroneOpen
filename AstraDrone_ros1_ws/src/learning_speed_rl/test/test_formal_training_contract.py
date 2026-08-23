@@ -7,91 +7,117 @@ import yaml
 
 from learning_speed_rl.training.formal_training_contract import (
     FormalTrainingSchedule,
-    mode_updates_networks,
+    checkpoint_filename,
+    learning_started,
     mode_uses_training_replay,
 )
 
 
 class FormalTrainingContractTest(unittest.TestCase):
     def setUp(self):
+        self.checkpoints = tuple(range(500, 10001, 500))
         self.schedule = FormalTrainingSchedule(
-            target_valid_transitions=10000,
-            checkpoint_steps=(5000, 10000),
-            checkpoint_interval=5000,
-            evaluation_during_training=False,
+            total_training_episodes=10000,
+            checkpoint_episodes=self.checkpoints,
         )
 
-    def test_checkpoint_at_5000(self):
+    def test_episode_9999_cannot_normally_stop_training(self):
         self.schedule.validate()
-        self.assertTrue(self.schedule.checkpoint_due(5000))
-        self.assertFalse(self.schedule.stop_due(5000))
+        self.assertFalse(self.schedule.stop_due(9999))
+        self.assertEqual(self.schedule.next_episode_number(9999), 10000)
 
-    def test_checkpoint_and_stop_at_10000(self):
+    def test_episode_10000_stops_exactly_and_episode_10001_is_forbidden(self):
         self.assertTrue(self.schedule.checkpoint_due(10000))
         self.assertTrue(self.schedule.stop_due(10000))
         with self.assertRaises(ValueError):
             self.schedule.stop_due(10001)
-
-    def test_twenty_short_episodes_do_not_complete_training(self):
-        completed = sum([400] * 20)
-        self.assertEqual(completed, 8000)
-        self.assertFalse(self.schedule.stop_due(completed))
-        self.assertEqual(self.schedule.next_transition_step(completed), 8001)
-        self.assertEqual(self.schedule.episode_step_budget(completed, 500), 500)
-
-    def test_episode_twenty_one_and_later_continue_to_exact_target(self):
-        completed = 8000
-        episode_count = 20
-        checkpoint_events = []
-        replay_steps = []
-        while not self.schedule.stop_due(completed):
-            episode_count += 1
-            budget = self.schedule.episode_step_budget(completed, 500)
-            for _ in range(budget):
-                completed = self.schedule.next_transition_step(completed)
-                replay_steps.append(completed)
-                if self.schedule.checkpoint_due(completed):
-                    checkpoint_events.append(completed)
-        self.assertEqual(episode_count, 24)
-        self.assertEqual(completed, 10000)
-        self.assertEqual(replay_steps[-1], 10000)
-        self.assertNotIn(10001, replay_steps)
-        self.assertEqual(checkpoint_events, [10000])
         with self.assertRaises(ValueError):
-            self.schedule.next_transition_step(completed)
+            self.schedule.next_episode_number(10000)
 
-    def test_checkpoint_schedule_is_exactly_once(self):
+    def test_checkpoint_schedule_is_episode_based_and_exact(self):
         emitted = set()
         events = []
-        for step in range(1, 10001):
-            if self.schedule.checkpoint_due(step) and step not in emitted:
-                emitted.add(step)
-                events.append(step)
-        self.assertEqual(events, [5000, 10000])
+        for episode in range(1, 10001):
+            if self.schedule.checkpoint_due(episode) and episode not in emitted:
+                emitted.add(episode)
+                events.append(episode)
+        self.assertEqual(events, list(self.checkpoints))
+        self.assertEqual(len(events), 20)
+        self.assertEqual(
+            [checkpoint_filename(events[index]) for index in (0, -1)],
+            [
+                "sac_checkpoint_episode_0500.pt",
+                "sac_checkpoint_episode_10000.pt",
+            ],
+        )
 
-    def test_training_evaluation_is_disabled(self):
-        invalid = FormalTrainingSchedule(10000, (5000, 10000), 5000, True)
+    def test_success_collision_and_truncation_each_count_once_after_closure(self):
+        completed = 0
+        for _terminal_outcome in ("success", "collision", "truncated"):
+            completed = self.schedule.complete_episode(completed, True)
+        self.assertEqual(completed, 3)
         with self.assertRaises(ValueError):
-            invalid.validate()
+            self.schedule.complete_episode(completed, False)
 
     def test_evaluation_has_no_training_replay_or_updates(self):
         self.assertFalse(mode_uses_training_replay("evaluation"))
-        self.assertFalse(mode_updates_networks("evaluation"))
         self.assertTrue(mode_uses_training_replay("training"))
-        self.assertTrue(mode_updates_networks("training"))
 
-    def test_formal_yaml_freezes_first_10k_schedule(self):
+    def test_learning_starts_at_1000_transitions_not_episodes(self):
+        self.assertFalse(learning_started(999, 1000))
+        self.assertTrue(learning_started(1000, 1000))
+        self.assertTrue(learning_started(1001, 1000))
+
+    def test_formal_yaml_freezes_10000_episode_schedule(self):
         path = Path(__file__).resolve().parents[1] / "config/sac_training_v1.yaml"
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         training = data["training"]
         self.assertEqual(training["mode"], "training")
-        self.assertEqual(training["target_valid_transitions"], 10000)
-        self.assertEqual(training["checkpoint_steps"], [5000, 10000])
-        self.assertEqual(training["checkpoint_interval"], 5000)
-        self.assertFalse(training["evaluation_during_training"])
-        self.assertEqual(data["training"]["completion_reason"], "training_target_reached")
+        self.assertEqual(training["total_training_episodes"], 10000)
+        self.assertEqual(
+            training["checkpoint_episodes"], list(self.checkpoints)
+        )
+        self.assertNotIn("target_valid_transitions", training)
+        self.assertNotIn("checkpoint_steps", training)
+        self.assertNotIn("max_training_episodes", training)
+        self.assertEqual(
+            data["training"]["completion_reason"],
+            "training_episode_count_reached",
+        )
         self.assertEqual(data["replay"]["capacity"], 100000)
+        self.assertEqual(data["training"]["learning_starts"], 1000)
+        self.assertEqual(data["episode"]["max_steps"], 500)
+        self.assertEqual(data["sac"]["batch_size"], 64)
+        self.assertEqual(data["sac"]["critic_warmup_updates"], 100)
+        self.assertEqual(data["sac"]["policy_learning_rate"], 1.0e-5)
+        self.assertEqual(data["sac"]["critic_learning_rate"], 1.0e-3)
+        self.assertEqual(data["sac"]["alpha_learning_rate"], 1.0e-3)
+        self.assertEqual(data["sac"]["gamma"], 0.99)
+        self.assertEqual(data["sac"]["tau"], 0.005)
+        self.assertEqual(data["sac"]["target_entropy"], -1.0)
+        self.assertEqual(data["sac"]["log_std_min"], -3.0)
+        self.assertEqual(data["sac"]["log_std_max"], -1.0)
+        self.assertEqual(data["action"]["expected_v_max_min"], 0.30)
+        self.assertEqual(data["action"]["expected_v_max_max"], 1.75)
         self.assertEqual(data["sac"]["seed"], 1)
+
+    def test_evaluation_is_independent_and_fixed_at_100_episodes(self):
+        path = Path(__file__).resolve().parents[1] / "config/sac_training_v1.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            set(data["evaluation"]),
+            {"episode_count", "checkpoint_path", "checkpoint_episode"},
+        )
+        self.assertEqual(data["evaluation"]["episode_count"], 100)
+        self.assertNotIn("evaluation", data["training"])
+
+    def test_formal_action_mapping_is_exact(self):
+        from learning_speed_rl.training.sac_replay import ActionMapping
+
+        mapping = ActionMapping(0.30, 1.75)
+        self.assertAlmostEqual(mapping.to_v_max(-1.0), 0.30, places=12)
+        self.assertAlmostEqual(mapping.to_v_max(0.0), 1.025, places=12)
+        self.assertAlmostEqual(mapping.to_v_max(1.0), 1.75, places=12)
 
 
 if __name__ == "__main__":

@@ -271,23 +271,6 @@ class AstraDroneEnvEpisodeTest(unittest.TestCase):
         ]
         self.assertTrue(all(abs(value - 0.1) <= 0.02 for value in intervals))
 
-    def test_formal_target_uses_dedicated_truncation_reason(self):
-        harness = AsyncEpisodeHarness()
-        result = harness.run(
-            max_steps=3,
-            max_steps_reason="training_target_reached",
-        )
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["metrics"]["transition_count"], 3)
-        self.assertTrue(result["episode"]["truncated"])
-        self.assertFalse(result["episode"]["terminated"])
-        self.assertEqual(
-            result["episode"]["terminal_reason"],
-            "training_target_reached",
-        )
-        self.assertTrue(result["steps"][-1]["truncated"])
-        self.assertFalse(result["steps"][-1]["transition_truncated"])
-
     def test_mission_success_terminates_without_truncation(self):
         harness = AsyncEpisodeHarness(terminal_after=4)
         result = harness.run(max_steps=20)

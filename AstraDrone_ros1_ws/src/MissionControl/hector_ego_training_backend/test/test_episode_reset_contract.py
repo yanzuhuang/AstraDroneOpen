@@ -2,6 +2,7 @@
 
 import unittest
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import yaml
 
@@ -15,9 +16,9 @@ from hector_ego_training_backend.episode_reset_contract import (
     StaticObstacleXY,
     action_matches,
     episode_count_stop_due,
+    fixed_terminal_hold_matches,
     observation_matches,
     sac_closure_matches,
-    training_target_matches,
     trajectory_matches,
     validate_reset_candidate,
 )
@@ -88,29 +89,67 @@ class EpisodeResetContractTest(unittest.TestCase):
         payload["last_request_id"] = 100
         self.assertFalse(sac_closure_matches(binding, payload))
 
-    def test_training_target_requires_exact_count_and_identity(self):
-        binding = EpisodeBinding(21, 20)
-        payload = {
-            "episode_id": binding.episode_key,
-            "reset_generation": 20,
-            "valid_transition_count": 10000,
-            "target_valid_transitions": 10000,
-            "reason": "training_target_reached",
-        }
-        self.assertTrue(training_target_matches(binding, payload, 10000))
-        payload["valid_transition_count"] = 10001
-        self.assertFalse(training_target_matches(binding, payload, 10000))
-        payload["valid_transition_count"] = 10000
-        payload["reset_generation"] = 19
-        self.assertFalse(training_target_matches(binding, payload, 10000))
-
-    def test_training_ignores_episode_count_and_evaluation_stops_at_three(self):
-        self.assertFalse(episode_count_stop_due("training", 20, 0))
-        self.assertFalse(episode_count_stop_due("training", 21, 0))
-        self.assertFalse(episode_count_stop_due("evaluation", 2, 3))
-        self.assertTrue(episode_count_stop_due("evaluation", 3, 3))
+    def test_training_stops_exactly_at_completed_episode_10000(self):
+        self.assertFalse(episode_count_stop_due(9999, 10000))
+        self.assertTrue(episode_count_stop_due(10000, 10000))
         with self.assertRaises(ValueError):
-            episode_count_stop_due("training", 20, 20)
+            episode_count_stop_due(10001, 10000)
+
+    def test_evaluation_still_uses_its_independent_episode_count(self):
+        self.assertFalse(episode_count_stop_due(2, 3))
+        self.assertTrue(episode_count_stop_due(3, 3))
+
+    def test_sac_launch_has_one_episode_stop_owner_and_no_transition_target(self):
+        package = Path(__file__).resolve().parents[1]
+        sac_launch = ET.parse(
+            package / "launch/hector_worksite_sac_training.launch"
+        ).getroot()
+        arguments = {
+            element.attrib["name"]: element.attrib.get("default")
+            for element in sac_launch.findall("arg")
+        }
+        self.assertEqual(arguments["total_training_episodes"], "10000")
+        self.assertEqual(arguments["evaluation_episodes"], "100")
+        self.assertEqual(arguments["v_max_min"], "0.30")
+        self.assertEqual(arguments["v_max_max"], "1.75")
+        self.assertEqual(arguments["max_episode_time"], "55.0")
+        self.assertNotIn("target_valid_transitions", arguments)
+        self.assertNotIn("max_training_episodes", arguments)
+
+        nested = ET.parse(
+            package / "launch/hector_training_episode_reset.launch"
+        ).getroot()
+        nested_arguments = {
+            element.attrib["name"] for element in nested.findall("arg")
+        }
+        self.assertNotIn("target_valid_transitions", nested_arguments)
+        self.assertNotIn("max_training_episodes", nested_arguments)
+
+    def test_formal_vmax_bounds_reach_ego_and_speed_filter_launches(self):
+        package = Path(__file__).resolve().parents[1]
+        observation_launch = (
+            package / "launch/hector_training_observation_c.launch"
+        ).read_text(encoding="utf-8")
+        speed_launch = (
+            package.parents[1]
+            / "learning_speed_rl/launch/speed_adapter.launch"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '<arg name="max_vel" value="$(arg static_max_vel)"/>',
+            observation_launch,
+        )
+        self.assertIn(
+            '<arg name="dynamic_speed_limit_minimum" value="$(arg v_max_min)"/>',
+            observation_launch,
+        )
+        self.assertIn(
+            '<arg name="static_min_vel" value="$(arg v_max_min)"/>',
+            observation_launch,
+        )
+        self.assertIn(
+            '<param name="safety/v_max_min" value="$(arg static_min_vel)"/>',
+            speed_launch,
+        )
 
     def test_observation_requires_current_generation_and_trajectory(self):
         binding = EpisodeBinding(3, 2)
@@ -118,6 +157,44 @@ class EpisodeResetContractTest(unittest.TestCase):
         self.assertFalse(observation_matches(binding, True, 1, 2, 30.0, 29.0, 8, 8))
         self.assertFalse(observation_matches(binding, True, 2, 2, 28.0, 29.0, 8, 8))
         self.assertFalse(observation_matches(binding, True, 2, 2, 30.0, 29.0, 7, 8))
+
+    def test_fixed_terminal_hold_requires_ended_matching_goal_command(self):
+        values = {
+            "observation_valid": False,
+            "observation_diagnostics": ["trajectory_unavailable"],
+            "trajectory_lookup_result": "no_active_trajectory_at_stamp",
+            "observation_stamp_sec": 12.825,
+            "observation_latest_trajectory_id": 11,
+            "trajectory_id": 11,
+            "trajectory_end_sec": 12.795,
+            "position_command_trajectory_id": 11,
+            "position_command_flag": 1,
+            "position_command_age_sec": 0.005,
+            "position_command_distance_to_goal": 0.079,
+            "position_command_speed": 0.0,
+            "actual_distance_to_goal": 0.077,
+            "goal_position_tolerance": 0.25,
+            "goal_speed_tolerance": 0.20,
+            "freshness_limit_sec": 0.35,
+        }
+        self.assertTrue(fixed_terminal_hold_matches(**values))
+        for key, invalid in (
+            ("observation_diagnostics", ["trajectory_unavailable", "other"]),
+            ("trajectory_lookup_result", "history_empty"),
+            ("observation_stamp_sec", 12.700),
+            ("observation_latest_trajectory_id", 10),
+            ("position_command_trajectory_id", 10),
+            ("position_command_flag", 3),
+            ("position_command_age_sec", 0.36),
+            ("position_command_distance_to_goal", 0.251),
+            ("position_command_speed", 0.201),
+            ("actual_distance_to_goal", 0.251),
+        ):
+            candidate = dict(values)
+            candidate[key] = invalid
+            self.assertFalse(
+                fixed_terminal_hold_matches(**candidate), key
+            )
 
     def test_random_reset_seed_reproduces_sequence_and_bounds(self):
         left = RandomResetSampler(random_config(seed=1001))

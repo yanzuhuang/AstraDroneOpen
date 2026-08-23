@@ -1,7 +1,7 @@
 qualification_only: true
 episode_count: 5
 require_automated_acceptance: false
-fixed_v_max: 0.40
+fixed_v_max: 0.30
 action_owner: fixed
 sac_closure_timeout_wall: 30.0
 max_episode_time: 15.0

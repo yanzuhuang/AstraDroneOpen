@@ -5,7 +5,9 @@
   <arg name="qualification_output_dir" default=""/>
   <arg name="gui" default="false"/>
   <arg name="paused" default="false"/>
-  <arg name="fixed_v_max" default="0.40"/>
+  <arg name="fixed_v_max" default="0.30"/>
+  <arg name="v_max_min" default="0.30"/>
+  <arg name="static_max_vel" default="$(arg fixed_v_max)"/>
   <arg name="speed_policy_mode" default="fixed"/>
   <arg name="mock_request_driven" default="false"/>
   <arg name="coordinator_managed_goals" default="false"/>
@@ -31,6 +33,8 @@
     <arg name="model_xacro"
          value="$(find hector_ego_training_backend)/urdf/quadrotor_mid360_training.gazebo.xacro"/>
     <arg name="dynamic_speed_limit_enabled" value="true"/>
+    <arg name="dynamic_speed_limit_minimum" value="$(arg v_max_min)"/>
+    <arg name="max_vel" value="$(arg static_max_vel)"/>
     <arg name="require_training_observation_c" value="true"/>
     <arg name="qualification_required" value="true"/>
     <arg name="coordinator_managed_goals"
@@ -54,7 +58,8 @@
 
   <include file="$(find learning_speed_rl)/launch/speed_adapter.launch">
     <arg name="namespace" value="uav1"/>
-    <arg name="static_max_vel" value="$(arg fixed_v_max)"/>
+    <arg name="static_max_vel" value="$(arg static_max_vel)"/>
+    <arg name="static_min_vel" value="$(arg v_max_min)"/>
     <arg name="fixed_v_max" value="$(arg fixed_v_max)"/>
     <arg name="policy_mode" value="$(arg speed_policy_mode)"/>
     <arg name="mock_request_driven" value="$(arg mock_request_driven)"/>

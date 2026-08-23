@@ -39,9 +39,9 @@ from hector_ego_training_backend.episode_reset_contract import (
     StaticObstacleXY,
     action_matches,
     episode_count_stop_due,
+    fixed_terminal_hold_matches,
     observation_matches,
     sac_closure_matches,
-    training_target_matches,
     trajectory_matches,
     validate_reset_candidate,
 )
@@ -105,16 +105,10 @@ class TrainingEpisodeResetCoordinator:
         self._runner_mode = str(
             rospy.get_param("~runner_mode", "qualification")
         ).strip().lower()
-        self._max_training_episodes = int(
-            rospy.get_param("~max_training_episodes", 1000)
-        )
-        self._target_valid_transitions = int(
-            rospy.get_param("~target_valid_transitions", 10000)
-        )
         self._require_acceptance = bool(
             rospy.get_param("~require_automated_acceptance", False)
         )
-        self._fixed_v_max = float(rospy.get_param("~fixed_v_max", 0.40))
+        self._fixed_v_max = float(rospy.get_param("~fixed_v_max", 0.30))
         self._action_owner = str(
             rospy.get_param("~action_owner", "fixed")
         ).strip().lower()
@@ -127,15 +121,8 @@ class TrainingEpisodeResetCoordinator:
             raise ValueError("~output_dir is required")
         if self._runner_mode not in ("qualification", "training", "evaluation"):
             raise ValueError("runner_mode is invalid")
-        if self._runner_mode == "training":
-            if self._episode_count != 0:
-                raise ValueError("training episode_count must be disabled (0)")
-            if self._max_training_episodes <= 0:
-                raise ValueError("max_training_episodes must be positive")
-            if self._target_valid_transitions <= 0:
-                raise ValueError("target_valid_transitions must be positive")
-        elif self._episode_count <= 0:
-            raise ValueError("qualification/evaluation episode_count must be positive")
+        if self._episode_count <= 0:
+            raise ValueError("episode_count must be positive")
         if self._action_owner not in ("fixed", "sac"):
             raise ValueError("action_owner must be fixed or sac")
         if self._sac_closure_timeout <= 0.0:
@@ -290,12 +277,12 @@ class TrainingEpisodeResetCoordinator:
         self._action = None
         self._applied = None
         self._sac_closure = None
-        self._training_target = None
         self._position_command = None
         self._v2_diagnostics = {}
         self._c_diagnostics = {}
         self._active_episode = False
         self._goal_ready_since_sim = None
+        self._fixed_terminal_hold_active = False
         self._episode_observation_total = 0
         self._episode_observation_valid = 0
         self._episode_positions = []
@@ -354,10 +341,6 @@ class TrainingEpisodeResetCoordinator:
         rospy.Subscriber(
             "learning_speed/sac_episode_closed", String,
             self._sac_closure_callback, queue_size=10,
-        )
-        rospy.Subscriber(
-            "learning_speed/sac_training_target_reached", String,
-            self._training_target_callback, queue_size=1,
         )
         rospy.Subscriber("learning_speed/observation_v2/diagnostics", DiagnosticArray, self._v2_diagnostic_callback, queue_size=10)
         rospy.Subscriber("learning_speed/observation_c/diagnostics", DiagnosticArray, self._c_diagnostic_callback, queue_size=10)
@@ -563,14 +546,6 @@ class TrainingEpisodeResetCoordinator:
             return
         with self._lock:
             self._sac_closure = payload
-
-    def _training_target_callback(self, message):
-        try:
-            payload = json.loads(message.data)
-        except (TypeError, ValueError):
-            return
-        with self._lock:
-            self._training_target = payload
 
     def _v2_diagnostic_callback(self, message):
         with self._lock:
@@ -875,13 +850,8 @@ class TrainingEpisodeResetCoordinator:
             observation = self._observation
             observation_wall = self._observation_receipt_wall
             last_valid_wall = self._last_valid_observation_wall
-            training_target = self._training_target
-        if self._runner_mode == "training" and training_target_matches(
-            self._binding,
-            training_target,
-            self._target_valid_transitions,
-        ):
-            return "TRUNCATED", "training_target_reached"
+            trajectory = self._trajectory
+            position_command = self._position_command
         if state is None:
             return "FAILURE", "truth_odometry_unavailable"
         position, velocity, _, _, _ = state
@@ -895,11 +865,75 @@ class TrainingEpisodeResetCoordinator:
         if not backend.get("controllers_running", False) or backend.get("mode") in ("STALE_HOLD", "DISABLED", "RESET_PAUSED"):
             self._controller_failure_count += 1
             return "FAILURE", "controller_failure:" + str(backend.get("mode", "missing"))
+        distance = _norm3(position[0] - self._entry[0], position[1] - self._entry[1], position[2] - self._entry[2])
         if observation is None or now_wall - observation_wall > self._observation_freshness:
             return "FAILURE", "invalid_observation:stale"
-        if not observation.valid and now_wall - last_valid_wall > self._invalid_observation_grace:
+        fixed_terminal_hold = False
+        if (
+            self._action_owner == "fixed"
+            and observation is not None
+            and trajectory is not None
+            and position_command is not None
+        ):
+            trajectory_message = trajectory[0]
+            command_message, _, command_receipt_wall = position_command
+            degree = int(trajectory_message.order)
+            knots = list(trajectory_message.knots)
+            trajectory_end = float("nan")
+            if degree > 0 and len(knots) > 2 * degree:
+                trajectory_end = trajectory_message.start_time.to_sec() + (
+                    float(knots[len(knots) - 1 - degree])
+                    - float(knots[degree])
+                )
+            command_position = command_message.position
+            command_velocity = command_message.velocity
+            fixed_terminal_hold = fixed_terminal_hold_matches(
+                observation_valid=observation.valid,
+                observation_diagnostics=observation.diagnostics,
+                trajectory_lookup_result=observation.trajectory_lookup_result,
+                observation_stamp_sec=observation.header.stamp.to_sec(),
+                observation_latest_trajectory_id=(
+                    observation.latest_trajectory_id_at_lookup
+                ),
+                trajectory_id=trajectory_message.traj_id,
+                trajectory_end_sec=trajectory_end,
+                position_command_trajectory_id=(
+                    command_message.trajectory_id
+                ),
+                position_command_flag=command_message.trajectory_flag,
+                position_command_age_sec=now_wall - command_receipt_wall,
+                position_command_distance_to_goal=_norm3(
+                    command_position.x - self._entry[0],
+                    command_position.y - self._entry[1],
+                    command_position.z - self._entry[2],
+                ),
+                position_command_speed=_norm3(
+                    command_velocity.x,
+                    command_velocity.y,
+                    command_velocity.z,
+                ),
+                actual_distance_to_goal=distance,
+                goal_position_tolerance=self._goal_position_tolerance,
+                goal_speed_tolerance=self._goal_speed_tolerance,
+                freshness_limit_sec=self._observation_freshness,
+                ready_flag=PositionCommand.TRAJECTORY_STATUS_READY,
+            )
+            if fixed_terminal_hold and not self._fixed_terminal_hold_active:
+                self._fixed_terminal_hold_active = True
+                self._event(
+                    "FIXED_TERMINAL_HOLD",
+                    trajectory_id=int(trajectory_message.traj_id),
+                    trajectory_end_sim=trajectory_end,
+                    observation_stamp_sim=observation.header.stamp.to_sec(),
+                    distance_to_entry_m=distance,
+                    actual_speed_mps=speed,
+                )
+        if (
+            not observation.valid
+            and now_wall - last_valid_wall > self._invalid_observation_grace
+            and not fixed_terminal_hold
+        ):
             return "FAILURE", "invalid_observation:continuous"
-        distance = _norm3(position[0] - self._entry[0], position[1] - self._entry[1], position[2] - self._entry[2])
         if distance <= self._goal_position_tolerance and speed <= self._goal_speed_tolerance:
             if self._goal_ready_since_sim is None:
                 self._goal_ready_since_sim = now_sim
@@ -919,6 +953,7 @@ class TrainingEpisodeResetCoordinator:
         self._terminal_outcome = ""
         self._terminal_reason = ""
         self._goal_ready_since_sim = None
+        self._fixed_terminal_hold_active = False
         self._episode_observation_total = 0
         self._episode_observation_valid = 0
         self._episode_positions = []
@@ -993,6 +1028,7 @@ class TrainingEpisodeResetCoordinator:
             "maximum_lateral_deviation_from_direct": max(deviations) if deviations else None,
             "tracking_error": _statistics(tracking_errors),
             "actual_speed": _statistics(actual_speeds),
+            "fixed_terminal_hold_used": self._fixed_terminal_hold_active,
         }
         self._episodes.append(episode)
         return episode
@@ -1281,7 +1317,7 @@ class TrainingEpisodeResetCoordinator:
         sim_duration = max(0.0, rospy.Time.now().to_sec() - self._overall_sim_start)
         wall_duration = max(1.0e-9, time.monotonic() - self._overall_wall_start)
         acceptance_failures = []
-        if self._runner_mode != "training" and len(self._episodes) != self._episode_count:
+        if len(self._episodes) != self._episode_count:
             acceptance_failures.append("episode_count")
         if (
             self._action_owner == "fixed"
@@ -1289,8 +1325,8 @@ class TrainingEpisodeResetCoordinator:
         ):
             acceptance_failures.append("fixed_entry_episode_success")
         expected_resets = (
-            len(self._episodes) - 1
-            if self._runner_mode == "training" and self._terminal_reason == "training_target_reached"
+            max(0, len(self._episodes) - 1)
+            if self._runner_mode == "training"
             else self._episode_count
         )
         if reset_successes != expected_resets:
@@ -1301,9 +1337,9 @@ class TrainingEpisodeResetCoordinator:
             acceptance_failures.append("trajectory_generation_mismatch")
         if self._controller_failure_count != 0:
             acceptance_failures.append("controller_failure")
-        if self._planner_failure_count != 0:
+        if self._runner_mode != "training" and self._planner_failure_count != 0:
             acceptance_failures.append("planner_failure")
-        if self._collision_count != 0:
+        if self._runner_mode != "training" and self._collision_count != 0:
             acceptance_failures.append("collision")
         if self._surrogate_all_zero_count != 0:
             acceptance_failures.append("surrogate_all_zero")
@@ -1329,9 +1365,13 @@ class TrainingEpisodeResetCoordinator:
             "GO FOR SAC TRAINING LOOP INTEGRATION"
             if passed and self._require_acceptance
             else (
-                "SAC COORDINATOR QUALIFICATION PASS"
-                if passed and self._action_owner == "sac"
-                else ("GUI QUALIFICATION PASS" if passed else "NO-GO")
+                "SAC TRAINING EPISODE COUNT COMPLETE"
+                if passed and self._runner_mode == "training"
+                else (
+                    "SAC COORDINATOR QUALIFICATION PASS"
+                    if passed and self._action_owner == "sac"
+                    else ("GUI QUALIFICATION PASS" if passed else "NO-GO")
+                )
             )
         )
         with self._lock:
@@ -1367,10 +1407,9 @@ class TrainingEpisodeResetCoordinator:
             "runtime_failure": failure,
             "episode_count": len(self._episodes),
             "configured_episode_count": self._episode_count,
-            "max_training_episodes": self._max_training_episodes,
             "completion_reason": (
-                "training_target_reached"
-                if self._terminal_reason == "training_target_reached"
+                "training_episode_count_reached"
+                if self._runner_mode == "training"
                 else "episode_count_reached"
             ),
             "success": outcomes["SUCCESS"],
@@ -1428,29 +1467,21 @@ class TrainingEpisodeResetCoordinator:
             self._prepare_episode()
             index = 1
             while not rospy.is_shutdown():
-                if (
-                    self._runner_mode == "training"
-                    and index > self._max_training_episodes
-                ):
-                    raise RuntimeError("max_training_episodes fail-safe reached")
                 self._activate_episode()
                 self._run_episode()
                 self._wait_for_sac_closure()
-                if (
-                    self._runner_mode == "training"
-                    and self._terminal_reason == "training_target_reached"
-                ):
+                stop_due = episode_count_stop_due(
+                    index,
+                    self._episode_count,
+                )
+                if self._runner_mode == "training" and stop_due:
                     self._cancel_pub.publish(EmptyMessage())
                     self._state = "QUALIFICATION_COMPLETE_HOVER"
                     self._publish_identity()
                     break
                 reset_result = self._reset_once(index)
                 self._prepare_episode(reset_result=reset_result)
-                if episode_count_stop_due(
-                    self._runner_mode,
-                    index,
-                    self._episode_count,
-                ):
+                if stop_due:
                     self._cancel_pub.publish(EmptyMessage())
                     self._state = "QUALIFICATION_COMPLETE_HOVER"
                     self._publish_identity()

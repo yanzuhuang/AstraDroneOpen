@@ -1,4 +1,4 @@
-# AstraDroneOpen first formal 10k SAC training configuration v1.
+# AstraDroneOpen formal 10000-Episode SAC training configuration v1.
 # CleanRL-derived values are reference defaults/structure, not Learning Speed
 # paper parameters. Runtime-verified means verified by the 2026-08-23 SAC
 # training-loop qualification unless a more specific source is stated.
@@ -47,14 +47,14 @@ replay:
   intervention_tolerance_mps: 0.005
 
 action:
-  expected_v_max_min: 0.05
-  expected_v_max_max: 0.40
+  expected_v_max_min: 0.30
+  expected_v_max_max: 1.75
 
 episode:
   policy_period_sec: 0.1
   # This is a per-Episode ceiling, not the formal training stop condition.
   # Genuine early terminals close/reset normally and training continues with
-  # later Episodes until the cumulative valid-transition target is exact.
+  # later Episodes until exactly 10000 completed training Episodes.
   max_steps: 500
   max_duration_sec: 80.0
   start_timeout_sec: 30.0
@@ -78,13 +78,13 @@ tracking_safety:
 
 training:
   mode: training
-  target_valid_transitions: 10000
+  total_training_episodes: 10000
   learning_starts: 1000
   warmup_action_sampling: deterministic_actor_mean
-  checkpoint_steps: [5000, 10000]
-  checkpoint_interval: 5000
-  evaluation_during_training: false
-  completion_reason: training_target_reached
+  checkpoint_episodes:
+    [500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000,
+     5500, 6000, 6500, 7000, 7500, 8000, 8500, 9000, 9500, 10000]
+  completion_reason: training_episode_count_reached
 
 environment:
   # The launch overrides this to false for qualification/evaluation. The
@@ -92,11 +92,9 @@ environment:
   reset_randomization_enabled: true
 
 evaluation:
+  episode_count: 100
   checkpoint_path: ""
-  checkpoint_step: 0
-  deterministic_actor: true
-  write_training_replay: false
-  network_updates: false
+  checkpoint_episode: 0
 
 numerical_safety:
   # Fail-closed thresholds are deliberately far outside the smoke envelope
@@ -154,7 +152,7 @@ parameter_provenance:
     runtime_verified: true
   learning_starts:
     value: 1000
-    source: "AstraDroneOpen smoke Phase A threshold and formal 10k configuration"
+    source: "AstraDroneOpen smoke Phase A threshold and formal 10000-Episode configuration"
     runtime_verified: true
   warmup_exploration:
     value: deterministic_actor_mean
@@ -162,11 +160,11 @@ parameter_provenance:
     runtime_verified: true
   replay_capacity:
     value: 100000
-    source: "formal 10k configuration; logical capacity with grow-on-demand storage"
+    source: "formal 10000-Episode configuration; logical capacity with grow-on-demand storage"
     runtime_verified: false
   checkpoint_and_evaluation_policy:
-    value: "checkpoint every 5000; no evaluation during training"
-    source: "first formal 10k training configuration"
+    value: "checkpoint every 500 completed Episodes through 10000; independent 100-Episode evaluation; no evaluation during training"
+    source: "formal 10000-Episode training configuration"
     runtime_verified: false
   random_seed:
     value: 1
@@ -177,6 +175,6 @@ parameter_provenance:
     source: "explicit SAC seed + 1000 derivation; worksite reset profile"
     runtime_verified: false
   action_bounds_mps:
-    value: [0.05, 0.40]
-    source: "live reviewed worksite SpeedSafetyFilter bounds"
-    runtime_verified: true
+    value: [0.30, 1.75]
+    source: "formal candidate bounds pending fixed-v_max lightweight-backend qualification"
+    runtime_verified: false

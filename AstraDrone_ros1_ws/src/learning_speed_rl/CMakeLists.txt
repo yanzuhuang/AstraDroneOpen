@@ -57,7 +57,6 @@ catkin_install_python(PROGRAMS
   scripts/replay_stage1_reward.py
   scripts/astra_drone_episode_runner.py
   scripts/sac_training_runner.py
-  scripts/summarize_sac_10k_pilot.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

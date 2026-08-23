@@ -18,7 +18,7 @@ def policy_input(value=0.0):
         "future_positions_body": [[value, value, value]] * 20,
         "actual_velocity_body": [value, value, value],
         "tracking_error_body": [value, value, value],
-        "previous_applied_v_max": 0.2,
+        "previous_applied_v_max": 0.30,
     }
 
 
@@ -59,14 +59,17 @@ class SacReplayTest(unittest.TestCase):
             flatten_policy_input(broken)
 
     def test_action_mapping_round_trip(self):
-        mapping = ActionMapping(0.05, 0.40)
+        mapping = ActionMapping(0.30, 1.75)
         for normalized in (-1.0, -0.4, 0.0, 0.8, 1.0):
             self.assertAlmostEqual(
                 mapping.to_normalized(mapping.to_v_max(normalized)), normalized
             )
+        self.assertAlmostEqual(mapping.to_v_max(-1.0), 0.30, places=12)
+        self.assertAlmostEqual(mapping.to_v_max(0.0), 1.025, places=12)
+        self.assertAlmostEqual(mapping.to_v_max(1.0), 1.75, places=12)
 
     def test_replay_preserves_identity_and_truncation(self):
-        mapping = ActionMapping(0.05, 0.40)
+        mapping = ActionMapping(0.30, 1.75)
         replay = SacReplayBuffer(16, mapping)
         for step, action in enumerate((-0.8, 0.0, 0.7)):
             replay.add(transition(step, action, mapping), action, 0)
@@ -82,7 +85,7 @@ class SacReplayTest(unittest.TestCase):
         self.assertIn("truncated", batch)
 
     def test_safety_intervention_is_audited(self):
-        mapping = ActionMapping(0.05, 0.40)
+        mapping = ActionMapping(0.30, 1.75)
         replay = SacReplayBuffer(4, mapping, intervention_tolerance_mps=0.001)
         record = transition(0, 0.0, mapping)
         record["transition"]["action_t"]["applied_v_max"] += 0.01
@@ -90,7 +93,7 @@ class SacReplayTest(unittest.TestCase):
         self.assertIn("safety_intervention", replay.audit()["failures"])
 
     def test_large_logical_capacity_grows_storage_on_demand(self):
-        mapping = ActionMapping(0.05, 0.40)
+        mapping = ActionMapping(0.30, 1.75)
         replay = SacReplayBuffer(
             100000, mapping, initial_allocation=2
         )

@@ -26,6 +26,7 @@
   <arg name="max_vel" default="0.40"/>
   <arg name="max_acc" default="0.80"/>
   <arg name="dynamic_speed_limit_enabled" default="false"/>
+  <arg name="dynamic_speed_limit_minimum" default="0.05"/>
   <arg name="require_training_observation_c" default="false"/>
   <arg name="qualification_required" default="false"/>
   <arg name="coordinator_managed_goals" default="false"/>
@@ -126,6 +127,8 @@
       <arg name="swarm_common_frame" value="$(arg planning_frame)"/>
       <arg name="dynamic_speed_limit_enabled"
            value="$(arg dynamic_speed_limit_enabled)"/>
+      <arg name="dynamic_speed_limit_minimum"
+           value="$(arg dynamic_speed_limit_minimum)"/>
     </include>
 
     <node pkg="ego_planner" type="traj_server" name="traj_server"

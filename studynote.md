@@ -877,21 +877,28 @@ rostopic echo -n 1 /uav1/Odometry
 
 本节只说明当前正式的 `worksite.world + Hector + SAC` training-only 路径。
 它不会启动 PX4、MAVROS、FAST-LIO 或 `ego_mavros_bridge`。当前 10k 旧 pilot
-已经 fail-closed，禁止从旧 checkpoint/replay 继续；下面的命令用于以后创建一个
-新的、独立 output directory 并从空 Replay Buffer 开始。
+已经 fail-closed，禁止从旧 checkpoint/replay 继续。当前正式候选为 10000 Episodes，
+2026-08-24 已确认并最小修复 fixed-only terminal-convergence integration bug，lightweight
+fixed-v_max 六档 `[0.30,1.75]` 最终 PASS；但 fixed path 没有 SAC transition closure，
+正式 training/evaluation 仍未启动。下面命令是最新操作手册，不因 fixed PASS 自动执行。
 
-## 1. 环境准备
+## 1. 每次重新开机后如何启动正式 training
 
-当前 Hector checkout 是只读外部依赖，源码位于：
+只需要打开**一个普通交互终端**，把命令块粘贴到终端提示符后执行，再按下面 2 步
+操作。不要使用编辑器的“Run Code/运行所选文本”按钮；它可能为每个代码块单独创建并
+在命令结束后关闭 `/usr/bin/bash`，也不会保留上一个代码块的环境变量。不要为 ROS、
+Gazebo 和 SAC 分别开终端；最后的 `roslaunch` 会统一启动和管理整套 training-only
+stack。
 
-```text
-/home/yanzu/rl_reference/controllers/hector-quadrotor-noetic
-```
+### 步骤 1：准备、构建并加载环境
 
-Hector 的 Gazebo xacro 有构建期生成文件，因此不要直接在老师 checkout 中构建。
-首次使用或 `/tmp` 被清空后，用临时 overlay 构建最小依赖：
+完整复制下面整个代码块。电脑重启后 `/tmp/astra_hector_training_overlay` 通常已被清空，
+所以本步骤会在只读 Hector 源码之外重建临时 overlay，再构建 Astra 的两个 training
+package。`runtime_artifacts/sac_python_packages/` 保持原位，只作为 PyTorch dependency。
 
 ```bash
+(
+set -e
 export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
 export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
 
@@ -904,11 +911,7 @@ if [ ! -f "$HECTOR_OVERLAY/devel/setup.bash" ]; then
   catkin_make -j2 \
     -DCATKIN_WHITELIST_PACKAGES='hector_uav_msgs;hector_gazebo_plugins;hector_quadrotor_model;hector_quadrotor_controller;hector_quadrotor_controller_gazebo;hector_quadrotor_gazebo_plugins;hector_quadrotor_description;hector_quadrotor_gazebo;message_to_tf'
 fi
-```
 
-构建 Astra 的两个 training package：
-
-```bash
 cd "$ASTRA_ROOT"
 source /opt/ros/noetic/setup.bash
 source "$ASTRA_ROOT/simulation/sim_workspace/devel/setup.bash"
@@ -917,138 +920,176 @@ source "$HECTOR_OVERLAY/devel/setup.bash" --extend
 cd "$ASTRA_ROOT/AstraDrone_ros1_ws"
 catkin_make -j2 \
   -DCATKIN_WHITELIST_PACKAGES='hector_ego_training_backend;learning_speed_rl'
-```
 
-每个新训练终端都执行以下环境设置：
-
-```bash
-export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
-export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
-
+cd "$ASTRA_ROOT"
 source /opt/ros/noetic/setup.bash
 source "$ASTRA_ROOT/simulation/sim_workspace/devel/setup.bash"
 source "$ASTRA_ROOT/AstraDrone_ros1_ws/devel/setup.bash"
 source "$HECTOR_OVERLAY/devel/setup.bash" --extend
-
 export PYTHONPATH="$ASTRA_ROOT/runtime_artifacts/sac_python_packages${PYTHONPATH:+:$PYTHONPATH}"
-
-cd "$ASTRA_ROOT"
+)
 ```
 
-当前 PyTorch training dependency 已位于
-`runtime_artifacts/sac_python_packages`；固定/Mock 和 full-stack 不依赖它。启动前
-先用只读命令确认没有另一套训练 stack 占用默认 ROS/Gazebo master：
+外层圆括号让准备命令在隔离的子 shell 中执行；即使构建失败，也只会结束子 shell，
+不会关闭当前交互终端。下一步的一键脚本会自行重新加载所需环境，不依赖本步骤留下
+变量。
+
+### 步骤 2：一键启动 training 并自动显示关键日志
+
+仍在同一个终端只执行这一条命令：
 
 ```bash
-ps -eo pid,stat,cmd | rg 'rosmaster|roslaunch|gzserver|gzclient|sac_training_runner'
+/home/yanzu/AstraDroneOpen/scripts/run_sh/learning_speed_sac_training.sh
 ```
 
-若已有用户运行，不要直接杀进程；先停止自己的旧运行或在另一个终端显式配置一组
-未占用的 `ROS_MASTER_URI`/`GAZEBO_MASTER_URI`。
+`learning_speed_sac_training.sh` 是今后的正式操作者入口。它会自动完成：
 
-## 2. 启动强化训练
+1. 检查 Hector/Astra/simulation build 环境和 PyTorch dependency；
+2. 拒绝与已有 ROS master、Gazebo 或 SAC/reset 进程混跑；
+3. 生成唯一 RUN_ID，并创建 `runtime_artifacts/rl_training/<RUN_ID>/`；
+4. 设置 `ROS_HOME/ROS_LOG_DIR`，用冻结的正式参数启动 10000-Episode roslaunch；
+5. 把完整 console 写入 `logs/training_console.log`；
+6. 自动定位 runner/coordinator ROS 日志，并在**同一个终端**只显示
+   `[SAC TRAINING] transition/episode/replay/updates/reward/action/v_max` 以及
+   `EPISODE_START/TRUNCATED`、`RESET_BEGIN/READY`、checkpoint 和 failure。
 
-正式 launch 文件真实存在于：
+脚本启动后会先打印 `RUN_ID=...`、`SAC_OUTPUT=...` 和
+`FULL_CONSOLE_LOG=...`、`KEY_LOG_MONITOR=automatic`。大量 roslaunch/Gazebo/EGO replan
+原始输出只写入 full console 文件，不再淹没主终端；如果 launch 在关键节点日志出现前
+失败，脚本会自动打印 full console 最后 80 行。不需要第二个终端，也不需要手工
+`find` 或 `tail` 才能看 Episode。关键日志筛选使用 Ubuntu 自带的
+`grep --line-buffered -E`，不依赖 Codex 环境里的 `rg`。需要 Gazebo GUI 时只执行：
+
+```bash
+/home/yanzu/AstraDroneOpen/scripts/run_sh/learning_speed_sac_training.sh --gui
+```
+
+RUN_ID 的固定格式是：
 
 ```text
-AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend/
-  launch/hector_worksite_sac_training.launch
+sac_training_10000ep_YYYYMMDD_HHMMSS
 ```
 
-它默认加载 `learning_speed_rl/config/sac_training_v1.yaml`，默认是累计精确 10000
-valid transitions、Replay 100000、SAC seed 1、每个 Episode 最多 500 step、training
-随机 XY reset 和 headless。固定 Episode 数在 training 模式禁用；Episode 提前结束会
-正常 reset 并继续累计。`max_training_episodes=1000` 只作异常 fail-safe。Headless
-正式训练命令如下；每次必须生成全新目录：
+例如 `sac_training_10000ep_20260824_210000` 中，`20260824` 是日期，`210000` 是启动
+时间。它的实际目录是：
 
-Episode 1 使用 launch 的 nominal spawn `(0,0,3)`；此后每次 coordinator reset 都按
-seed 1001 的序列采样随机 XY。每个 `episode_results.json` 项都带 `start_reset`，初始
-Episode 标为 `initial_spawn_nominal=true`，后续记录 sampled xyz/yaw、seed、sample/
-attempt 和 candidate validation。
+```text
+/home/yanzu/AstraDroneOpen/runtime_artifacts/rl_training/sac_training_10000ep_20260824_210000/
+```
+
+如果忘记记录 RUN_ID，可在任意新终端用下面的只读命令寻找最近创建的 training 目录：
 
 ```bash
-export RUN_ID="sac_training_10k_$(date +%Y%m%d_%H%M%S)"
-export SAC_OUTPUT="$ASTRA_ROOT/runtime_artifacts/$RUN_ID"
-mkdir -p "$SAC_OUTPUT/logs/ros" "$SAC_OUTPUT/ros_home"
-export ROS_HOME="$SAC_OUTPUT/ros_home"
-export ROS_LOG_DIR="$SAC_OUTPUT/logs/ros"
-
-set -o pipefail
-roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
-  output_dir:="$SAC_OUTPUT" \
-  gui:=false \
-  runner_mode:=training \
-  target_valid_transitions:=10000 \
-  max_training_episodes:=1000 \
-  max_episode_time:=55.0 \
-  run_id:="$RUN_ID" \
-  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml" \
-  2>&1 | tee "$SAC_OUTPUT/logs/training_console.log"
+ls -1dt /home/yanzu/AstraDroneOpen/runtime_artifacts/rl_training/sac_training_10000ep_* \
+  | head -n 1
 ```
 
-需要 Gazebo GUI 时只改 `gui:=true`：
+正式 launch 是
+`hector_ego_training_backend/launch/hector_worksite_sac_training.launch`。它默认加载
+`learning_speed_rl/config/sac_training_v1.yaml`，累计精确 10000 个 completed training
+Episodes，使用空 Replay、随机 XY reset 和 headless；正常 checkpoint 为 completed
+Episode 500、1000、1500……9500、10000，共 20 个。总 valid transition 数由实际
+Episode 长度决定，不预先固定。
 
-```bash
-roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
-  output_dir:="$SAC_OUTPUT" \
-  gui:=true \
-  runner_mode:=training \
-  target_valid_transitions:=10000 \
-  max_training_episodes:=1000 \
-  max_episode_time:=55.0 \
-  run_id:="$RUN_ID" \
-  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml" \
-  2>&1 | tee "$SAC_OUTPUT/logs/training_console.log"
-```
+首轮 NO-GO 历史：2026-08-24 复用 worksite Episode/reset coordinator 做了
+0.30/0.75/1.00/1.25/1.50/1.75 m/s、每档 2 Episodes（nominal + random Hover）的
+fixed-v_max qualification。0.30、0.75 为 2/2 PASS；1.00–1.75 均为 0/2，因 EGO
+trajectory terminal convergence 期间连续 `trajectory_unavailable` 触发冻结的
+`invalid_observation:continuous` 门。后续诊断证明 B-spline 已正常结束、traj_server 正在
+持有终点，而 fixed coordinator 缺少 terminal convergence 语义；最小 fixed-only guard
+修复后 1.00→1.25→1.50→1.75 顺序重测全部 2/2 PASS。不得把该 fixed PASS 写成 SAC
+transition-closure、正式 training、full-stack 或真机 PASS。
 
-launch 将 `target_valid_transitions` 同时传给 runner 与 coordinator；当前正式值必须与
-`sac_training_v1.yaml` 的 `training.target_valid_transitions=10000` 一致。若开启一个
-新的实验并修改 target，还要同步检查：
+## 2. 完成、中断后如何启动下一次 training
 
-- `episode.max_steps=500` 只是单 Episode ceiling，不是正常 training stop；
-- training 的 coordinator `episode_count=0` 表示 disabled；不要用固定 Episode 数代替
-  transition target；
-- `max_training_episodes=1000` 只是异常 fail-safe，不能作为正常完成条件；
-- `training.checkpoint_steps` 不能超过 target，且应包含最终 target；
-- 每次必须使用全新 `RUN_ID`/`SAC_OUTPUT`；runner 还用独占 marker 拒绝复用旧训练目录。
+先等待第一次 training 完全结束、`roslaunch` 退出并重新出现 shell 提示符。
 
-这就是第一轮正式 10k 入口；本次配置整理没有替用户运行它。不要把命令扩成
-50k/100k/1M，也不要指向 `sac_training_10k_pilot_20260823` 的旧 checkpoint/replay。
+- 如果没有重启电脑，无论仍在原终端还是换了新终端：确认上一条脚本已经完全退出后，
+  重新执行**步骤 2**的一键命令；脚本会自行做残留进程检查；
+- 如果已经重启电脑：先执行**步骤 1**，再执行**步骤 2**。
 
-Headless 与 GUI 命令二选一；GUI 也必须先创建新的 `RUN_ID/SAC_OUTPUT`，不能在已
-启动过的 headless 目录里重跑。
+每次重新执行一键脚本都会自动生成新 RUN_ID。第二次 training 会写入新的
+`runtime_artifacts/rl_training/<新RUN_ID>/`，并从空 Replay 开始；不得复用第一次的
+RUN_ID、SAC_OUTPUT、checkpoint 或 Replay。脚本会拒绝已存在目录，不能覆盖旧 run。
+
+`Ctrl+C` 是人工中断，不是暂停，也不是正常完成。中断后当前实现**不能 resume**：
+
+- 不删除、不清空、不移动旧 RUN_ID 目录；它是一次真实的 interrupted/NO-GO 工件；
+- 不把旧 transition、Replay 或 checkpoint 接到下一次正式 training；
+- 等 roslaunch 完全 teardown 后，重新执行步骤 2 的一键脚本，以新 RUN_ID 从空 Replay
+  开始；如果期间重启了电脑，则先执行步骤 1；
+- 即使中断前已经到达 Episode checkpoint，也只能保留 checkpoint 作审计，不能把它
+  作为正式 training resume；未完成 run 的 checkpoint 也不能冒充完整训练结论。
+
+历史旧 10k run `sac_training_10k_20260823_191457` 在外部 SIGINT/`Ctrl+C` 后冻结为：2 个已闭合
+Episode、1000/10000 transitions、60 gradient updates、无 checkpoint，最终
+`status=failed`、`verdict=NO-GO`。这些数据保留用于诊断，但下一次正式训练不能接着它
+跑，也不能清空后复用同名目录。
 
 ## 3. 如何知道训练正在运行、数据在哪里
 
-启动终端每 100 个 valid transition 输出一条 `[SAC TRAINING]` 进度，包含
-`transition/10000`、Episode ID、reward、Replay size、update count、critic/actor
-loss、alpha、normalized action 和 requested `v_max`。每个 reset 会输出
-`RESET_BEGIN`、candidate/seed/attempt、generation barrier、warm-up、`RESET_READY`；
-checkpoint 会输出 step 与实际路径。planner/controller/collision 的真实 failure 也会
-进入同一终端日志并使流程 fail closed。
+一键脚本的主终端只持续显示筛选后的 SAC/Episode/reset/checkpoint/failure 关键日志。
+完整 roslaunch、Gazebo、EGO planner/FSM 和 teardown 输出保存在
+`logs/training_console.log`。其中 `[drone 0 replan N]` 是 EGO 重规划次数，不是 Episode；
+`total time:0,optimize:0,refine:0` 是 sim-time 毫秒分辨率下的小于 1 ms 计时显示，不表示
+SAC 没训练，也不表示 EGO 跳过优化。
 
-另开终端实时查看：
+一键脚本会自动跟随本次 RUN_ID 的 runner/coordinator 节点日志，并把真正的 SAC/Episode
+进度筛选到同一个终端。下面的手工命令只用于重新打开一个历史/已运行 run 的日志，
+不是正常启动所必需；先把 `<实际RUN_ID>` 替换为脚本打印的值：
 
 ```bash
-tail -F "$SAC_OUTPUT/logs/training_console.log"
-tail -F "$SAC_OUTPUT/sac_transition_audit.jsonl"
-tail -F "$SAC_OUTPUT/qualification_events.jsonl"
-grep -E '\[SAC TRAINING\]|RESET_|planner_failure|collision|checkpoint' \
-  "$SAC_OUTPUT/logs/training_console.log"
+export RUN_ID="<本次训练的实际 RUN_ID>"
+export SAC_OUTPUT="/home/yanzu/AstraDroneOpen/runtime_artifacts/rl_training/$RUN_ID"
+
+export RUNNER_LOG
+RUNNER_LOG="$(find "$SAC_OUTPUT/logs/ros" -type f \
+  -name 'uav1-sac_training_runner-*.log' -print -quit)"
+
+export COORDINATOR_LOG
+COORDINATOR_LOG="$(find "$SAC_OUTPUT/logs/ros" -type f \
+  -name 'uav1-training_episode_reset_coordinator-*.log' -print -quit)"
+
+tail -F "$RUNNER_LOG" "$COORDINATOR_LOG"
 ```
+
+Runner 日志每 100 个 valid transition 输出类似：
+
+```text
+[SAC TRAINING] transition=600 episode=training_episode_000002 completed_episode=1/10000
+reward=... replay=600 updates=0 critic1_loss=... actor_loss=... alpha=...
+action=... v_max=...
+```
+
+其中 `episode=training_episode_000002` 才表示当前是 Episode 2；
+`transition=600` 是全 run 累计 valid transition 数，`completed_episode=1/10000` 是唯一
+正常停止进度；`updates=0` 在前 1000 条是正常的，因为正式配置为
+`learning_starts=1000 transitions`。到达第 1000 条后会出现 stochastic training
+enabled，随后 updates/loss/alpha 才开始更新。
+
+Coordinator 日志记录 `EPISODE_TRUNCATED`、`RESET_BEGIN`、随机 reset candidate/seed、
+generation barrier、warm-up 和 `RESET_READY {'next_episode_id': N}`。它用于判断 Episode
+闭合、当前准备进入第几个 Episode 以及 reset 是否成功。
 
 本次 run 的权威根目录就是 `$SAC_OUTPUT`：
 
+```text
+/home/yanzu/AstraDroneOpen/runtime_artifacts/rl_training/<RUN_ID>/
+```
+
 | 数据 | 实际路径 |
 |---|---|
-| 每条 transition/action/v_max/reward | `sac_transition_audit.jsonl` |
-| Episode return/success/failure/truncated | `sac_episode_summaries.json`、`episode_results.json` |
+| 主终端、roslaunch、Gazebo、EGO/FSM、teardown | `logs/training_console.log` |
+| 每 100 transition 的 Episode/Replay/update/reward/action/v_max 进度 | `logs/ros/<ROS_SESSION>/uav1-sac_training_runner-*.log` |
+| Episode terminal、reset candidate/barrier/warm-up/ready | `logs/ros/<ROS_SESSION>/uav1-training_episode_reset_coordinator-*.log` |
+| 每条 transition/action/v_max/reward/identity/causality | `sac_transition_audit.jsonl` |
+| Episode return、transition count、speed/action/tracking metrics | `sac_episode_summaries.json` |
+| Episode outcome、terminal reason、随机 start provenance | `episode_results.json` |
 | reset candidate/seed/attempt/validation/generation | `reset_results.json`、`qualification_events.jsonl` |
-| Replay 完成态快照与审计 | `sac_replay_snapshot.npz`、`sac_runtime_summary.json` |
-| loss/Q/alpha/action/update metrics | `sac_learner_metrics.jsonl` |
-| checkpoint 与清单 | `sac_checkpoint_step_05000.pt`、`sac_checkpoint_step_10000.pt`、`sac_checkpoint_manifest.json` |
+| Replay 完成态快照与全 run 审计 | `sac_replay_snapshot.npz`、`sac_runtime_summary.json` |
+| learner loss/Q/alpha/action/update metrics | `sac_learner_metrics.jsonl` |
+| checkpoint 与清单 | `sac_checkpoint_episode_0500.pt`、`1000.pt`……`9500.pt`、`10000.pt`（均使用完整 `sac_checkpoint_episode_` 前缀）、`sac_checkpoint_manifest.json`；共20个 |
 | runner/coordinator 汇总 | `sac_runtime_summary.json`、`qualification_summary.json` |
-| 可读终端总日志 | `logs/training_console.log` |
 | ROS/roslaunch/node 日志 | `logs/ros/`；本命令通过 `ROS_LOG_DIR` 固定到项目 run 内 |
 | 本 run ROS home | `ros_home/` |
 
@@ -1068,94 +1109,95 @@ find "$SAC_OUTPUT/logs/ros" -maxdepth 3 -type f -print
 
 ## 4. 如何停止训练
 
-正常完成由 runner 在第 10000 条 valid transition 写入 Replay、保存 final checkpoint、
-记录 `training_target_reached` 并退出；runner 是 required node，roslaunch 随后统一
-teardown Gazebo、controller 和 ROS nodes。中途人工停止才在启动终端按一次 `Ctrl-C`
-并等待 teardown。不要把 `kill -9` 当正常停止方法。
+正常完成由 completed Episode 数唯一拥有：Episode 9999 不能结束 training；Episode
+10000 的最后 transition 写入 Replay、Episode closure 完成、保存
+`sac_checkpoint_episode_10000.pt` 和 summary 后正常退出；不会 reset 或启动 Episode
+10001。runner 是 required node，roslaunch 随后统一 teardown
+Gazebo、controller 和 ROS nodes。中途人工停止才在启动终端按一次 `Ctrl-C` 并等待
+teardown。不要把 `kill -9` 当正常停止方法。
 
-training 只在 `training.checkpoint_steps` 指定的 environment step 保存 checkpoint；
+training 只在 `training.checkpoint_episodes` 指定的 completed Episode closure 后保存
+checkpoint；
 任意时刻 `Ctrl-C` **不会承诺额外保存一个最新 checkpoint**。因此中止后应保留：
 
-- 已经落盘的 `sac_checkpoint_step_*.pt`；
+- 已经落盘的 `sac_checkpoint_episode_*.pt`；
 - `sac_checkpoint_manifest.json`；
 - 已实时落盘的 `sac_transition_audit.jsonl` 和 console/ROS 日志；
 - 正常 finalize 已发生时的 `sac_learner_metrics.jsonl`、Episode/reset JSON；
 - Episode/reset/qualification JSON 与 `logs/`。
 
-所有输出都在本次 `$SAC_OUTPUT` 下；不得移动到 `test_evidence/`，也不得覆盖历史
-runtime directory。
+所有输出都在本次 `$SAC_OUTPUT` 下；不得移动到 `test_evidence/`，不得删除/清空中断
+run，也不得覆盖历史 runtime directory。人工中断后的 `status=failed/NO-GO` 是应保留的
+真实结果，不得改写成 PASS。
 
-中途 Ctrl-C 不保证写出未到达 step 的 checkpoint，也不保证生成完整 Replay snapshot；
+中途 Ctrl-C 不保证写出未到达 Episode 的 checkpoint，也不保证生成完整 Replay snapshot；
 当前不能从中断 checkpoint/replay 继续正式 training，只能保留工件并用新的 run 从空
 Replay 开始。
 
 ## 5. Checkpoint 与独立 evaluation
 
-正式 training 只在本次 output root 保存以下两个 checkpoint：
+正式 training 每 500 completed Episodes 保存一次，共 20 个。命名/path 例如：
 
 ```text
-$SAC_OUTPUT/sac_checkpoint_step_05000.pt
-$SAC_OUTPUT/sac_checkpoint_step_10000.pt
+$SAC_OUTPUT/sac_checkpoint_episode_0500.pt
+$SAC_OUTPUT/sac_checkpoint_episode_1000.pt
+...
+$SAC_OUTPUT/sac_checkpoint_episode_9500.pt
+$SAC_OUTPUT/sac_checkpoint_episode_10000.pt
 $SAC_OUTPUT/sac_checkpoint_manifest.json
 ```
 
-qualification 模式使用名称 `sac_smoke_checkpoint.pt`。checkpoint 包含 Actor、
+qualification 模式使用名称 `sac_qualification_checkpoint.pt`。checkpoint 包含 Actor、
 Q1/Q2、target Q1/Q2、actor/critic/alpha optimizer、log-alpha、environment/update
-counters 和完整 SAC config。
+counters、completed Episode provenance 和完整 SAC config。Episode 10000 checkpoint 同时
+是 final checkpoint。
 
 **当前 training resume 未实现。** `runner_mode:=training` 总是从新 agent 与空 Replay
 Buffer 开始，不能把 `evaluation_checkpoint_path` 冒充训练 resume。
 
 当前支持只读 deterministic evaluation：固定 nominal Hover `(0,0,3)`、deterministic
-Actor、不做 gradient update、不创建或写 training Replay，并使用独立 output。先把
-`TRAINING_OUTPUT` 指向已完成 training 目录。step 5000：
+Actor、不做 gradient update、不创建或写 training Replay，固定 nominal Hover，并使用
+独立 output。先把 `TRAINING_OUTPUT` 指向已完成 training 目录，再把
+`CHECKPOINT_EPISODE` 设为 500 的倍数（500…10000）之一。下面是 100-Episode 独立
+evaluation 命令；当前没有合格正式 checkpoint，所以本轮不要执行：
 
 ```bash
-export TRAINING_OUTPUT="$ASTRA_ROOT/runtime_artifacts/<已完成的training目录>"
-export EVAL_ID="sac_eval_05000_$(date +%Y%m%d_%H%M%S)"
-export EVAL_OUTPUT="$ASTRA_ROOT/runtime_artifacts/$EVAL_ID"
+set -euo pipefail
+export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
+export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
+source /opt/ros/noetic/setup.bash
+source "$ASTRA_ROOT/simulation/sim_workspace/devel/setup.bash"
+source "$ASTRA_ROOT/AstraDrone_ros1_ws/devel/setup.bash"
+source "$HECTOR_OVERLAY/devel/setup.bash" --extend
+export PYTHONPATH="$ASTRA_ROOT/runtime_artifacts/sac_python_packages${PYTHONPATH:+:$PYTHONPATH}"
+export TRAINING_RUN_ID="<已完成的training RUN_ID>"
+export TRAINING_OUTPUT="$ASTRA_ROOT/runtime_artifacts/rl_training/$TRAINING_RUN_ID"
+export CHECKPOINT_EPISODE=10000
+printf -v CHECKPOINT_TAG '%04d' "$CHECKPOINT_EPISODE"
+export EVAL_ID="sac_eval_episode_${CHECKPOINT_TAG}_$(date +%Y%m%d_%H%M%S)"
+export EVAL_OUTPUT="$ASTRA_ROOT/runtime_artifacts/rl_evaluation/$EVAL_ID"
+mkdir -p "$ASTRA_ROOT/runtime_artifacts/rl_evaluation"
+mkdir "$EVAL_OUTPUT"
 mkdir -p "$EVAL_OUTPUT/logs/ros" "$EVAL_OUTPUT/ros_home"
 export ROS_HOME="$EVAL_OUTPUT/ros_home"
 export ROS_LOG_DIR="$EVAL_OUTPUT/logs/ros"
 
-set -o pipefail
 roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
   output_dir:="$EVAL_OUTPUT" \
   gui:=false \
   runner_mode:=evaluation \
   random_start_enabled:=false \
-  episode_count:=3 \
+  evaluation_episodes:=100 \
   run_id:="$EVAL_ID" \
-  evaluation_checkpoint_path:="$TRAINING_OUTPUT/sac_checkpoint_step_05000.pt" \
-  evaluation_checkpoint_step:=5000 \
+  evaluation_checkpoint_path:="$TRAINING_OUTPUT/sac_checkpoint_episode_${CHECKPOINT_TAG}.pt" \
+  evaluation_checkpoint_episode:="$CHECKPOINT_EPISODE" \
   sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml" \
   2>&1 | tee "$EVAL_OUTPUT/logs/evaluation_console.log"
 ```
 
-step 10000：
-
-```bash
-export EVAL_ID="sac_eval_10000_$(date +%Y%m%d_%H%M%S)"
-export EVAL_OUTPUT="$ASTRA_ROOT/runtime_artifacts/$EVAL_ID"
-mkdir -p "$EVAL_OUTPUT/logs/ros" "$EVAL_OUTPUT/ros_home"
-export ROS_HOME="$EVAL_OUTPUT/ros_home"
-export ROS_LOG_DIR="$EVAL_OUTPUT/logs/ros"
-
-set -o pipefail
-roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
-  output_dir:="$EVAL_OUTPUT" \
-  gui:=false \
-  runner_mode:=evaluation \
-  random_start_enabled:=false \
-  episode_count:=3 \
-  run_id:="$EVAL_ID" \
-  evaluation_checkpoint_path:="$TRAINING_OUTPUT/sac_checkpoint_step_10000.pt" \
-  evaluation_checkpoint_step:=10000 \
-  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml" \
-  2>&1 | tee "$EVAL_OUTPUT/logs/evaluation_console.log"
-```
-
-checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。
+checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。Training checkpoint
+只从 `runtime_artifacts/rl_training/<RUN_ID>/` 读取，evaluation 自身只写入
+`runtime_artifacts/rl_evaluation/<EVAL_ID>/`，两者不能共用目录。
 
 ## 6. 参数在哪里修改
 
@@ -1164,7 +1206,8 @@ checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。
 
 | 参数 | 当前值 | 文件路径 | 字段名 | 含义 | 是否建议轻易修改 |
 |---|---:|---|---|---|---|
-| total valid transitions | `10000` | `AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml` | `training.target_valid_transitions` | 第一轮正式 training 的 valid active-Episode experience target | 否 |
+| total training Episodes | `10000` | `AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml` | `training.total_training_episodes` | 正式 training 的唯一正常停止单位 | 否 |
+| total valid transitions | 运行后确定 | runner summary/log | `total_valid_transitions` / `global_environment_step` | 10000 Episodes 内实际闭合的 valid experience 总数，不是停止 target | 不适用 |
 | Replay Buffer capacity | `100000` | 同上 | `replay.capacity` | 最多保留多少条 transition，不是训练步数 | 否 |
 | learning starts | `1000` | 同上 | `training.learning_starts` | 到多少条经验后启用 learner/stochastic training | 否 |
 | batch size | `64` | 同上 | `sac.batch_size` | 每次 gradient update 的 replay 样本数 | 一般否 |
@@ -1180,11 +1223,11 @@ checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。
 | policy update frequency | `2` | 同上 | `sac.policy_frequency` | warm-up 后每 2 个 learner update 更新一次 actor/alpha | 否 |
 | seed | `1` | 同上 | `sac.seed` | NumPy/PyTorch/replay sampling seed | 比较实验可显式换，但必须记录 |
 | normalized action | `[-1,1]` | 同上与 `training/sac_replay.py` | `action_dim=1`、`ActionMapping` | Actor tanh 输出到 `v_max` 的仿射输入 | 否 |
-| checkpoint steps | `[5000,10000]` | 同上 | `training.checkpoint_steps` | runner 实际保存 checkpoint 的 step allowlist | 否 |
-| checkpoint interval | `5000` | 同上 | `training.checkpoint_interval` | runner 校验 checkpoint steps 与间隔一致 | 不要只改这一项 |
-| training 中 evaluation | `false` | 同上 | `training.evaluation_during_training` | hard gate；5000 只 checkpoint，10000 checkpoint 后结束 | 禁止开启；使用独立 evaluation |
-| action minimum | `0.05 m/s` | `.../config/speed_adapter.yaml` 与 `sac_training_v1.yaml` | `safety.v_max_min` / `action.expected_v_max_min` | live safety 下限及 SAC 一致性门 | 不建议 |
-| action maximum | `0.40 m/s` | worksite SAC launch 与 `sac_training_v1.yaml` | `v_max_max` / `action.expected_v_max_max` | training EGO/SafetyFilter 静态上限 | 不建议 |
+| checkpoint Episodes | `500,1000,...,10000`（20个） | 同上 | `training.checkpoint_episodes` | runner 在 Episode formal closure 后保存；10000 同时为 final | 否 |
+| training 中 evaluation | 不存在 | runner mode 分支 | 无调用路径 | 中间只 checkpoint，10000 final 后结束；evaluation 必须独立启动 | 不适用 |
+| evaluation Episodes | `100` | 同上与 worksite SAC launch | `evaluation.episode_count` / `evaluation_episodes` | 独立 deterministic evaluation 的固定数量 | 否 |
+| action minimum | `0.30 m/s` | `sac_training_v1.yaml` 与 worksite SAC launch | `action.expected_v_max_min` / `v_max_min` | 正式 live SafetyFilter/EGO dynamic 下限 | 不建议；当前全范围 NO-GO |
+| action maximum | `1.75 m/s` | 同上 | `action.expected_v_max_max` / `v_max_max` | 正式 EGO 静态 ceiling、dynamic gate 与 SpeedSafetyFilter 上限 | 不建议；当前全范围 NO-GO |
 | nominal Hover center | `(0,0,3)`、yaw `0` | `.../launch/hector_worksite_training_episode_reset.launch` 与 `.../config/worksite_training_reset.yaml` | `hover_x/y/z/yaw`、`random_start.center_x/center_y/z/yaw` | initial/fixed evaluation Hover 与 training random center | 否 |
 | training random reset | enabled | `.../config/worksite_training_reset.yaml`；SAC launch 按 mode 覆盖开关 | `random_start.enabled`、launch `random_start_enabled` | training=true；qualification/evaluation=false | 不要在 evaluation 开启 |
 | random reset X bounds | `[-1,+1] m` offset | `.../config/worksite_training_reset.yaml` | `random_start.x_min_offset/x_max_offset` | nominal center 周围完整安全 X 区间 | 扩大前必须重做 world/geometry 审计 |
@@ -1208,10 +1251,11 @@ checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。
 - `1 step = 1 transition = Replay Buffer 中 1 条经验`；前提是 identity、causality、
   Observation 和 reward 合同全部闭合。
 - `Replay Buffer capacity` 是最多保留多少条经验，**不等于** total training
-  steps。当前 capacity 100000，training target 10000。
+  transitions。当前 capacity 100000；正式正常停止 target 是 10000 completed Episodes。
 - 一个 Episode 由若干 step 组成；当前最多 500 step，也可能因真实 terminal 提前
   结束。提前结束会保留真实终态、正常 reset 并继续累计后续 Episode；这不是覆盖或
-  重跑失败。正常 training 只在累计精确 10000 条 valid experience 时完成。
+  重跑失败。success、collision、truncated 等 terminal 在 formal closure 后都准确计为
+  一个 completed training Episode；正常 training 只在精确完成 Episode 10000 时结束。
 - `gradient update` 从 Replay Buffer 抽一个 batch 更新网络，**不等于** environment
   step。当前 learner 约 5 update/s，而 environment scheduler 是 10 step/s。
 - `learning_starts=1000` 表示先收集 1000 条 experience；达到后才启用 learner。
@@ -1219,14 +1263,16 @@ checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。
 
 ## 8. 当前正式训练流程
 
-1. 使用上面的精确命令创建全新 run，从空 Replay 启动 10000-transition training；
-   不加载旧 10k pilot。
-2. training 内只交互、Replay、SAC update、checkpoint；5000 不做 evaluation。
-3. 10000 保存 final checkpoint 并结束后，再分别运行 5000/10000 deterministic
-   evaluation，比较 return、action distribution、planner/terminal 与 reset 记录。
-4. 真实 planner/collision/tracking failure 必须保留；不得通过补跑、调 planner、改
+1. fixed `[0.30,1.75]` blocker 已清除；正式 training 仍须用户显式授权，并用全新 run、
+   空 Replay 开始，不加载旧 pilot。
+2. fixed-only terminal hold 没有验证 SAC pending transition closure；正式 run 必须继续
+   fail closed 监控 identity、transition closure 和 Observation invalid。
+3. training 内只交互、Replay、SAC update、每 500 Episodes checkpoint，不做 evaluation。
+4. Episode 10000 保存 final checkpoint 并结束后，才可对选定 checkpoint 分别运行
+   100-Episode deterministic evaluation。
+5. 真实 planner/collision/tracking/Observation failure 必须保留；不得通过补跑、调 planner、改
    Reward/SafetyFilter/Hector PID 将失败包装为 PASS。
-5. 只有多个 checkpoint/evaluation 与后续多 seed 均稳定，才讨论扩大规模；当前不
+6. 只有多个 checkpoint/evaluation 与后续多 seed 均稳定，才讨论扩大规模；当前不
    默认启动 50k/100k/1M。
 
 ## 9. 不要随意修改的项目
@@ -1236,7 +1282,7 @@ checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。
 - EGO core、clearance 和 planner 参数；
 - Hector model、Pose/Twist PID；
 - Learning Speed dynamic-`v_max` force-replan thresholds；
-- SpeedSafetyFilter `[0.05,0.40]` 与禁止 slew/low-pass/hysteresis 的合同；
+- 当前候选 SpeedSafetyFilter `[0.30,1.75]` 与禁止 slew/low-pass/hysteresis 的合同；
 - request/action/applied Episode identity、reset generation 和 causal barriers；
 - full-stack FAST-LIO + PX4/MAVROS 路径及其独立 provenance。
 

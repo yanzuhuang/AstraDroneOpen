@@ -69,7 +69,7 @@ class SacConfig:
             raise ValueError("torch_num_threads must be positive")
         if self.learner_side_normalization:
             raise ValueError(
-                "learner-side normalization is intentionally disabled for smoke"
+                "learner-side normalization is intentionally disabled"
             )
 
 

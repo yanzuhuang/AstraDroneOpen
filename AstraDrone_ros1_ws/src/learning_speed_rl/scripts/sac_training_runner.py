@@ -4,7 +4,6 @@
 import json
 import math
 import os
-from dataclasses import replace
 from pathlib import Path
 import statistics
 import threading
@@ -19,6 +18,8 @@ from learning_speed_rl.training import (
     AstraDroneEnv,
     AstraDroneEpisodeConfig,
     FormalTrainingSchedule,
+    checkpoint_filename,
+    learning_started,
     mode_uses_training_replay,
 )
 from learning_speed_rl.training.sac import LearnerWorker, SacAgent, SacConfig
@@ -74,7 +75,9 @@ def _finite_metrics(metrics, names):
 class SacTrainingRunner:
     def __init__(self):
         self.output_dir = _artifact_directory(rospy.get_param("~output_dir"))
-        self.run_id = str(rospy.get_param("~run_id", "sac_runtime_smoke"))
+        self.run_id = str(
+            rospy.get_param("~run_id", "worksite_sac_training_10000ep")
+        )
         self.mode = str(
             rospy.get_param("~training/mode", "qualification")
         ).strip().lower()
@@ -94,8 +97,8 @@ class SacTrainingRunner:
                 )
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 stream.write(self.run_id + "\n")
-        self.target_valid_transitions = int(
-            rospy.get_param("~training/target_valid_transitions", 10000)
+        self.total_training_episodes = int(
+            rospy.get_param("~training/total_training_episodes", 10000)
         )
         self.learning_starts = int(
             rospy.get_param("~training/learning_starts", 1000)
@@ -106,38 +109,26 @@ class SacTrainingRunner:
                 "deterministic_actor_mean",
             )
         ).strip()
-        self.checkpoint_steps = sorted(
+        self.checkpoint_episodes = sorted(
             set(
                 int(value)
                 for value in rospy.get_param(
-                    "~training/checkpoint_steps",
-                    [5000, 10000],
+                    "~training/checkpoint_episodes",
+                    list(range(500, 10001, 500)),
                 )
             )
         )
-        self.checkpoint_interval = int(
-            rospy.get_param("~training/checkpoint_interval", 5000)
-        )
-        self.evaluation_during_training = bool(
-            rospy.get_param("~training/evaluation_during_training", False)
-        )
         self.training_schedule = FormalTrainingSchedule(
-            target_valid_transitions=self.target_valid_transitions,
-            checkpoint_steps=tuple(self.checkpoint_steps),
-            checkpoint_interval=self.checkpoint_interval,
-            evaluation_during_training=self.evaluation_during_training,
+            total_training_episodes=self.total_training_episodes,
+            checkpoint_episodes=tuple(self.checkpoint_episodes),
         )
         try:
             self.training_schedule.validate()
         except ValueError as error:
             raise rospy.ROSInitException(str(error))
-        if self.target_valid_transitions <= 0 or self.learning_starts <= 0:
+        if self.total_training_episodes <= 0 or self.learning_starts <= 0:
             raise rospy.ROSInitException(
-                "training target and learning_starts must be positive"
-            )
-        if self.learning_starts >= self.target_valid_transitions:
-            raise rospy.ROSInitException(
-                "learning_starts must be below the training target"
+                "training Episode target and transition learning_starts must be positive"
             )
         if self.warmup_action_sampling != "deterministic_actor_mean":
             raise rospy.ROSInitException(
@@ -198,17 +189,11 @@ class SacTrainingRunner:
         self.evaluation_checkpoint_path = str(
             rospy.get_param("~evaluation/checkpoint_path", "")
         ).strip()
-        self.evaluation_checkpoint_step = int(
-            rospy.get_param("~evaluation/checkpoint_step", 0)
+        self.evaluation_checkpoint_episode = int(
+            rospy.get_param("~evaluation/checkpoint_episode", 0)
         )
-        evaluation_deterministic = bool(
-            rospy.get_param("~evaluation/deterministic_actor", True)
-        )
-        evaluation_writes_replay = bool(
-            rospy.get_param("~evaluation/write_training_replay", False)
-        )
-        evaluation_updates = bool(
-            rospy.get_param("~evaluation/network_updates", False)
+        self.evaluation_episode_count = int(
+            rospy.get_param("~evaluation/episode_count", 100)
         )
         reset_randomization_enabled = bool(
             rospy.get_param(
@@ -223,13 +208,13 @@ class SacTrainingRunner:
             raise rospy.ROSInitException(
                 "evaluation must use fixed nominal reset"
             )
-        if self.mode == "evaluation" and (
-            not evaluation_deterministic
-            or evaluation_writes_replay
-            or evaluation_updates
-        ):
+        if self.mode == "evaluation" and self.evaluation_checkpoint_episode <= 0:
             raise rospy.ROSInitException(
-                "evaluation must be deterministic/read-only/no-replay"
+                "evaluation/checkpoint_episode must be positive"
+            )
+        if self.evaluation_episode_count <= 0:
+            raise rospy.ROSInitException(
+                "evaluation/episode_count must be positive"
             )
         self.q_abs_limit = float(
             rospy.get_param("~numerical_safety/q_abs_limit", 1000.0)
@@ -298,7 +283,7 @@ class SacTrainingRunner:
             tau=float(rospy.get_param("~sac/tau", 0.005)),
             batch_size=int(rospy.get_param("~sac/batch_size", 64)),
             policy_learning_rate=float(
-                rospy.get_param("~sac/policy_learning_rate", 3.0e-4)
+                rospy.get_param("~sac/policy_learning_rate", 1.0e-5)
             ),
             critic_learning_rate=float(
                 rospy.get_param("~sac/critic_learning_rate", 1.0e-3)
@@ -315,8 +300,8 @@ class SacTrainingRunner:
             target_network_frequency=int(
                 rospy.get_param("~sac/target_network_frequency", 1)
             ),
-            log_std_min=float(rospy.get_param("~sac/log_std_min", -5.0)),
-            log_std_max=float(rospy.get_param("~sac/log_std_max", 2.0)),
+            log_std_min=float(rospy.get_param("~sac/log_std_min", -3.0)),
+            log_std_max=float(rospy.get_param("~sac/log_std_max", -1.0)),
             automatic_entropy_tuning=bool(
                 rospy.get_param("~sac/automatic_entropy_tuning", True)
             ),
@@ -336,7 +321,7 @@ class SacTrainingRunner:
         self.learner = None
         if mode_uses_training_replay(self.mode):
             self.replay = SacReplayBuffer(
-                int(rospy.get_param("~replay/capacity", 5000)),
+                int(rospy.get_param("~replay/capacity", 100000)),
                 self.mapping,
                 intervention_tolerance_mps=float(
                     rospy.get_param(
@@ -344,7 +329,7 @@ class SacTrainingRunner:
                     )
                 ),
                 initial_allocation=int(
-                    rospy.get_param("~replay/initial_allocation", 5000)
+                    rospy.get_param("~replay/initial_allocation", 4096)
                 ),
             )
             self.learner = LearnerWorker(
@@ -365,12 +350,17 @@ class SacTrainingRunner:
                     "evaluation checkpoint does not exist: {}".format(checkpoint)
                 )
             payload = self.agent.load_checkpoint(checkpoint)
-            if self.agent.global_environment_step != self.evaluation_checkpoint_step:
+            checkpoint_episode = int(
+                payload.get("extra_config", {}).get(
+                    "checkpoint_completed_episode", -1
+                )
+            )
+            if checkpoint_episode != self.evaluation_checkpoint_episode:
                 raise rospy.ROSInitException(
-                    "evaluation checkpoint step does not match requested step"
+                    "evaluation checkpoint Episode does not match requested Episode"
                 )
 
-        max_steps = int(rospy.get_param("~episode/max_steps", 0))
+        max_steps = int(rospy.get_param("~episode/max_steps", 500))
         self.episode_config = AstraDroneEpisodeConfig(
             policy_period_sec=float(
                 rospy.get_param("~episode/policy_period_sec", 0.1)
@@ -401,13 +391,6 @@ class SacTrainingRunner:
             String,
             queue_size=10,
         )
-        self._training_target_pub = rospy.Publisher(
-            "/uav1/learning_speed/sac_training_target_reached",
-            String,
-            queue_size=1,
-            latch=True,
-        )
-        self._training_target_published = False
         self._identity_sub = rospy.Subscriber(
             "/uav1/training/episode_identity",
             String,
@@ -455,12 +438,10 @@ class SacTrainingRunner:
                 else "stochastic_actor_sample"
             ),
             "training_contract": {
-                "target_valid_transitions": self.target_valid_transitions,
+                "total_training_episodes": self.total_training_episodes,
                 "learning_starts": self.learning_starts,
                 "warmup_action_sampling": self.warmup_action_sampling,
-                "checkpoint_steps": self.checkpoint_steps,
-                "checkpoint_interval": self.checkpoint_interval,
-                "evaluation_during_training": self.evaluation_during_training,
+                "checkpoint_episodes": self.checkpoint_episodes,
                 "replay_capacity": (
                     None if self.replay is None else self.replay.capacity
                 ),
@@ -468,7 +449,10 @@ class SacTrainingRunner:
                     rospy.get_param("~sac/updates_per_second", 5.0)
                 ),
                 "evaluation_checkpoint_path": self.evaluation_checkpoint_path,
-                "evaluation_checkpoint_step": self.evaluation_checkpoint_step,
+                "evaluation_checkpoint_episode": (
+                    self.evaluation_checkpoint_episode
+                ),
+                "evaluation_episode_count": self.evaluation_episode_count,
                 "reset_randomization_enabled": reset_randomization_enabled,
             },
         }
@@ -497,14 +481,19 @@ class SacTrainingRunner:
             "p95": p95,
         }
 
-    def _checkpoint_extra_config(self, step):
+    def _checkpoint_extra_config(self, completed_episode):
         return {
             "run_id": self.run_id,
             "mode": self.mode,
-            "checkpoint_environment_step": int(step),
-            "target_valid_transitions": self.target_valid_transitions,
+            "checkpoint_completed_episode": int(completed_episode),
+            "total_training_episodes": self.total_training_episodes,
+            "checkpoint_environment_step": int(
+                self.agent.global_environment_step
+            ),
             "learning_starts": self.learning_starts,
             "replay_capacity": None if self.replay is None else self.replay.capacity,
+            "replay_size": None if self.replay is None else len(self.replay),
+            "gradient_update_step": int(self.agent.update_step),
             "action_bounds": {
                 "v_max_min": self.mapping.v_max_min,
                 "v_max_max": self.mapping.v_max_max,
@@ -512,22 +501,28 @@ class SacTrainingRunner:
             "random_seed": self.agent.config.seed,
         }
 
-    def _save_checkpoint(self, step):
-        step = int(step)
-        if any(item["environment_step"] == step for item in self._checkpoint_manifest):
+    def _save_checkpoint(self, completed_episode):
+        completed_episode = int(completed_episode)
+        if any(
+            item["completed_episode"] == completed_episode
+            for item in self._checkpoint_manifest
+        ):
             return
-        if self.agent.global_environment_step != step:
+        if len(self.episodes) != completed_episode:
             raise RuntimeError(
-                "checkpoint step does not equal global environment step"
+                "checkpoint Episode does not equal formally closed Episode count"
             )
-        path = self.output_dir / "sac_checkpoint_step_{:05d}.pt".format(step)
+        path = self.output_dir / checkpoint_filename(completed_episode)
         if path.exists():
             raise RuntimeError("refusing to overwrite checkpoint: {}".format(path))
         self.agent.save_checkpoint(
-            path, extra_config=self._checkpoint_extra_config(step)
+            path,
+            extra_config=self._checkpoint_extra_config(completed_episode),
         )
         entry = {
-            "environment_step": step,
+            "completed_episode": completed_episode,
+            "environment_step": int(self.agent.global_environment_step),
+            "replay_size": len(self.replay),
             "gradient_update_step": int(self.agent.update_step),
             "path": str(path),
             "size_bytes": path.stat().st_size,
@@ -538,8 +533,12 @@ class SacTrainingRunner:
             self._checkpoint_manifest,
         )
         rospy.logwarn(
-            "[SAC TRAINING] checkpoint step=%d path=%s",
-            step,
+            "[SAC TRAINING] checkpoint episode=%d transition=%d "
+            "replay=%d updates=%d path=%s",
+            completed_episode,
+            int(self.agent.global_environment_step),
+            len(self.replay),
+            int(self.agent.update_step),
             path,
         )
 
@@ -663,10 +662,6 @@ class SacTrainingRunner:
         if step not in normalized_actions:
             raise RuntimeError("closed transition has no Actor action")
         normalized_action = float(normalized_actions.pop(step))
-        if self.mode == "training":
-            expected_environment_step = self.training_schedule.next_transition_step(
-                self.agent.global_environment_step
-            )
         replay_index = None
         if self.replay is not None:
             replay_index = self.replay.add(
@@ -704,11 +699,13 @@ class SacTrainingRunner:
         if self.mode != "training":
             return
         environment_step = int(self.agent.global_environment_step)
-        if environment_step != expected_environment_step:
-            raise RuntimeError("training transition count advanced unexpectedly")
+        if self.replay is None or len(self.replay) != environment_step:
+            raise RuntimeError(
+                "1 valid environment step must equal 1 Replay experience"
+            )
         if (
             not self._training_learner_enabled
-            and environment_step >= self.learning_starts
+            and learning_started(environment_step, self.learning_starts)
         ):
             self.learner.enable()
             self._training_learner_enabled = True
@@ -717,40 +714,19 @@ class SacTrainingRunner:
                 self.learning_starts,
             )
         self._check_learner_health()
-        if self.training_schedule.stop_due(environment_step):
-            # Environment interaction ends at this exact transition. Freeze the
-            # learner before the final checkpoint so reload represents the true
-            # terminal training state rather than a later background update.
-            self.learner.stop()
-            self._check_learner_health()
-        if self.training_schedule.checkpoint_due(environment_step):
-            self._save_checkpoint(environment_step)
-        if self.training_schedule.stop_due(environment_step):
-            payload = {
-                "version": "astradrone_sac_training_target_v1.0",
-                "episode_id": str(record["episode_id"]),
-                "reset_generation": int(generation),
-                "valid_transition_count": environment_step,
-                "target_valid_transitions": self.target_valid_transitions,
-                "reason": "training_target_reached",
-            }
-            if self._training_target_published:
-                raise RuntimeError("training target notification published twice")
-            self._training_target_pub.publish(
-                String(data=json.dumps(payload, sort_keys=True))
-            )
-            self._training_target_published = True
         if environment_step % 100 == 0:
             latest = (
                 self.learner.metrics[-1] if self.learner.metrics else {}
             )
             rospy.logwarn(
-                "[SAC TRAINING] transition=%d/%d episode=%s reward=%.6f "
+                "[SAC TRAINING] transition=%d episode=%s completed_episode=%d/%d "
+                "reward=%.6f "
                 "replay=%d updates=%d critic1_loss=%s actor_loss=%s "
                 "alpha=%s action=%.6f v_max=%.6f",
                 environment_step,
-                self.target_valid_transitions,
                 record["episode_id"],
+                len(self.episodes),
+                self.total_training_episodes,
                 float(transition["reward"]),
                 len(self.replay),
                 int(self.agent.update_step),
@@ -833,7 +809,9 @@ class SacTrainingRunner:
             "collision": "collision" in reason,
         }
 
-    def _publish_closure(self, result, identity):
+    def _complete_episode_closure(self, result, identity):
+        """Validate and materialize closure before checkpoint/reset handoff."""
+
         steps = result["steps"]
         if not steps:
             raise RuntimeError("Episode closed without transitions")
@@ -856,8 +834,10 @@ class SacTrainingRunner:
         }
         if not terminal_closed:
             raise RuntimeError("terminal transition was not closed before reset")
-        self._closure_pub.publish(String(data=json.dumps(payload, sort_keys=True)))
         return payload
+
+    def _publish_closure(self, payload):
+        self._closure_pub.publish(String(data=json.dumps(payload, sort_keys=True)))
 
     def _run_one_episode(self, identity):
         episode_key = str(identity["episode_key"])
@@ -883,7 +863,10 @@ class SacTrainingRunner:
                 deterministic = True
             elif self.mode == "training":
                 deterministic = (
-                    self.agent.global_environment_step < self.learning_starts
+                    not learning_started(
+                        self.agent.global_environment_step,
+                        self.learning_starts,
+                    )
                 )
             else:
                 deterministic = (
@@ -903,28 +886,9 @@ class SacTrainingRunner:
                 record, normalized_actions, generation
             )
 
-        episode_config = self.episode_config
-        if self.mode == "training":
-            remaining = (
-                self.target_valid_transitions
-                - self.agent.global_environment_step
-            )
-            episode_step_budget = self.training_schedule.episode_step_budget(
-                self.agent.global_environment_step,
-                self.episode_config.max_steps,
-            )
-            episode_config = replace(
-                self.episode_config,
-                max_steps=episode_step_budget,
-                max_steps_reason=(
-                    "training_target_reached"
-                    if episode_step_budget == remaining
-                    else "max_episode_steps"
-                ),
-            )
         result = self.env.run_episode(
             action_provider,
-            episode_config,
+            self.episode_config,
             transition_consumer=transition_consumer,
         )
         _write_json(
@@ -967,14 +931,37 @@ class SacTrainingRunner:
                 result["episode"]["terminal_reason"],
             )
         summary = self._episode_summary(result, terminal_identity)
-        self.episodes.append(summary)
         self.transition_file.flush()
-        closure = self._publish_closure(result, terminal_identity)
+        closure = self._complete_episode_closure(result, terminal_identity)
         summary["closure"] = closure
+        expected_completed_episodes = None
+        if self.mode == "training":
+            expected_completed_episodes = self.training_schedule.complete_episode(
+                len(self.episodes),
+                closure["terminal_transition_closed"],
+            )
+        self.episodes.append(summary)
+        if (
+            expected_completed_episodes is not None
+            and len(self.episodes) != expected_completed_episodes
+        ):
+            raise RuntimeError("completed training Episode count advanced unexpectedly")
         with self._condition:
             self._processed_episodes.add(episode_key)
             self._current_env_episode = ""
         _write_json(self.output_dir / "sac_episode_summaries.json", self.episodes)
+
+        if self.mode == "training":
+            completed_episodes = len(self.episodes)
+            if self.training_schedule.stop_due(completed_episodes):
+                # Freeze the final model only after the Episode's last transition
+                # is in Replay and its formal closure has completed.
+                self.learner.stop()
+                self._check_learner_health()
+            if self.training_schedule.checkpoint_due(completed_episodes):
+                self._save_checkpoint(completed_episodes)
+        # The coordinator may reset only after all due checkpoint work completes.
+        self._publish_closure(closure)
 
         if (
             self.mode == "qualification"
@@ -1026,7 +1013,7 @@ class SacTrainingRunner:
         if min(parameter_audit.values()) <= 0.0:
             failures.append("parameters_not_updated")
         update_durations = [item["update_duration_wall_sec"] for item in metrics]
-        checkpoint = self.output_dir / "sac_smoke_checkpoint.pt"
+        checkpoint = self.output_dir / "sac_qualification_checkpoint.pt"
         self.agent.save_checkpoint(
             checkpoint,
             extra_config={
@@ -1212,10 +1199,14 @@ class SacTrainingRunner:
                     str(episode.get("coordinator_terminal_reason", "")),
                 )
             )
-            if "planner_failure" in reason:
-                failures.append("planner_failure")
-            if "collision" in reason:
-                failures.append("collision")
+            # Training success/collision/planner/truncation are real environment
+            # outcomes and all close one completed Episode. Qualification and
+            # evaluation still reject unsafe outcomes.
+            if self.mode != "training":
+                if "planner_failure" in reason:
+                    failures.append("planner_failure")
+                if "collision" in reason:
+                    failures.append("collision")
             if "controller_failure" in reason:
                 failures.append("controller_failure")
             if "invalid_observation" in reason:
@@ -1228,26 +1219,29 @@ class SacTrainingRunner:
         self._check_learner_health()
         metrics = self._write_learner_metrics()
         failures = self._episode_contract_failures()
-        if self.agent.global_environment_step != self.target_valid_transitions:
+        if len(self.episodes) != self.total_training_episodes:
             failures.append(
-                "valid_transition_target:{}_of_{}".format(
-                    self.agent.global_environment_step,
-                    self.target_valid_transitions,
+                "completed_episode_target:{}_of_{}".format(
+                    len(self.episodes),
+                    self.total_training_episodes,
                 )
             )
-        if self.agent.update_step <= 0:
+        if (
+            self.agent.global_environment_step >= self.learning_starts
+            and self.agent.update_step <= 0
+        ):
             failures.append("no_gradient_updates")
         replay_audit = self.replay.audit()
         failures.extend(replay_audit["failures"])
         missing_checkpoints = sorted(
-            set(self.checkpoint_steps)
-            - set(item["environment_step"] for item in self._checkpoint_manifest)
+            set(self.checkpoint_episodes)
+            - set(item["completed_episode"] for item in self._checkpoint_manifest)
         )
         if missing_checkpoints:
             failures.append("missing_checkpoints:{}".format(missing_checkpoints))
 
-        final_checkpoint = self.output_dir / "sac_checkpoint_step_{:05d}.pt".format(
-            self.target_valid_transitions
+        final_checkpoint = self.output_dir / checkpoint_filename(
+            self.total_training_episodes
         )
         reload_audit = {
             "checkpoint": str(final_checkpoint),
@@ -1296,10 +1290,18 @@ class SacTrainingRunner:
         self.summary.update(
             {
                 "status": "completed" if not failures else "failed",
-                "verdict": "FORMAL 10K TRAINING COMPLETE" if not failures else "NO-GO",
+                "verdict": (
+                    "FORMAL {}-EPISODE TRAINING COMPLETE".format(
+                        self.total_training_episodes
+                    )
+                    if not failures
+                    else "NO-GO"
+                ),
                 "failures": sorted(set(failures)),
                 "episode_count": len(self.episodes),
+                "total_valid_transitions": self.agent.global_environment_step,
                 "global_environment_step": self.agent.global_environment_step,
+                "replay_size": len(self.replay),
                 "gradient_update_step": self.agent.update_step,
                 "learner_update_count": len(metrics),
                 "learner_update_hz": learner_hz,
@@ -1307,7 +1309,7 @@ class SacTrainingRunner:
                 "checkpoint_manifest": self._checkpoint_manifest,
                 "checkpoint_reload_audit": reload_audit,
                 "episode_contract_failures": self._episode_contract_failures(),
-                "completion_reason": "training_target_reached",
+                "completion_reason": "training_episode_count_reached",
             }
         )
         if failures:
@@ -1315,7 +1317,7 @@ class SacTrainingRunner:
 
     def _finalize_evaluation(self):
         failures = self._episode_contract_failures()
-        if len(self.episodes) != self.expected_episode_count:
+        if len(self.episodes) != self.evaluation_episode_count:
             failures.append("evaluation_episode_count")
         self.summary.update(
             {
@@ -1323,8 +1325,13 @@ class SacTrainingRunner:
                 "verdict": "DETERMINISTIC EVALUATION PASS" if not failures else "NO-GO",
                 "failures": sorted(set(failures)),
                 "episode_count": len(self.episodes),
+                "configured_evaluation_episode_count": (
+                    self.evaluation_episode_count
+                ),
                 "evaluation_transition_count": self._evaluation_transition_count,
-                "evaluation_checkpoint_step": self.evaluation_checkpoint_step,
+                "evaluation_checkpoint_episode": (
+                    self.evaluation_checkpoint_episode
+                ),
                 "evaluation_checkpoint_path": self.evaluation_checkpoint_path,
                 "episode_contract_failures": self._episode_contract_failures(),
             }
@@ -1357,6 +1364,16 @@ class SacTrainingRunner:
                     )
                 if state == "QUALIFICATION_COMPLETE_HOVER":
                     break
+                if self.mode == "training":
+                    completed_episodes = len(self.episodes)
+                    if self.training_schedule.stop_due(completed_episodes):
+                        raise RuntimeError(
+                            "coordinator attempted to start Episode after the "
+                            "formal training Episode target"
+                        )
+                    self.training_schedule.next_episode_number(
+                        completed_episodes
+                    )
                 self._run_one_episode(identity)
             if self.mode == "qualification":
                 self._finalize_phase_b()

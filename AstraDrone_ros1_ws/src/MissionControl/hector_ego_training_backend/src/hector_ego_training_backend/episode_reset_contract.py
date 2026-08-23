@@ -272,41 +272,13 @@ def sac_closure_matches(binding, payload):
         return False
 
 
-def training_target_matches(binding, payload, target_valid_transitions):
-    """Accept only the exact current-Episode formal training stop signal."""
+def episode_count_stop_due(completed_episodes, episode_count):
+    """Return true only at the configured completed-Episode boundary."""
 
-    binding.validate()
-    if not isinstance(payload, dict):
-        return False
-    try:
-        target = int(target_valid_transitions)
-        return bool(
-            target > 0
-            and str(payload.get("episode_id", "")) == binding.episode_key
-            and int(payload.get("reset_generation", -1))
-            == binding.reset_generation
-            and int(payload.get("valid_transition_count", -1)) == target
-            and int(payload.get("target_valid_transitions", -1)) == target
-            and str(payload.get("reason", "")) == "training_target_reached"
-        )
-    except (TypeError, ValueError):
-        return False
-
-
-def episode_count_stop_due(runner_mode, completed_episodes, episode_count):
-    """Keep fixed Episode completion for evaluation/qualification only."""
-
-    mode = str(runner_mode).strip().lower()
     completed = int(completed_episodes)
     configured = int(episode_count)
-    if mode not in ("qualification", "training", "evaluation"):
-        raise ValueError("runner_mode is invalid")
     if completed < 0:
         raise ValueError("completed Episode count is invalid")
-    if mode == "training":
-        if configured != 0:
-            raise ValueError("training episode_count must be disabled (0)")
-        return False
     if configured <= 0 or completed > configured:
         raise ValueError("fixed Episode count is invalid or exceeded")
     return completed == configured
@@ -349,3 +321,74 @@ def observation_matches(
         and float(source_stamp_sec) > float(reset_barrier_sec)
         and int(trajectory_id) >= int(accepted_trajectory_id)
     )
+
+
+def fixed_terminal_hold_matches(
+    *,
+    observation_valid,
+    observation_diagnostics,
+    trajectory_lookup_result,
+    observation_stamp_sec,
+    observation_latest_trajectory_id,
+    trajectory_id,
+    trajectory_end_sec,
+    position_command_trajectory_id,
+    position_command_flag,
+    position_command_age_sec,
+    position_command_distance_to_goal,
+    position_command_speed,
+    actual_distance_to_goal,
+    goal_position_tolerance,
+    goal_speed_tolerance,
+    freshness_limit_sec,
+    ready_flag=1,
+):
+    """Recognize only the fixed-qualification post-B-spline goal hold.
+
+    Observation C correctly has no future trajectory after the formal B-spline
+    ends, while traj_server keeps publishing the final zero-velocity
+    PositionCommand so the real vehicle can settle.  This gate must not accept
+    an ordinary in-flight trajectory loss.
+    """
+
+    try:
+        numeric = tuple(
+            float(value)
+            for value in (
+                observation_stamp_sec,
+                trajectory_end_sec,
+                position_command_age_sec,
+                position_command_distance_to_goal,
+                position_command_speed,
+                actual_distance_to_goal,
+                goal_position_tolerance,
+                goal_speed_tolerance,
+                freshness_limit_sec,
+            )
+        )
+        if not all(math.isfinite(value) for value in numeric):
+            return False
+        diagnostics = tuple(str(value) for value in observation_diagnostics)
+        return bool(
+            not bool(observation_valid)
+            and diagnostics == ("trajectory_unavailable",)
+            and str(trajectory_lookup_result)
+            == "no_active_trajectory_at_stamp"
+            and float(observation_stamp_sec) > float(trajectory_end_sec)
+            and int(trajectory_id) > 0
+            and int(observation_latest_trajectory_id) == int(trajectory_id)
+            and int(position_command_trajectory_id) == int(trajectory_id)
+            and int(position_command_flag) == int(ready_flag)
+            and 0.0 <= float(position_command_age_sec)
+            <= float(freshness_limit_sec)
+            and float(position_command_distance_to_goal)
+            <= float(goal_position_tolerance)
+            and float(position_command_speed) <= float(goal_speed_tolerance)
+            and float(actual_distance_to_goal)
+            <= float(goal_position_tolerance)
+            and float(goal_position_tolerance) > 0.0
+            and float(goal_speed_tolerance) >= 0.0
+            and float(freshness_limit_sec) > 0.0
+        )
+    except (TypeError, ValueError):
+        return False

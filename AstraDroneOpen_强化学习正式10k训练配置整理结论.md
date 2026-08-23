@@ -1,8 +1,13 @@
 # AstraDroneOpen 强化学习正式 10k 训练配置整理结论
 
+> 历史快照（已废弃）：本文件保留 10k transition-stop 整理当时的证据，不再描述当前
+> 正式配置。当前唯一正常停止条件已改为 100 completed Episodes，checkpoint 为
+> Episode 20/40/60/80/100；以 `AGENTS.md`、`studynote.md`、
+> `AstraDroneOpen_项目技术演进与LearningSpeed阶段汇总.md` 和当前源码/config 为准。
+
 > 整理日期：2026-08-23  
 > 项目：`/home/yanzu/AstraDroneOpen`  
-> 结论：`CODE READY`  
+> 结论：`SUPERSEDED HISTORICAL SNAPSHOT`
 > Runtime 边界：正式 10k training 与 deterministic evaluation 均未启动
 
 ## 1. 最终结论
@@ -48,8 +53,7 @@
 | v_max | `[0.05,0.40] m/s` | `action.expected_v_max_min/max` |
 | SAC seed | `1` | `sac.seed` |
 | checkpoint steps | `[5000,10000]` | `training.checkpoint_steps` |
-| checkpoint interval | `5000` | `training.checkpoint_interval` |
-| evaluation during training | `false` | `training.evaluation_during_training` |
+| evaluation during training | 不存在 | 无配置字段/调用路径；独立 evaluation mode |
 | max Episode | `500 steps` | `episode.max_steps` |
 | coordinator max Episode time | `55 s` | launch `max_episode_time` |
 
@@ -159,52 +163,22 @@ Unsafe candidate 会被拒绝并重新采样。32 次耗尽后 fail closed，不
 
 ## 5. 正式 10k training 启动命令
 
-如果 `/tmp/astra_hector_training_overlay` 已被清空，先按 `studynote.md` 的“环境准备”
-重建只读 Hector 临时 overlay。每个正式训练终端执行：
+如果 `/tmp/astra_hector_training_overlay` 已被清空，先按 `studynote.md` 的步骤 1 重建
+只读 Hector 临时 overlay。之后正式 training 只执行操作者脚本：
 
 ```bash
 cd /home/yanzu/AstraDroneOpen
-export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
-export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
-
-source /opt/ros/noetic/setup.bash
-source "$ASTRA_ROOT/simulation/sim_workspace/devel/setup.bash"
-source "$ASTRA_ROOT/AstraDrone_ros1_ws/devel/setup.bash"
-source "$HECTOR_OVERLAY/devel/setup.bash" --extend
-
-export PYTHONPATH="$ASTRA_ROOT/runtime_artifacts/sac_python_packages${PYTHONPATH:+:$PYTHONPATH}"
-
-export RUN_ID="sac_training_10k_$(date +%Y%m%d_%H%M%S)"
-export SAC_OUTPUT="$ASTRA_ROOT/runtime_artifacts/$RUN_ID"
-mkdir -p "$SAC_OUTPUT/logs/ros" "$SAC_OUTPUT/ros_home"
-export ROS_HOME="$SAC_OUTPUT/ros_home"
-export ROS_LOG_DIR="$SAC_OUTPUT/logs/ros"
-
-set -o pipefail
-roslaunch hector_ego_training_backend hector_worksite_sac_training.launch \
-  output_dir:="$SAC_OUTPUT" \
-  gui:=false \
-  runner_mode:=training \
-  target_valid_transitions:=10000 \
-  max_training_episodes:=1000 \
-  max_episode_time:=55.0 \
-  run_id:="$RUN_ID" \
-  sac_config:="$ASTRA_ROOT/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml" \
-  2>&1 | tee "$SAC_OUTPUT/logs/training_console.log"
+scripts/run_sh/learning_speed_sac_training.sh
 ```
 
-GUI training 使用全新 `RUN_ID/SAC_OUTPUT`，并将同一命令中的：
+GUI training 使用：
 
 ```bash
-gui:=false
+scripts/run_sh/learning_speed_sac_training.sh --gui
 ```
 
-改为：
-
-```bash
-gui:=true
-```
-
+脚本自动生成唯一 `RUN_ID/SAC_OUTPUT`、拒绝残留 ROS/Gazebo/training stack、调用同一个
+正式 launch，并自动在同一终端显示 SAC/Episode/reset/checkpoint/failure 关键日志。
 Headless 与 GUI 二选一，不能复用已经启动过的 training output directory。
 
 ## 6. 数据、checkpoint 与日志
@@ -212,7 +186,7 @@ Headless 与 GUI 二选一，不能复用已经启动过的 training output dire
 所有正式数据均写入：
 
 ```text
-/home/yanzu/AstraDroneOpen/runtime_artifacts/<RUN_ID>/
+/home/yanzu/AstraDroneOpen/runtime_artifacts/rl_training/<RUN_ID>/
 ```
 
 | 内容 | 实际路径（相对 `$SAC_OUTPUT`） |
@@ -226,21 +200,25 @@ Headless 与 GUI 二选一，不能复用已经启动过的 training output dire
 | step 10000 checkpoint | `sac_checkpoint_step_10000.pt` |
 | checkpoint manifest | `sac_checkpoint_manifest.json` |
 | runner/coordinator summary | `sac_runtime_summary.json`、`qualification_summary.json` |
-| console log | `logs/training_console.log` |
+| 完整 roslaunch/Gazebo/EGO console | `logs/training_console.log` |
+| SAC transition/Episode/learner 关键日志 | `logs/ros/<ROS_SESSION>/uav1-sac_training_runner-*.log` |
+| Episode/reset/barrier 关键日志 | `logs/ros/<ROS_SESSION>/uav1-training_episode_reset_coordinator-*.log` |
 | ROS/roslaunch/node logs | `logs/ros/` |
 | ROS home | `ros_home/` |
 
-训练终端每 100 个 valid transition 输出 transition/10000、Episode、reward、Replay
-size、update count、critic/actor loss、alpha、action 和 `v_max`。
+正式操作者脚本自动在训练终端筛选显示每 100 个 valid transition 的
+transition/10000、Episode、reward、Replay size、update count、critic/actor loss、alpha、
+action 和 `v_max`，并显示 Episode/reset/checkpoint/failure；完整 EGO/roslaunch 噪声只
+落盘到 console log。
 
-实时查看：
+重新打开历史 run 的关键日志：
 
 ```bash
-tail -F "$SAC_OUTPUT/logs/training_console.log"
-tail -F "$SAC_OUTPUT/sac_transition_audit.jsonl"
-tail -F "$SAC_OUTPUT/qualification_events.jsonl"
-grep -E '\[SAC TRAINING\]|RESET_|planner_failure|collision|checkpoint' \
-  "$SAC_OUTPUT/logs/training_console.log"
+RUNNER_LOG="$(find "$SAC_OUTPUT/logs/ros" -type f \
+  -name 'uav1-sac_training_runner-*.log' -print -quit)"
+COORDINATOR_LOG="$(find "$SAC_OUTPUT/logs/ros" -type f \
+  -name 'uav1-training_episode_reset_coordinator-*.log' -print -quit)"
+tail -F "$RUNNER_LOG" "$COORDINATOR_LOG"
 ```
 
 训练结束后：
@@ -272,7 +250,8 @@ teardown。
 Training 完成后设置：
 
 ```bash
-export TRAINING_OUTPUT="$ASTRA_ROOT/runtime_artifacts/<已完成的training目录>"
+export TRAINING_RUN_ID="<已完成的training RUN_ID>"
+export TRAINING_OUTPUT="$ASTRA_ROOT/runtime_artifacts/rl_training/$TRAINING_RUN_ID"
 ```
 
 定义 evaluation helper：
@@ -282,8 +261,10 @@ evaluate_checkpoint() {
   STEP="$1"
   PAD="$(printf '%05d' "$STEP")"
   EVAL_ID="sac_eval_${PAD}_$(date +%Y%m%d_%H%M%S)"
-  EVAL_OUTPUT="$ASTRA_ROOT/runtime_artifacts/$EVAL_ID"
+  EVAL_OUTPUT="$ASTRA_ROOT/runtime_artifacts/rl_evaluation/$EVAL_ID"
 
+  mkdir -p "$ASTRA_ROOT/runtime_artifacts/rl_evaluation"
+  mkdir "$EVAL_OUTPUT" || return 1
   mkdir -p "$EVAL_OUTPUT/logs/ros" "$EVAL_OUTPUT/ros_home"
   export ROS_HOME="$EVAL_OUTPUT/ros_home"
   export ROS_LOG_DIR="$EVAL_OUTPUT/logs/ros"

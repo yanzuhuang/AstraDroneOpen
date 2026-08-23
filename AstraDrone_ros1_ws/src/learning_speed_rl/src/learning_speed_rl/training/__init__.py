@@ -58,7 +58,8 @@ from .astra_drone_env import (
 from .formal_training_contract import (
     SUPPORTED_RUNNER_MODES,
     FormalTrainingSchedule,
-    mode_updates_networks,
+    checkpoint_filename,
+    learning_started,
     mode_uses_training_replay,
 )
 
@@ -113,6 +114,7 @@ __all__ = [
     "policy_state_from_observation_c",
     "reward_from_config",
     "stage1_reward_input_from_signals",
-    "mode_updates_networks",
+    "checkpoint_filename",
+    "learning_started",
     "mode_uses_training_replay",
 ]
