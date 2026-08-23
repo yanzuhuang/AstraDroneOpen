@@ -55,6 +55,12 @@ from .astra_drone_env import (
     AstraDroneStepError,
     AstraDroneStepTimeout,
 )
+from .formal_training_contract import (
+    SUPPORTED_RUNNER_MODES,
+    FormalTrainingSchedule,
+    mode_updates_networks,
+    mode_uses_training_replay,
+)
 
 __all__ = [
     "AppliedSpeedAction",
@@ -68,6 +74,7 @@ __all__ = [
     "DIAGNOSTIC_ONLY_FIELDS",
     "EPISODE_VERSION",
     "FUTURE_POSITION_SAMPLES",
+    "FormalTrainingSchedule",
     "LIDAR_BINS",
     "OfficialTrajectoryIdentity",
     "POLICY_INPUT_FIELDS",
@@ -77,6 +84,7 @@ __all__ = [
     "PlannerFailureEpisodeTracker",
     "PolicyStateProvenance",
     "PolicyStateV1",
+    "SUPPORTED_RUNNER_MODES",
     "ProgressContextState",
     "ProgressRewardContext",
     "RunEpisodeProvenance",
@@ -105,4 +113,6 @@ __all__ = [
     "policy_state_from_observation_c",
     "reward_from_config",
     "stage1_reward_input_from_signals",
+    "mode_updates_networks",
+    "mode_uses_training_replay",
 ]

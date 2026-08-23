@@ -33,10 +33,17 @@ from learning_speed_rl.msg import (
 
 from hector_ego_training_backend.episode_reset_contract import (
     EpisodeIdentityLedger,
+    RandomResetConfig,
+    RandomResetSampler,
+    ResetSamplingError,
+    StaticObstacleXY,
     action_matches,
+    episode_count_stop_due,
     observation_matches,
     sac_closure_matches,
+    training_target_matches,
     trajectory_matches,
+    validate_reset_candidate,
 )
 
 
@@ -95,6 +102,15 @@ class TrainingEpisodeResetCoordinator:
         self._output_dir = str(rospy.get_param("~output_dir", "")).strip()
         self._qualification_only = bool(rospy.get_param("~qualification_only", True))
         self._episode_count = int(rospy.get_param("~episode_count", 5))
+        self._runner_mode = str(
+            rospy.get_param("~runner_mode", "qualification")
+        ).strip().lower()
+        self._max_training_episodes = int(
+            rospy.get_param("~max_training_episodes", 1000)
+        )
+        self._target_valid_transitions = int(
+            rospy.get_param("~target_valid_transitions", 10000)
+        )
         self._require_acceptance = bool(
             rospy.get_param("~require_automated_acceptance", False)
         )
@@ -109,12 +125,23 @@ class TrainingEpisodeResetCoordinator:
             raise ValueError("qualification_only must remain true")
         if not self._output_dir:
             raise ValueError("~output_dir is required")
-        if self._episode_count <= 0:
-            raise ValueError("episode_count must be positive")
+        if self._runner_mode not in ("qualification", "training", "evaluation"):
+            raise ValueError("runner_mode is invalid")
+        if self._runner_mode == "training":
+            if self._episode_count != 0:
+                raise ValueError("training episode_count must be disabled (0)")
+            if self._max_training_episodes <= 0:
+                raise ValueError("max_training_episodes must be positive")
+            if self._target_valid_transitions <= 0:
+                raise ValueError("target_valid_transitions must be positive")
+        elif self._episode_count <= 0:
+            raise ValueError("qualification/evaluation episode_count must be positive")
         if self._action_owner not in ("fixed", "sac"):
             raise ValueError("action_owner must be fixed or sac")
         if self._sac_closure_timeout <= 0.0:
             raise ValueError("sac_closure_timeout_wall must be positive")
+        if self._require_acceptance and self._runner_mode != "qualification":
+            raise ValueError("automated acceptance is qualification-only")
         if self._require_acceptance and self._episode_count < 20:
             raise ValueError("automated acceptance requires at least 20 episodes")
         os.makedirs(self._output_dir, exist_ok=True)
@@ -124,9 +151,13 @@ class TrainingEpisodeResetCoordinator:
         self._trajectory_timeout = float(rospy.get_param("~trajectory_timeout_wall", 8.0))
         self._observation_timeout = float(rospy.get_param("~observation_timeout_wall", 8.0))
         self._reset_timeout = float(rospy.get_param("~reset_timeout_wall", 12.0))
+        self._reset_target_timeout = float(
+            rospy.get_param("~reset_target_timeout_wall", 2.0)
+        )
         self._hold_timeout = float(rospy.get_param("~terminal_hold_timeout_wall", 5.0))
         self._entry = tuple(float(v) for v in rospy.get_param("~entry_goal", [2.0, 0.0, 1.5]))
         self._hover = tuple(float(v) for v in rospy.get_param("~hover_pose", [0.0, 0.0, 1.5, 0.0]))
+        self._nominal_hover = self._hover
         self._goal_position_tolerance = float(rospy.get_param("~goal_position_tolerance", 0.25))
         self._goal_speed_tolerance = float(rospy.get_param("~goal_speed_tolerance", 0.20))
         self._goal_sustain_time = float(rospy.get_param("~goal_sustain_time", 0.30))
@@ -150,6 +181,86 @@ class TrainingEpisodeResetCoordinator:
         self._controllers = list(rospy.get_param("~controller_names", ["controller/pose", "controller/twist"]))
         if len(self._entry) != 3 or len(self._hover) != 4:
             raise ValueError("entry_goal/hover_pose dimensions are invalid")
+        random_enabled = bool(rospy.get_param("~random_start/enabled", False))
+        obstacle_values = rospy.get_param("~random_start/static_obstacles", [])
+        obstacles = tuple(
+            StaticObstacleXY(
+                name=str(value["name"]),
+                x=float(value["x"]),
+                y=float(value["y"]),
+                radius_at_hover_z=float(value["radius_at_hover_z"]),
+            )
+            for value in obstacle_values
+        )
+        if random_enabled:
+            center_x = float(rospy.get_param("~random_start/center_x"))
+            center_y = float(rospy.get_param("~random_start/center_y"))
+            reset_z = float(rospy.get_param("~random_start/z"))
+            reset_yaw = float(rospy.get_param("~random_start/yaw"))
+            if max(
+                abs(center_x - self._nominal_hover[0]),
+                abs(center_y - self._nominal_hover[1]),
+                abs(reset_z - self._nominal_hover[2]),
+                abs(reset_yaw - self._nominal_hover[3]),
+            ) > 1.0e-12:
+                raise ValueError(
+                    "random reset center/z/yaw must match nominal hover_pose"
+                )
+        else:
+            center_x, center_y, reset_z, reset_yaw = self._nominal_hover
+        self._random_reset_config = RandomResetConfig(
+            enabled=random_enabled,
+            center_x=center_x,
+            center_y=center_y,
+            x_min_offset=float(
+                rospy.get_param("~random_start/x_min_offset", 0.0)
+                if random_enabled else 0.0
+            ),
+            x_max_offset=float(
+                rospy.get_param("~random_start/x_max_offset", 0.0)
+                if random_enabled else 0.0
+            ),
+            y_min_offset=float(
+                rospy.get_param("~random_start/y_min_offset", 0.0)
+                if random_enabled else 0.0
+            ),
+            y_max_offset=float(
+                rospy.get_param("~random_start/y_max_offset", 0.0)
+                if random_enabled else 0.0
+            ),
+            z=reset_z,
+            yaw=reset_yaw,
+            seed=int(rospy.get_param("~random_start/seed", 1001)),
+            max_sampling_attempts=int(
+                rospy.get_param("~random_start/max_sampling_attempts", 1)
+            ),
+            uav_collision_radius_xy=float(
+                rospy.get_param("~random_start/uav_collision_radius_xy", 0.0)
+            ),
+            ego_obstacles_inflation=float(
+                rospy.get_param("~random_start/ego_obstacles_inflation", 0.0)
+            ),
+            additional_static_clearance=float(
+                rospy.get_param("~random_start/additional_static_clearance", 0.0)
+            ),
+            static_obstacles=obstacles,
+        )
+        self._reset_sampler = RandomResetSampler(self._random_reset_config)
+        initial_candidate = self._random_reset_config.nominal
+        self._current_episode_start = {
+            "initial_spawn_nominal": True,
+            "nominal_hover": list(self._nominal_hover),
+            "sampled_reset_x": initial_candidate.x,
+            "sampled_reset_y": initial_candidate.y,
+            "sampled_reset_z": initial_candidate.z,
+            "sampled_yaw": initial_candidate.yaw,
+            "reset_random_seed": self._random_reset_config.seed,
+            "sample_index": 0,
+            "attempt_count": 0,
+            "candidate_validation_result": validate_reset_candidate(
+                initial_candidate, self._random_reset_config
+            ),
+        }
 
         self._ledger = EpisodeIdentityLedger()
         self._binding = self._ledger.current
@@ -179,6 +290,7 @@ class TrainingEpisodeResetCoordinator:
         self._action = None
         self._applied = None
         self._sac_closure = None
+        self._training_target = None
         self._position_command = None
         self._v2_diagnostics = {}
         self._c_diagnostics = {}
@@ -218,6 +330,9 @@ class TrainingEpisodeResetCoordinator:
             "training/episode_identity", String, queue_size=1, latch=True
         )
         self._goal_pub = rospy.Publisher("planning/goal", PoseStamped, queue_size=1)
+        self._reset_hover_pub = rospy.Publisher(
+            "training/reset_hover", PoseStamped, queue_size=1, latch=True
+        )
         self._cancel_pub = rospy.Publisher("planning/cancel", EmptyMessage, queue_size=1)
         self._request_pub = rospy.Publisher(
             "learning_speed/mock_v_max", SpeedRequestStamped, queue_size=10
@@ -239,6 +354,10 @@ class TrainingEpisodeResetCoordinator:
         rospy.Subscriber(
             "learning_speed/sac_episode_closed", String,
             self._sac_closure_callback, queue_size=10,
+        )
+        rospy.Subscriber(
+            "learning_speed/sac_training_target_reached", String,
+            self._training_target_callback, queue_size=1,
         )
         rospy.Subscriber("learning_speed/observation_v2/diagnostics", DiagnosticArray, self._v2_diagnostic_callback, queue_size=10)
         rospy.Subscriber("learning_speed/observation_c/diagnostics", DiagnosticArray, self._c_diagnostic_callback, queue_size=10)
@@ -305,6 +424,7 @@ class TrainingEpisodeResetCoordinator:
             "terminal_outcome": self._terminal_outcome,
             "terminal_reason": self._terminal_reason,
             "action_request_id": self._binding.episode_id,
+            "start_reset": dict(self._current_episode_start),
             "trajectory_id": self._accepted_trajectory_id,
             "trajectory_start_time": self._accepted_trajectory_start,
             "reset_barrier_stamp": self._reset_barrier,
@@ -443,6 +563,14 @@ class TrainingEpisodeResetCoordinator:
             return
         with self._lock:
             self._sac_closure = payload
+
+    def _training_target_callback(self, message):
+        try:
+            payload = json.loads(message.data)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            self._training_target = payload
 
     def _v2_diagnostic_callback(self, message):
         with self._lock:
@@ -747,6 +875,13 @@ class TrainingEpisodeResetCoordinator:
             observation = self._observation
             observation_wall = self._observation_receipt_wall
             last_valid_wall = self._last_valid_observation_wall
+            training_target = self._training_target
+        if self._runner_mode == "training" and training_target_matches(
+            self._binding,
+            training_target,
+            self._target_valid_transitions,
+        ):
+            return "TRUNCATED", "training_target_reached"
         if state is None:
             return "FAILURE", "truth_odometry_unavailable"
         position, velocity, _, _, _ = state
@@ -846,6 +981,7 @@ class TrainingEpisodeResetCoordinator:
             "trajectory_id": self._accepted_trajectory_id,
             "trajectory_start_time": self._accepted_trajectory_start,
             "action_request_id": self._binding.episode_id,
+            "start_reset": dict(self._current_episode_start),
             "observation_c_total": self._episode_observation_total,
             "observation_c_valid": self._episode_observation_valid,
             "observation_c_valid_rate": self._episode_observation_valid / float(max(1, self._episode_observation_total)),
@@ -899,6 +1035,34 @@ class TrainingEpisodeResetCoordinator:
         if not response.success:
             raise RuntimeError("set_model_state failed: " + response.status_message)
 
+    def _publish_reset_hover_target(self):
+        message = PoseStamped()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = "world"
+        message.pose.position.x = self._hover[0]
+        message.pose.position.y = self._hover[1]
+        message.pose.position.z = self._hover[2]
+        message.pose.orientation.z = math.sin(0.5 * self._hover[3])
+        message.pose.orientation.w = math.cos(0.5 * self._hover[3])
+        self._reset_hover_pub.publish(message)
+
+    def _adapter_has_reset_hover_target(self):
+        with self._lock:
+            backend = dict(self._backend)
+        values = backend.get("configured_reset_hover")
+        if not isinstance(values, list) or len(values) != 4:
+            return False
+        try:
+            return bool(
+                backend.get("mode") == "RESET_PAUSED"
+                and all(
+                    abs(float(actual) - expected) <= 1.0e-9
+                    for actual, expected in zip(values, self._hover)
+                )
+            )
+        except (TypeError, ValueError):
+            return False
+
     def _low_speed(self):
         with self._lock:
             state = self._actual_state_locked()
@@ -915,10 +1079,51 @@ class TrainingEpisodeResetCoordinator:
             "success": False,
             "failure": "",
             "reset_begin_monotonic": wall_start,
+            "nominal_hover": list(self._nominal_hover),
+            "reset_randomization_enabled": self._random_reset_config.enabled,
+            "reset_random_seed": self._random_reset_config.seed,
         }
         self._event("RESET_BEGIN", index=reset_index)
         paused = False
         try:
+            sample = self._reset_sampler.sample()
+            candidate = sample.pop("candidate")
+            self._hover = (candidate.x, candidate.y, candidate.z, candidate.yaw)
+            next_episode_start = {
+                "initial_spawn_nominal": False,
+                "nominal_hover": list(self._nominal_hover),
+                "sampled_reset_x": candidate.x,
+                "sampled_reset_y": candidate.y,
+                "sampled_reset_z": candidate.z,
+                "sampled_yaw": candidate.yaw,
+                "reset_random_seed": self._random_reset_config.seed,
+                "sample_index": sample["sample_index"],
+                "attempt_count": sample["attempt_count"],
+                "candidate_validation_result": sample[
+                    "candidate_validation_result"
+                ],
+            }
+            result.update(
+                sampled_reset_x=candidate.x,
+                sampled_reset_y=candidate.y,
+                sampled_reset_z=candidate.z,
+                sampled_yaw=candidate.yaw,
+                **sample
+            )
+            self._event(
+                "RESET_CANDIDATE_ACCEPTED",
+                index=reset_index,
+                sampled_reset_x=candidate.x,
+                sampled_reset_y=candidate.y,
+                sampled_reset_z=candidate.z,
+                sampled_yaw=candidate.yaw,
+                reset_random_seed=self._random_reset_config.seed,
+                sample_index=sample["sample_index"],
+                attempt_count=sample["attempt_count"],
+                candidate_validation_result=sample[
+                    "candidate_validation_result"
+                ],
+            )
             self._cancel_pub.publish(EmptyMessage())
             response = self._adapter_hold()
             if not response.success:
@@ -964,6 +1169,13 @@ class TrainingEpisodeResetCoordinator:
             response = self._adapter_prepare()
             if not response.success:
                 raise RuntimeError("adapter prepare reset failed: " + response.message)
+            self._publish_reset_hover_target()
+            if not self._wait(
+                self._adapter_has_reset_hover_target,
+                self._reset_target_timeout,
+                "adapter random Hover target acknowledgement",
+            ):
+                raise RuntimeError("adapter did not acknowledge reset Hover target")
             self._switch([], self._controllers)
             self._pause()
             paused = True
@@ -983,6 +1195,7 @@ class TrainingEpisodeResetCoordinator:
             self._accepted_trajectory_id = 0
             self._accepted_trajectory_start = 0.0
             self._binding = self._ledger.advance_after_reset(v2_generation)
+            self._current_episode_start = next_episode_start
             self._terminal_latched = False
             self._terminal_outcome = ""
             self._terminal_reason = ""
@@ -1024,6 +1237,21 @@ class TrainingEpisodeResetCoordinator:
                 final_roll_pitch=max(abs(roll), abs(pitch)),
                 post_reset_truth_stamp=stamp,
             )
+        except ResetSamplingError as error:
+            result["sampling_attempts"] = list(error.attempts)
+            result["candidate_validation_result"] = {
+                "valid": False,
+                "reasons": ["max_sampling_attempts_exhausted"],
+            }
+            result["failure"] = str(error)
+            self._event(
+                "RESET_FAILURE",
+                index=reset_index,
+                error=str(error),
+                candidate_validation_result=result[
+                    "candidate_validation_result"
+                ],
+            )
         except Exception as error:
             result["failure"] = str(error)
             self._event("RESET_FAILURE", index=reset_index, error=str(error))
@@ -1053,14 +1281,19 @@ class TrainingEpisodeResetCoordinator:
         sim_duration = max(0.0, rospy.Time.now().to_sec() - self._overall_sim_start)
         wall_duration = max(1.0e-9, time.monotonic() - self._overall_wall_start)
         acceptance_failures = []
-        if len(self._episodes) != self._episode_count:
+        if self._runner_mode != "training" and len(self._episodes) != self._episode_count:
             acceptance_failures.append("episode_count")
         if (
             self._action_owner == "fixed"
             and outcomes["SUCCESS"] != self._episode_count
         ):
             acceptance_failures.append("fixed_entry_episode_success")
-        if reset_successes != self._episode_count:
+        expected_resets = (
+            len(self._episodes) - 1
+            if self._runner_mode == "training" and self._terminal_reason == "training_target_reached"
+            else self._episode_count
+        )
+        if reset_successes != expected_resets:
             acceptance_failures.append("reset_success")
         if self._old_generation_valid_contamination != 0:
             acceptance_failures.append("old_generation_valid_contamination")
@@ -1111,12 +1344,35 @@ class TrainingEpisodeResetCoordinator:
             "version": VERSION,
             "qualification_only": True,
             "action_owner": self._action_owner,
+            "runner_mode": self._runner_mode,
+            "nominal_hover": list(self._nominal_hover),
+            "random_start": {
+                "enabled": self._random_reset_config.enabled,
+                "center_x": self._random_reset_config.center_x,
+                "center_y": self._random_reset_config.center_y,
+                "x_min_offset": self._random_reset_config.x_min_offset,
+                "x_max_offset": self._random_reset_config.x_max_offset,
+                "y_min_offset": self._random_reset_config.y_min_offset,
+                "y_max_offset": self._random_reset_config.y_max_offset,
+                "z": self._random_reset_config.z,
+                "yaw": self._random_reset_config.yaw,
+                "seed": self._random_reset_config.seed,
+                "max_sampling_attempts": (
+                    self._random_reset_config.max_sampling_attempts
+                ),
+            },
             "require_automated_acceptance": self._require_acceptance,
             "verdict": verdict,
             "acceptance_failures": acceptance_failures,
             "runtime_failure": failure,
             "episode_count": len(self._episodes),
             "configured_episode_count": self._episode_count,
+            "max_training_episodes": self._max_training_episodes,
+            "completion_reason": (
+                "training_target_reached"
+                if self._terminal_reason == "training_target_reached"
+                else "episode_count_reached"
+            ),
             "success": outcomes["SUCCESS"],
             "failure": outcomes["FAILURE"],
             "truncated": outcomes["TRUNCATED"],
@@ -1170,17 +1426,36 @@ class TrainingEpisodeResetCoordinator:
             self._overall_sim_start = rospy.Time.now().to_sec()
             self._state = "WAIT_INITIAL_READY"
             self._prepare_episode()
-            for index in range(1, self._episode_count + 1):
+            index = 1
+            while not rospy.is_shutdown():
+                if (
+                    self._runner_mode == "training"
+                    and index > self._max_training_episodes
+                ):
+                    raise RuntimeError("max_training_episodes fail-safe reached")
                 self._activate_episode()
                 self._run_episode()
                 self._wait_for_sac_closure()
-                reset_result = self._reset_once(index)
-                self._prepare_episode(reset_result=reset_result)
-                if index == self._episode_count:
+                if (
+                    self._runner_mode == "training"
+                    and self._terminal_reason == "training_target_reached"
+                ):
                     self._cancel_pub.publish(EmptyMessage())
                     self._state = "QUALIFICATION_COMPLETE_HOVER"
                     self._publish_identity()
                     break
+                reset_result = self._reset_once(index)
+                self._prepare_episode(reset_result=reset_result)
+                if episode_count_stop_due(
+                    self._runner_mode,
+                    index,
+                    self._episode_count,
+                ):
+                    self._cancel_pub.publish(EmptyMessage())
+                    self._state = "QUALIFICATION_COMPLETE_HOVER"
+                    self._publish_identity()
+                    break
+                index += 1
         except Exception as error:
             failure = str(error)
             self._state = "QUALIFICATION_FAILED"

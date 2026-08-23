@@ -337,8 +337,8 @@ The recorder remains read-only with respect to flight/control and now performs
 that binding online; it publishes no reward topic and starts no SAC or policy.
 Frozen historical calibration artifacts remain unchanged and reward-null.
 
-Design and offline replay evidence are in
-`runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_reward_v1_report.md`.
+Design and offline replay evidence are consolidated in the repository-root
+`AstraDroneOpen_项目技术演进与LearningSpeed阶段汇总.md`.
 
 ## AstraDroneEnv Episode v0.1 and 10 Hz causal scheduler
 
@@ -398,8 +398,8 @@ The action-identity revalidation closed 100/100 scheduled requests at exactly
 1..100, zero timeout/causal mismatch/deadline drop, finite reward for every
 transition and a real `max_episode_steps` truncated boundary. The later full
 mission ended in a preserved planner-failure landing after the Episode window;
-it is not rewritten as Episode termination. See
-`runtime_artifacts/astra_drone_action_identity_episode_revalidation_report.md`.
+it is not rewritten as Episode termination. The source report and its hash are
+mapped in `AstraDroneOpen_项目技术演进与LearningSpeed阶段汇总.md`.
 
 ## Training-only SAC integration
 
@@ -426,11 +426,19 @@ define its affine `v_max` mapping. Learner-side normalization is disabled in
 the formal config. The current exploration-stability profile uses Actor LR
 `1e-5`, 100 critic-only startup updates and log-std `[-3,-1]`; the launch
 defaults to `config/sac_training_v1.yaml`. The former smoke config is retained
-only as the historical integration baseline. PyTorch is an optional training
+only as the historical integration baseline. The first formal run is 10,000
+valid transitions from an empty Replay Buffer, with checkpoints only at 5,000
+and 10,000 and no evaluation inside training. Training disables the fixed
+Episode count and continues through early terminal/reset boundaries until the
+valid-transition count is exactly 10,000; the per-Episode 500-step ceiling is
+not a normal training stop. Worksite training resets use the
+reproducible, audited +/-1 m XY nominal-Hover square; evaluation uses fixed
+nominal Hover and neither creates training Replay nor updates networks.
+PyTorch is an optional training
 dependency pinned in `requirements-sac.txt`; fixed/mock and full-stack defaults
 remain usable without it. The consolidated runtime history and current
-training boundary are in
-`runtime_artifacts/AstraDroneOpen_强化学习训练环境与SAC交接汇总.md`.
+training boundary are in the repository-root
+`AstraDroneOpen_项目技术演进与LearningSpeed阶段汇总.md`.
 
 Attach the read-only manual calibration recorder to an already running stack:
 

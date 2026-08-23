@@ -1,14 +1,23 @@
 <launch>
-  <!-- Training-only SAC qualification/pilot/evaluation; no PX4/MAVROS/FAST-LIO. -->
+  <!-- Training-only SAC qualification/training/evaluation; no PX4/MAVROS/FAST-LIO. -->
   <arg name="output_dir"/>
   <arg name="gui" default="false"/>
-  <arg name="episode_count" default="5"/>
+  <arg name="episode_count" default="20"/>
+  <!-- episode_count applies only to qualification/evaluation. Training passes
+       0 (disabled) and stops only at target_valid_transitions. -->
+  <arg name="coordinator_episode_count"
+       default="$(eval 0 if arg('runner_mode') == 'training' else int(arg('episode_count')))"/>
+  <arg name="max_training_episodes" default="1000"/>
+  <arg name="target_valid_transitions" default="10000"/>
   <arg name="v_max_max" default="0.40"/>
   <arg name="max_episode_time" default="55.0"/>
-  <arg name="run_id" default="worksite_sac_smoke"/>
+  <arg name="run_id" default="worksite_sac_training_10k"/>
   <arg name="phase_a_min_transitions" default="1000"/>
   <arg name="phase_b_min_updates" default="100"/>
-  <arg name="runner_mode" default="qualification"/>
+  <arg name="runner_mode" default="training"/>
+  <!-- Training is randomized; qualification/evaluation stay at nominal Hover. -->
+  <arg name="random_start_enabled"
+       default="$(eval arg('runner_mode') == 'training')"/>
   <arg name="evaluation_checkpoint_path" default=""/>
   <arg name="evaluation_checkpoint_step" default="0"/>
   <arg name="sac_config"
@@ -18,24 +27,32 @@
 
   <include file="$(find hector_ego_training_backend)/launch/hector_worksite_training_episode_reset.launch">
     <arg name="gui" value="$(arg gui)"/>
-    <arg name="episode_count" value="$(arg episode_count)"/>
+    <arg name="episode_count" value="$(arg coordinator_episode_count)"/>
+    <arg name="runner_mode" value="$(arg runner_mode)"/>
+    <arg name="max_training_episodes" value="$(arg max_training_episodes)"/>
+    <arg name="target_valid_transitions" value="$(arg target_valid_transitions)"/>
     <arg name="fixed_v_max" value="$(arg v_max_max)"/>
     <arg name="action_owner" value="sac"/>
     <arg name="output_dir" value="$(arg output_dir)"/>
     <arg name="require_automated_acceptance" value="false"/>
     <arg name="coordinator_required" value="false"/>
     <arg name="max_episode_time" value="$(arg max_episode_time)"/>
+    <arg name="random_start_enabled" value="$(arg random_start_enabled)"/>
   </include>
 
   <group ns="uav1">
     <node pkg="learning_speed_rl" type="sac_training_runner.py"
-          name="sac_training_runner" output="screen" required="false">
+          name="sac_training_runner" output="screen" required="true">
       <rosparam command="load" file="$(arg sac_config)"/>
       <rosparam command="load" file="$(arg reward_config)"/>
       <param name="namespace" value="uav1"/>
       <param name="run_id" value="$(arg run_id)"/>
       <param name="output_dir" value="$(arg output_dir)"/>
       <param name="training/mode" value="$(arg runner_mode)"/>
+      <param name="training/target_valid_transitions"
+             value="$(arg target_valid_transitions)"/>
+      <param name="environment/reset_randomization_enabled"
+             value="$(arg random_start_enabled)"/>
       <param name="evaluation/checkpoint_path"
              value="$(arg evaluation_checkpoint_path)"/>
       <param name="evaluation/checkpoint_step"

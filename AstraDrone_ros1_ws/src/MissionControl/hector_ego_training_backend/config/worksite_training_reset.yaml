@@ -1,0 +1,30 @@
+# Worksite formal SAC reset profile, statically audited 2026-08-23.
+#
+# At z=3 m, the closest obstacle to the complete +/-1 m square is the pine at
+# (-2.79151,-3.87194). Its mesh radius through the Hector vertical collision
+# span is at most 0.859 m. The configured check additionally includes the
+# Hector collision radius (0.396 m), EGO inflation (0.30 m), and 0.50 m
+# conservative clearance. The worst square corner retains about 1.33 m beyond
+# that combined envelope. The worksite ground collision is the z=0 plane here.
+random_start:
+  enabled: false  # overridden true only by formal training mode
+  center_x: 0.0
+  center_y: 0.0
+  x_min_offset: -1.0
+  x_max_offset: 1.0
+  y_min_offset: -1.0
+  y_max_offset: 1.0
+  z: 3.0
+  yaw: 0.0
+  # Independent environment seed. Rule: formal reset seed = SAC seed + 1000.
+  seed: 1001
+  max_sampling_attempts: 32
+  uav_collision_radius_xy: 0.395567
+  ego_obstacles_inflation: 0.30
+  additional_static_clearance: 0.50
+  static_obstacles:
+    - {name: pine_southwest, x: -2.79151, y: -3.87194, radius_at_hover_z: 0.859}
+    - {name: pine_northwest, x: -4.55554, y: 2.86752, radius_at_hover_z: 0.859}
+    - {name: pine_north, x: 0.146808, y: 6.29620, radius_at_hover_z: 0.859}
+    - {name: pine_northeast, x: 5.10945, y: 2.68346, radius_at_hover_z: 0.859}
+    - {name: pine_southeast, x: 3.50407, y: -4.09932, radius_at_hover_z: 0.859}

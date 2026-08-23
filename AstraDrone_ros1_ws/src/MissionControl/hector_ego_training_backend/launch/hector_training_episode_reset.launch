@@ -3,6 +3,9 @@
   <arg name="gui" default="false"/>
   <arg name="paused" default="false"/>
   <arg name="episode_count" default="5"/>
+  <arg name="runner_mode" default="qualification"/>
+  <arg name="max_training_episodes" default="1000"/>
+  <arg name="target_valid_transitions" default="10000"/>
   <arg name="fixed_v_max" default="0.40"/>
   <arg name="action_owner" default="fixed"/>
   <arg name="output_dir" default=""/>
@@ -20,6 +23,8 @@
   <arg name="use_truth_registered_ego_cloud" default="false"/>
   <arg name="max_episode_time" default="15.0"/>
   <arg name="spawn_wall_delay" default="0.0"/>
+  <arg name="reset_profile_overlay" default="$(find hector_ego_training_backend)/config/training_episode_reset.yaml"/>
+  <arg name="random_start_enabled" default="false"/>
 
   <include file="$(find hector_ego_training_backend)/launch/hector_training_observation_c.launch">
     <arg name="enable_control" value="true"/>
@@ -49,7 +54,11 @@
           output="screen" required="$(arg coordinator_required)">
       <rosparam command="load"
                 file="$(find hector_ego_training_backend)/config/training_episode_reset.yaml"/>
+      <rosparam command="load" file="$(arg reset_profile_overlay)"/>
       <param name="episode_count" value="$(arg episode_count)"/>
+      <param name="runner_mode" value="$(arg runner_mode)"/>
+      <param name="max_training_episodes" value="$(arg max_training_episodes)"/>
+      <param name="target_valid_transitions" value="$(arg target_valid_transitions)"/>
       <param name="fixed_v_max" value="$(arg fixed_v_max)"/>
       <param name="action_owner" value="$(arg action_owner)"/>
       <param name="output_dir" value="$(arg output_dir)"/>
@@ -57,6 +66,7 @@
              value="$(arg require_automated_acceptance)"/>
       <param name="max_episode_time" value="$(arg max_episode_time)"/>
       <rosparam param="hover_pose" subst_value="true">[$(arg hover_x), $(arg hover_y), $(arg hover_z), $(arg hover_yaw)]</rosparam>
+      <param name="random_start/enabled" value="$(arg random_start_enabled)"/>
       <rosparam param="entry_goal" subst_value="true">[$(arg entry_x), $(arg entry_y), $(arg entry_z)]</rosparam>
       <param name="publish_synthetic_ego_cloud"
              value="$(eval not arg('use_truth_registered_ego_cloud'))"/>

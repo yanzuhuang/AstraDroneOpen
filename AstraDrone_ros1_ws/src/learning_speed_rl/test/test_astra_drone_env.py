@@ -174,7 +174,13 @@ class AsyncEpisodeHarness:
                 next_observation += 0.1
             time.sleep(0.001)
 
-    def run(self, *, max_steps=8, max_duration=None):
+    def run(
+        self,
+        *,
+        max_steps=8,
+        max_duration=None,
+        max_steps_reason="max_episode_steps",
+    ):
         self.thread.start()
         try:
             return self.env.run_episode(
@@ -182,6 +188,7 @@ class AsyncEpisodeHarness:
                 AstraDroneEpisodeConfig(
                     max_steps=max_steps,
                     max_duration_sec=max_duration,
+                    max_steps_reason=max_steps_reason,
                     start_timeout_sec=0.1,
                     completion_timeout_sec=0.2,
                     deadline_tolerance_sec=0.025,
@@ -263,6 +270,23 @@ class AstraDroneEnvEpisodeTest(unittest.TestCase):
             for earlier, later in zip(harness.published, harness.published[1:])
         ]
         self.assertTrue(all(abs(value - 0.1) <= 0.02 for value in intervals))
+
+    def test_formal_target_uses_dedicated_truncation_reason(self):
+        harness = AsyncEpisodeHarness()
+        result = harness.run(
+            max_steps=3,
+            max_steps_reason="training_target_reached",
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["metrics"]["transition_count"], 3)
+        self.assertTrue(result["episode"]["truncated"])
+        self.assertFalse(result["episode"]["terminated"])
+        self.assertEqual(
+            result["episode"]["terminal_reason"],
+            "training_target_reached",
+        )
+        self.assertTrue(result["steps"][-1]["truncated"])
+        self.assertFalse(result["steps"][-1]["transition_truncated"])
 
     def test_mission_success_terminates_without_truncation(self):
         harness = AsyncEpisodeHarness(terminal_after=4)

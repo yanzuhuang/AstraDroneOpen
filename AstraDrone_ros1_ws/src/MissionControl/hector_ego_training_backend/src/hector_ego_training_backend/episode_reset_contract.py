@@ -1,6 +1,204 @@
 """Pure identity and generation gates for training Episode/reset integration."""
 
 from dataclasses import dataclass
+import math
+import random
+from typing import Callable, Optional, Tuple
+
+
+@dataclass(frozen=True)
+class StaticObstacleXY:
+    name: str
+    x: float
+    y: float
+    radius_at_hover_z: float
+
+    def validate(self):
+        values = (self.x, self.y, self.radius_at_hover_z)
+        if not self.name or not all(math.isfinite(value) for value in values):
+            raise ValueError("static reset obstacle must be named and finite")
+        if self.radius_at_hover_z < 0.0:
+            raise ValueError("static reset obstacle radius must be non-negative")
+
+
+@dataclass(frozen=True)
+class ResetCandidate:
+    x: float
+    y: float
+    z: float
+    yaw: float
+
+
+@dataclass(frozen=True)
+class RandomResetConfig:
+    enabled: bool
+    center_x: float
+    center_y: float
+    x_min_offset: float
+    x_max_offset: float
+    y_min_offset: float
+    y_max_offset: float
+    z: float
+    yaw: float
+    seed: int
+    max_sampling_attempts: int
+    uav_collision_radius_xy: float
+    ego_obstacles_inflation: float
+    additional_static_clearance: float
+    static_obstacles: Tuple[StaticObstacleXY, ...] = ()
+
+    def validate(self):
+        numeric = (
+            self.center_x,
+            self.center_y,
+            self.x_min_offset,
+            self.x_max_offset,
+            self.y_min_offset,
+            self.y_max_offset,
+            self.z,
+            self.yaw,
+            self.uav_collision_radius_xy,
+            self.ego_obstacles_inflation,
+            self.additional_static_clearance,
+        )
+        if not all(math.isfinite(value) for value in numeric):
+            raise ValueError("random reset configuration must be finite")
+        if self.x_min_offset > self.x_max_offset:
+            raise ValueError("random reset x offsets are reversed")
+        if self.y_min_offset > self.y_max_offset:
+            raise ValueError("random reset y offsets are reversed")
+        if self.z <= 0.0 or self.max_sampling_attempts <= 0:
+            raise ValueError("random reset z/attempt count is invalid")
+        if min(
+            self.uav_collision_radius_xy,
+            self.ego_obstacles_inflation,
+            self.additional_static_clearance,
+        ) < 0.0:
+            raise ValueError("random reset clearances must be non-negative")
+        for obstacle in self.static_obstacles:
+            obstacle.validate()
+
+    @property
+    def nominal(self):
+        return ResetCandidate(self.center_x, self.center_y, self.z, self.yaw)
+
+
+class ResetSamplingError(RuntimeError):
+    def __init__(self, attempts):
+        self.attempts = tuple(attempts)
+        super().__init__(
+            "no safe random reset candidate after {} attempts".format(
+                len(self.attempts)
+            )
+        )
+
+
+def validate_reset_candidate(candidate, config):
+    config.validate()
+    reasons = []
+    values = (candidate.x, candidate.y, candidate.z, candidate.yaw)
+    if not all(math.isfinite(value) for value in values):
+        reasons.append("non_finite_candidate")
+    x_offset = candidate.x - config.center_x
+    y_offset = candidate.y - config.center_y
+    if not config.x_min_offset <= x_offset <= config.x_max_offset:
+        reasons.append("x_out_of_bounds")
+    if not config.y_min_offset <= y_offset <= config.y_max_offset:
+        reasons.append("y_out_of_bounds")
+    if abs(candidate.z - config.z) > 1.0e-12:
+        reasons.append("z_not_fixed")
+    if abs(candidate.yaw - config.yaw) > 1.0e-12:
+        reasons.append("yaw_not_fixed")
+
+    minimum_clearance = None
+    limiting_obstacle = None
+    required_padding = (
+        config.uav_collision_radius_xy
+        + config.ego_obstacles_inflation
+        + config.additional_static_clearance
+    )
+    if not reasons:
+        for obstacle in config.static_obstacles:
+            center_distance = math.hypot(
+                candidate.x - obstacle.x, candidate.y - obstacle.y
+            )
+            clearance = (
+                center_distance
+                - obstacle.radius_at_hover_z
+                - required_padding
+            )
+            if minimum_clearance is None or clearance < minimum_clearance:
+                minimum_clearance = clearance
+                limiting_obstacle = obstacle.name
+            if clearance < 0.0:
+                reasons.append("static_obstacle_clearance:" + obstacle.name)
+    return {
+        "valid": not reasons,
+        "reasons": reasons,
+        "minimum_static_clearance_m": minimum_clearance,
+        "limiting_static_obstacle": limiting_obstacle,
+        "required_padding_m": required_padding,
+    }
+
+
+class RandomResetSampler:
+    """Deterministic per-run reset sampler with fail-closed validation."""
+
+    def __init__(self, config):
+        config.validate()
+        self.config = config
+        self._rng = random.Random(int(config.seed))
+        self._sample_index = 0
+
+    def sample(
+        self,
+        validator: Optional[
+            Callable[[ResetCandidate, RandomResetConfig], dict]
+        ] = None,
+    ):
+        check = validate_reset_candidate if validator is None else validator
+        self._sample_index += 1
+        attempts = []
+        attempt_limit = self.config.max_sampling_attempts if self.config.enabled else 1
+        for attempt_count in range(1, attempt_limit + 1):
+            if self.config.enabled:
+                candidate = ResetCandidate(
+                    x=self.config.center_x
+                    + self._rng.uniform(
+                        self.config.x_min_offset,
+                        self.config.x_max_offset,
+                    ),
+                    y=self.config.center_y
+                    + self._rng.uniform(
+                        self.config.y_min_offset,
+                        self.config.y_max_offset,
+                    ),
+                    z=self.config.z,
+                    yaw=self.config.yaw,
+                )
+            else:
+                candidate = self.config.nominal
+            validation = dict(check(candidate, self.config))
+            attempt = {
+                "attempt_count": attempt_count,
+                "candidate": {
+                    "x": candidate.x,
+                    "y": candidate.y,
+                    "z": candidate.z,
+                    "yaw": candidate.yaw,
+                },
+                "validation": validation,
+            }
+            attempts.append(attempt)
+            if validation.get("valid") is True:
+                return {
+                    "candidate": candidate,
+                    "sample_index": self._sample_index,
+                    "attempt_count": attempt_count,
+                    "candidate_validation_result": validation,
+                    "sampling_attempts": attempts,
+                }
+        raise ResetSamplingError(attempts)
 
 
 @dataclass(frozen=True)
@@ -72,6 +270,46 @@ def sac_closure_matches(binding, payload):
         )
     except (TypeError, ValueError):
         return False
+
+
+def training_target_matches(binding, payload, target_valid_transitions):
+    """Accept only the exact current-Episode formal training stop signal."""
+
+    binding.validate()
+    if not isinstance(payload, dict):
+        return False
+    try:
+        target = int(target_valid_transitions)
+        return bool(
+            target > 0
+            and str(payload.get("episode_id", "")) == binding.episode_key
+            and int(payload.get("reset_generation", -1))
+            == binding.reset_generation
+            and int(payload.get("valid_transition_count", -1)) == target
+            and int(payload.get("target_valid_transitions", -1)) == target
+            and str(payload.get("reason", "")) == "training_target_reached"
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def episode_count_stop_due(runner_mode, completed_episodes, episode_count):
+    """Keep fixed Episode completion for evaluation/qualification only."""
+
+    mode = str(runner_mode).strip().lower()
+    completed = int(completed_episodes)
+    configured = int(episode_count)
+    if mode not in ("qualification", "training", "evaluation"):
+        raise ValueError("runner_mode is invalid")
+    if completed < 0:
+        raise ValueError("completed Episode count is invalid")
+    if mode == "training":
+        if configured != 0:
+            raise ValueError("training episode_count must be disabled (0)")
+        return False
+    if configured <= 0 or completed > configured:
+        raise ValueError("fixed Episode count is invalid or exceeded")
+    return completed == configured
 
 
 def trajectory_matches(

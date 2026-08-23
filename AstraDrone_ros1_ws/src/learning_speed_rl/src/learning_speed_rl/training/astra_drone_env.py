@@ -118,6 +118,7 @@ class AstraDroneEpisodeConfig:
     deadline_tolerance_sec: float = 0.02
     maximum_in_flight: int = 16
     minimum_active_speed_mps: float = 0.2
+    max_steps_reason: str = "max_episode_steps"
 
     def __post_init__(self):
         numeric = (
@@ -143,6 +144,8 @@ class AstraDroneEpisodeConfig:
             raise ValueError("Episode v0.1 requires a max step or duration limit")
         if self.max_steps is not None and int(self.max_steps) <= 0:
             raise ValueError("max_steps must be positive when configured")
+        if not str(self.max_steps_reason).strip():
+            raise ValueError("max_steps_reason must be non-empty")
         if self.max_duration_sec is not None:
             duration = float(self.max_duration_sec)
             if not math.isfinite(duration) or duration <= 0.0:
@@ -1273,7 +1276,7 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
                         stop_reason = (
                             "max_episode_duration"
                             if duration_limit
-                            else "max_episode_steps"
+                            else str(episode_config.max_steps_reason)
                         )
                         completion_deadline = (
                             self._wall_clock()
@@ -1377,7 +1380,11 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
                 and (
                     self._external_truncated
                     or stop_reason
-                    in ("max_episode_duration", "max_episode_steps")
+                    in (
+                        "max_episode_duration",
+                        "max_episode_steps",
+                        "training_target_reached",
+                    )
                 )
             )
             terminal_reason = (

@@ -82,6 +82,7 @@ class PositionCommandToHector:
             float(rospy.get_param("~reset_hover_z", 1.5)),
             float(rospy.get_param("~reset_hover_yaw", 0.0)),
         )
+        self._reset_hover_update_count = 0
         if (
             not self._expected_frame
             or not _finite(self._reset_hover)
@@ -203,6 +204,12 @@ class PositionCommandToHector:
             _topic("goal", "planning/goal"),
             PoseStamped,
             self._goal_callback,
+            queue_size=1,
+        )
+        self._reset_hover_sub = rospy.Subscriber(
+            _topic("reset_hover", "training/reset_hover"),
+            PoseStamped,
+            self._reset_hover_callback,
             queue_size=1,
         )
 
@@ -414,6 +421,51 @@ class PositionCommandToHector:
         self._hold_position = (position.x, position.y, position.z)
         self._hold_yaw = _yaw_from_quaternion(odometry.pose.pose.orientation)
         self._hover_ready_since = rospy.Time(0)
+
+    def _reset_hover_callback(self, message):
+        quaternion = message.pose.orientation
+        values = (
+            message.pose.position.x,
+            message.pose.position.y,
+            message.pose.position.z,
+            quaternion.x,
+            quaternion.y,
+            quaternion.z,
+            quaternion.w,
+        )
+        norm = math.sqrt(
+            quaternion.x ** 2
+            + quaternion.y ** 2
+            + quaternion.z ** 2
+            + quaternion.w ** 2
+        )
+        with self._lock:
+            if self._mode != "RESET_PAUSED" or self._output_enabled:
+                self._last_rejection = "reset_hover_outside_reset_pause"
+                return
+            if (
+                message.header.frame_id.lstrip("/")
+                != self._expected_frame.lstrip("/")
+                or not _finite(values)
+                or abs(norm - 1.0) > 1.0e-6
+            ):
+                self._last_rejection = "invalid_reset_hover_target"
+                return
+            roll_pitch = (
+                2.0 * (quaternion.w * quaternion.x + quaternion.y * quaternion.z),
+                2.0 * (quaternion.w * quaternion.y - quaternion.z * quaternion.x),
+            )
+            if max(abs(value) for value in roll_pitch) > 1.0e-6:
+                self._last_rejection = "reset_hover_roll_pitch_nonzero"
+                return
+            self._reset_hover = (
+                float(message.pose.position.x),
+                float(message.pose.position.y),
+                float(message.pose.position.z),
+                _yaw_from_quaternion(quaternion),
+            )
+            self._reset_hover_update_count += 1
+            self._last_rejection = ""
 
     def _configured_reset_hold_locked(self):
         self._hold_position = self._reset_hover[:3]
@@ -737,6 +789,8 @@ class PositionCommandToHector:
             "hover_position_error": hover_position_error,
             "actual_speed": actual_speed,
             "hover_ready_sustained": hover_sustained,
+            "configured_reset_hover": list(self._reset_hover),
+            "reset_hover_update_count": self._reset_hover_update_count,
             "accepted_commands": self._accepted_count,
             "rejected_commands": self._rejected_count,
             "published_commands": self._publish_count,
