@@ -33,10 +33,11 @@ from .data_contract import (
 )
 from .environment_interface import SpeedTrainingEnvironment
 from .reward import (
-    Stage1Reward,
+    LearningSpeedReward,
     actual_speed_mps_from_body_velocity,
     reward_from_config,
-    stage1_reward_input_from_signals,
+    reward_input_from_signals,
+    tracking_error_m_from_body_error,
 )
 
 
@@ -252,7 +253,7 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
         self,
         publish_requested_v_max: Callable[[float], None],
         ros_clock: Callable[[], float],
-        reward: Stage1Reward,
+        reward: LearningSpeedReward,
         config: Optional[AstraDroneStepConfig] = None,
         run_id: str = "astra_drone_env_paper_aligned",
         episode_id: str = "single_runtime",
@@ -928,7 +929,7 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
             terminal_reason=terminal.terminal_reason,
             dangerous_terminal=terminal.dangerous_terminal,
         )
-        reward_input = stage1_reward_input_from_signals(
+        reward_input = reward_input_from_signals(
             nearest_obstacle_distance_m=state_t.reward_observation[
                 "nearest_obstacle_distance_m"
             ],
@@ -941,6 +942,9 @@ class AstraDroneEnv(SpeedTrainingEnvironment):
             previous_applied_v_max_mps=state_t.state.previous_applied_v_max,
             actual_speed_mps=actual_speed_mps_from_body_velocity(
                 state_t.state.actual_velocity_body
+            ),
+            tracking_error_m=tracking_error_m_from_body_error(
+                state_t.state.tracking_error_body
             ),
             dangerous_terminal=transition.dangerous_terminal,
             terminated=transition.terminated,

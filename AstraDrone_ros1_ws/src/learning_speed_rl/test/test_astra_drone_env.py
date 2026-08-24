@@ -15,7 +15,7 @@ from learning_speed_rl.training import (
     PolicyStateProvenance,
     PolicyStateV1,
     ProgressContextState,
-    Stage1Reward,
+    LearningSpeedReward,
 )
 
 
@@ -50,7 +50,7 @@ class AsyncEpisodeHarness:
         self.env = AstraDroneEnv(
             publish_requested_v_max=self.publish,
             ros_clock=self.clock,
-            reward=Stage1Reward(),
+            reward=LearningSpeedReward(),
             config=AstraDroneStepConfig(
                 duration_sec=0.1,
                 action_timeout_sec=0.05,
@@ -330,7 +330,7 @@ class AstraDroneEnvEpisodeTest(unittest.TestCase):
         env = AstraDroneEnv(
             publish_requested_v_max=lambda _value: None,
             ros_clock=clock,
-            reward=Stage1Reward(),
+            reward=LearningSpeedReward(),
             config=AstraDroneStepConfig(),
         )
         with self.assertRaisesRegex(NotImplementedError, "does not implement"):

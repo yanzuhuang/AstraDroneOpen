@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only recorder for Learning Speed transitions with Stage 1 reward.
+"""Read-only recorder for Learning Speed transitions with the unified reward.
 
 The node has no publishers.  It records diagnostics, forms the reviewed
-Stage1RewardInput from causal runtime signals, and delegates all reward
-calculation to Stage1Reward.evaluate().
+LearningSpeedRewardInput from causal runtime signals, and delegates all reward
+calculation to LearningSpeedReward.evaluate().
 """
 
 import csv
@@ -39,7 +39,8 @@ from learning_speed_rl.training import (
     official_trajectory_identity_from_observation,
     policy_state_from_observation_c,
     reward_from_config,
-    stage1_reward_input_from_signals,
+    reward_input_from_signals,
+    tracking_error_m_from_body_error,
     validate_artifact_root,
 )
 from nav_msgs.msg import Odometry
@@ -591,7 +592,7 @@ class CalibrationDataRecorder:
             terminal_reason=";".join(reasons),
             dangerous_terminal=dangerous,
         )
-        reward_input = stage1_reward_input_from_signals(
+        reward_input = reward_input_from_signals(
             nearest_obstacle_distance_m=pending["reward_observation"][
                 "nearest_obstacle_distance_m"
             ],
@@ -604,6 +605,9 @@ class CalibrationDataRecorder:
             previous_applied_v_max_mps=transition.state_t.previous_applied_v_max,
             actual_speed_mps=actual_speed_mps_from_body_velocity(
                 transition.state_t.actual_velocity_body
+            ),
+            tracking_error_m=tracking_error_m_from_body_error(
+                transition.state_t.tracking_error_body
             ),
             dangerous_terminal=transition.dangerous_terminal,
             terminated=transition.terminated,
@@ -1255,16 +1259,16 @@ class CalibrationDataRecorder:
                         if self._latest_progress is None
                         else self._latest_progress[0]
                     ),
-                    "used_by_stage1_reward": False,
+                    "used_by_learning_speed_reward": False,
                     "policy_input": False,
                 },
-                "stage1_reward": {
+                "learning_speed_reward": {
                     "mode": self._reward.config.mode,
                     "version": self._reward.config.version,
                     "defined_transitions": self._reward_defined_transitions,
                     "invalid_evaluations": dict(self._reward_invalid_reasons),
                     "config_source": "config/stage1_reward.yaml via private reward params",
-                    "implementation": "Stage1Reward.evaluate",
+                    "implementation": "LearningSpeedReward.evaluate",
                 },
                 "safety": {
                     "collision_proxy_terminal": self._collision_terminal,

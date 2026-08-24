@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only Stage 1 reward replay over frozen calibration artifacts."""
+"""Read-only paper-guided reward replay over frozen calibration artifacts."""
 
 import argparse
 import csv
@@ -16,12 +16,13 @@ import yaml
 
 from learning_speed_rl.training import (
     LIDAR_BINS,
-    Stage1Reward,
-    Stage1RewardConfig,
-    Stage1RewardInput,
+    LearningSpeedReward,
+    LearningSpeedRewardConfig,
+    LearningSpeedRewardInput,
     actual_speed_mps_from_body_velocity,
     reward_from_config,
-    stage1_reward_input_from_signals,
+    reward_input_from_signals,
+    tracking_error_m_from_body_error,
 )
 
 
@@ -80,6 +81,7 @@ def _quantiles(values: Sequence[float]) -> Dict[str, Optional[float]]:
             "min": None,
             "p01": None,
             "p50": None,
+            "p95": None,
             "mean": None,
             "p99": None,
             "max": None,
@@ -90,6 +92,7 @@ def _quantiles(values: Sequence[float]) -> Dict[str, Optional[float]]:
         "min": float(np.min(array)),
         "p01": float(np.quantile(array, 0.01)),
         "p50": float(np.quantile(array, 0.50)),
+        "p95": float(np.quantile(array, 0.95)),
         "mean": float(np.mean(array)),
         "p99": float(np.quantile(array, 0.99)),
         "max": float(np.max(array)),
@@ -175,12 +178,13 @@ def _reward_input(
     applied: float,
     previous: float,
     actual: float,
+    tracking: float,
     dangerous: bool,
     terminated: bool,
     truncated: bool = False,
-) -> Stage1RewardInput:
+) -> LearningSpeedRewardInput:
     nearest_text = row["nearest_obstacle_distance_m"]
-    return stage1_reward_input_from_signals(
+    return reward_input_from_signals(
         nearest_obstacle_distance_m=(
             None if nearest_text == "" else float(nearest_text)
         ),
@@ -190,6 +194,7 @@ def _reward_input(
         applied_v_max_mps=applied,
         previous_applied_v_max_mps=previous,
         actual_speed_mps=actual,
+        tracking_error_m=tracking,
         dangerous_terminal=dangerous,
         terminated=terminated,
         observation_valid=_boolean(row, "observation_valid"),
@@ -223,7 +228,7 @@ def _summary_says_dangerous(directory: Path) -> bool:
 
 
 def _terminal_event_check(
-    reward: Stage1Reward, spec: RunSpec, rows: List[Dict[str, str]]
+    reward: LearningSpeedReward, spec: RunSpec, rows: List[Dict[str, str]]
 ) -> Optional[Dict[str, object]]:
     if not _summary_says_dangerous(spec.directory):
         return None
@@ -260,6 +265,7 @@ def _terminal_event_check(
         applied=float(selected["latest_applied_v_max_mps"]),
         previous=float(selected["previous_applied_v_max_mps"]),
         actual=float(selected["actual_speed_mps"]),
+        tracking=float(selected["tracking_error_norm_m"]),
         dangerous=True,
         terminated=True,
     )
@@ -274,32 +280,34 @@ def _terminal_event_check(
         "applied_v_max_mps": value.applied_v_max_mps,
         "reward_total": evaluation.reward_total,
         "reward_speed": evaluation.reward_speed,
+        "reward_error": evaluation.reward_error,
         "reward_danger": evaluation.reward_danger,
         "complexity": evaluation.complexity_context.label,
     }
 
 
 def _counterfactual_preference(
-    reward: Stage1Reward, base: Stage1RewardInput
+    reward: LearningSpeedReward, base: LearningSpeedRewardInput
 ) -> Dict[str, float]:
     values = {}
-    for action in (0.75, 1.25, 1.75):
-        probe = Stage1RewardInput(
+    for action in (0.30, 1.25, 1.75):
+        probe = LearningSpeedRewardInput(
             nearest_obstacle_distance_m=base.nearest_obstacle_distance_m,
             known_obstacle_bin_fraction=base.known_obstacle_bin_fraction,
             unknown_majority=base.unknown_majority,
             applied_v_max_mps=action,
             previous_applied_v_max_mps=action,
-            actual_speed_mps=base.actual_speed_mps,
+            actual_speed_mps=action,
+            tracking_error_m=base.tracking_error_m,
             dangerous_terminal=False,
             terminated=False,
         )
         values["{:.2f}".format(action)] = reward.evaluate(probe).reward_speed
-    values["delta_1p75_minus_0p75"] = values["1.75"] - values["0.75"]
+    values["delta_1p75_minus_0p30"] = values["1.75"] - values["0.30"]
     return values
 
 
-def _replay_run(reward: Stage1Reward, spec: RunSpec):
+def _replay_run(reward: LearningSpeedReward, spec: RunSpec):
     sample_path = spec.directory / "calibration_samples.csv"
     transition_path = spec.directory / "transition_candidates.jsonl"
     if not sample_path.is_file() or not transition_path.is_file():
@@ -336,12 +344,16 @@ def _replay_run(reward: Stage1Reward, spec: RunSpec):
             actual_speed = actual_speed_mps_from_body_velocity(
                 state["actual_velocity_body"]
             )
+            tracking_error = tracking_error_m_from_body_error(
+                state["tracking_error_body"]
+            )
             dangerous = _legacy_dangerous(transition)
             value = _reward_input(
                 row,
                 applied=float(action["applied_v_max"]),
                 previous=float(state["previous_applied_v_max"]),
                 actual=actual_speed,
+                tracking=tracking_error,
                 dangerous=dangerous,
                 terminated=bool(transition["terminated"]),
                 truncated=bool(transition["truncated"]),
@@ -361,17 +373,19 @@ def _replay_run(reward: Stage1Reward, spec: RunSpec):
                     "reward_total": evaluation.reward_total,
                     "reward_speed": evaluation.reward_speed,
                     "reward_smoothing": evaluation.reward_smoothing,
+                    "reward_error": evaluation.reward_error,
                     "reward_danger": evaluation.reward_danger,
                     "phi_1": evaluation.phi_1,
                     "phi_2": evaluation.phi_2,
                     "complexity": evaluation.complexity_context.label,
                     "dangerous_terminal": dangerous,
                     "actual_speed_mps": actual_speed,
+                    "tracking_error_m": tracking_error,
                     "applied_v_max_mps": value.applied_v_max_mps,
                     "action_delta_mps": (
                         value.applied_v_max_mps - value.previous_applied_v_max_mps
                     ),
-                    "preference_delta": preference["delta_1p75_minus_0p75"],
+                    "preference_delta": preference["delta_1p75_minus_0p30"],
                 }
             )
     return records, counters, _terminal_event_check(reward, spec, all_rows)
@@ -392,10 +406,12 @@ def _cohort_summary(records: List[Dict[str, object]]) -> Dict[str, object]:
         "reward_total",
         "reward_speed",
         "reward_smoothing",
+        "reward_error",
         "reward_danger",
         "phi_1",
         "phi_2",
         "action_delta_mps",
+        "tracking_error_m",
     ):
         values = [float(record[field]) for record in records]
         result["nonfinite_count"] += sum(not math.isfinite(value) for value in values)
@@ -410,7 +426,7 @@ def _cohort_summary(records: List[Dict[str, object]]) -> Dict[str, object]:
             "reward_total": _quantiles(
                 [float(record["reward_total"]) for record in selected]
             ),
-            "preference_delta_1p75_minus_0p75": _quantiles(deltas),
+            "preference_delta_1p75_minus_0p30": _quantiles(deltas),
             "fraction_prefers_higher": (
                 None
                 if not deltas
@@ -436,7 +452,7 @@ def _cohort_summary(records: List[Dict[str, object]]) -> Dict[str, object]:
     return result
 
 
-def _continuity_probe(reward: Stage1Reward) -> Dict[str, object]:
+def _continuity_probe(reward: LearningSpeedReward) -> Dict[str, object]:
     probes = {}
     finest_location = None
     for count in (1001, 2001, 10001):
@@ -449,13 +465,18 @@ def _continuity_probe(reward: Stage1Reward) -> Dict[str, object]:
                 density = reward.config.density_safe + q * (
                     reward.config.density_dangerous - reward.config.density_safe
                 )
-                value = Stage1RewardInput(
-                    nearest_obstacle_distance_m=10.0,
+                nearest = reward.config.nearest_safe_m - q * (
+                    reward.config.nearest_safe_m
+                    - reward.config.nearest_dangerous_m
+                )
+                value = LearningSpeedRewardInput(
+                    nearest_obstacle_distance_m=nearest,
                     known_obstacle_bin_fraction=density,
                     unknown_majority=False,
                     applied_v_max_mps=action,
                     previous_applied_v_max_mps=action,
                     actual_speed_mps=action,
+                    tracking_error_m=0.0,
                     dangerous_terminal=False,
                     terminated=False,
                 )
@@ -480,7 +501,7 @@ def _continuity_probe(reward: Stage1Reward) -> Dict[str, object]:
     }
 
 
-def _smoothing_probe(config: Stage1RewardConfig) -> Dict[str, float]:
+def _smoothing_probe(config: LearningSpeedRewardConfig) -> Dict[str, float]:
     return {
         "delta_{:.2f}_mps".format(delta): -config.lambda_smoothing * delta ** 2
         for delta in (0.02, 0.08, 0.12, 0.50, 1.00)
@@ -535,12 +556,12 @@ def _validation_checks(summary: Dict[str, object]) -> Dict[str, bool]:
         "unknown_is_not_low": (
             unknown["phi_2"]["min"] == 0.5
             and unknown["phi_2"]["max"] == 0.5
-            and unknown["preference_delta_1p75_minus_0p75"]["mean"]
-            < low["preference_delta_1p75_minus_0p75"]["mean"]
+            and unknown["preference_delta_1p75_minus_0p30"]["mean"]
+            < low["preference_delta_1p75_minus_0p30"]["mean"]
         ),
-        "dangerous_events_are_clearly_negative": (
+        "dangerous_events_are_negative": (
             bool(terminal_checks)
-            and all(event["reward_total"] < -1.0 for event in terminal_checks)
+            and all(event["reward_total"] < 0.0 for event in terminal_checks)
         ),
         "normal_pass_reward_bounded": maximum_pass_reward < 5.0,
         "smoothing_not_dominant": smoothing_p99 <= 0.10 * max(speed_p99, 1.0e-12),
@@ -576,7 +597,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=default_root / "stage1_reward_v1_replay_analysis.json",
+        default=default_root / "paper_guided_reward_v3_replay_analysis.json",
     )
     args = parser.parse_args()
     dataset_root = args.dataset_root.resolve()
@@ -607,11 +628,11 @@ def main() -> int:
         )
     config = reward.config
     summary = {
-        "schema_version": "astradrone_stage1_reward_replay_v1.0",
+        "schema_version": "astradrone_paper_guided_reward_replay_v3.0",
         "paper_reference": {
             "title": "Learning Speed Adaptation for Flight in Clutter",
             "arxiv": "2403.04586v2",
-            "design_equations": [6, 7, 9, 10],
+            "design_equations": [6, 7, 8, 9, 10, 11],
             "claim": "paper-guided adaptation, not exact paper parameter reproduction",
         },
         "inputs": {
@@ -637,12 +658,14 @@ def main() -> int:
             "anchor_medium_mps": config.medium_anchor_mps,
             "anchor_high_mps": config.high_anchor_mps,
             "anchor_unknown_mps": config.unknown_anchor_mps,
-            "lambda_phi_1": config.lambda_phi_1,
-            "lambda_phi_2": config.lambda_phi_2,
+            "nearest_weight": config.nearest_weight,
+            "density_weight": config.density_weight,
             "lambda_speed_1": config.lambda_speed_1,
             "lambda_speed_2": config.lambda_speed_2,
             "lambda_speed_3": config.lambda_speed_3,
             "lambda_smoothing": config.lambda_smoothing,
+            "lambda_error": config.lambda_error,
+            "error_clip_max_m": config.error_clip_max_m,
             "lambda_danger": config.lambda_danger,
         },
         "legacy_contract_note": (

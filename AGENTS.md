@@ -269,11 +269,11 @@ reward_defined = true
 training_ready = true
 ```
 
-`astradrone_stage1_reward_v1.0` 仍只在 `training/reward.py` 实现，并由现有 `config/stage1_reward.yaml` 选择 `reward.mode=stage1`；recorder 只把与 offline replay 同语义的 runtime signals 构造成 `Stage1RewardInput` 并调用 `Stage1Reward.evaluate()`，没有第二套公式、Reward node/service/topic。v1.3 contract 只允许 valid、同 episode、非 truncated transition 绑定 versioned 分项 reward；invalid/truncated 仍不得变成 training-ready。输出保留 `reward_total/reward_speed/reward_smoothing/reward_danger/phi_1/phi_2/complexity_context`，progress context 仍不进入 Stage 1 reward。历史冻结 calibration 工件保持 reward-null，不回写。该 online 路径已通过 unit/offline 一致性验证。
+`astradrone_paper_guided_reward_v3.0` 只在 `training/reward.py` 的 `LearningSpeedReward.evaluate()` 实现；recorder 与 offline replay 共用同一 `LearningSpeedRewardInput` 和公式，没有第二套 Reward owner/node/service/topic。`config/stage1_reward.yaml` 当前选择 `reward.mode=stage_1`；`stage_2` 只实现 Reward 公式，未启动训练。v1.3 contract 只允许 valid、同 episode、非 truncated transition 绑定 versioned 分项 reward；invalid/truncated 仍不得变成 training-ready。输出为 `reward_total/reward_speed/reward_smoothing/reward_error/reward_danger/phi_1/phi_2/complexity_context`，progress context 仍不进入 Reward。历史冻结 calibration 工件保持不回写。
 
-Stage 1 使用 Candidate C 的连续 N+D+Unknown `phi_2` 与 `phi_1=1.75-phi_2`（Unknown 固定 `phi_1=1.25, phi_2=0.5`），并连续混合论文 Eq. (10) 三个分支；最终项目标定值为 `lambda_phi_1/2=0.65/0.35`、`lambda_speed_1/2/3=1.00/0.80/0.25`、`lambda_smoothing=0.10`、`lambda_danger=2.00`。这些都是 AstraDroneOpen-specific，不是论文原参数。Reward 不含 tracking/progress；danger 只在冻结的 collision proxy / emergency / continuous tracking-safety terminal 上按当前实际速度平方产生。现有 tracking gate 不变。
+Stage 1 保留 `q_N=clip((6-N)/3.5)`、`q_D=clip((D-0.040)/0.040)` 与 `phi_1=1.75-phi_2`（Unknown 固定 `phi_1=1.25, phi_2=0.5`），但 v3 不再使用 `max(q_N,q_D)`；离线分层拟合后的唯一 fusion 为 `phi_2=1-(1-q_N)^0.46(1-q_D)^0.54`。论文 Eq. (10) 三个分支使用 quadratic Bernstein 连续权重 `(1-phi_2)^2, 2phi_2(1-phi_2), phi_2^2`，Low/Medium/High 仅作诊断 label，不是计算开关。`r_speed` 和 `r_danger` 都使用 `state_t` actual speed 范数；`r_smoothing` 只使用 stamped identity 链真正 applied 的相邻 EGO speed constraint；`r_error` 复用 Observation C `tracking_error_body` 范数，继续使用 `lambda_error=2.00,e_max=0.40 m`。`lambda_speed_1/2/3=1.00/0.80/0.25`、`lambda_smoothing=0.10`、`lambda_danger=2.00` 不变。所有数值均是 paper-guided AstraDroneOpen implementation，不是论文精确复现；danger 只在冻结 dangerous terminal 生效，progress 不进 Reward，现有 tracking safety gate 不变。
 
-仓库已有 training-only Gaussian Actor、twin Q/target Q、automatic entropy、Replay Buffer、异步 learner、checkpoint 与 qualification/pilot/evaluation runner；没有 PER、已收敛模型、生产 inference 策略或 Stage 2。`inference/model_runner.py` 仍只是 reviewed model 的 fail-closed 边界。
+仓库已有 training-only Gaussian Actor、twin Q/target Q、automatic entropy、Replay Buffer、异步 learner、checkpoint 与 qualification/pilot/evaluation runner；没有 PER、已收敛模型或生产 inference 策略。Stage 2 Reward 候选仅把 `r_speed` 切换为 `lambda_speed_3 * actual_speed`，其余三项复用统一实现；论文的冻结 CNN encoder 不适用于当前不同的 SAC 网络，冻结策略待单独决定。`inference/model_runner.py` 仍只是 reviewed model 的 fail-closed 边界。
 
 `training/astra_drone_env.py` 的正式入口是 `run_episode()`：按 0.1 s ROS/sim-time grid 发布 request，不等待上一 transition 闭合；每个 pending step 独立保存 episode/step ID、strict causal state、request marker、atomic action、applied ack、trajectory provenance 与 post-hold next Observation，并一次性消费 action/applied/next-state event。full-stack readiness 使用 mission/bridge/planner；training profile 使用 Hector coordinator/adapter identity。`AstraDroneEnv.reset()` 仍不直接拥有 reset，正式 training reset 由外部 coordinator 独占。
 
@@ -339,16 +339,16 @@ training 目录。独立 evaluation 只读加载上述目录中的 checkpoint，
 
 2026-08-24 lightweight fixed-v_max qualification 复用现有 worksite Episode/reset coordinator，六档各 2 Episodes（nominal + random Hover），EGO static ceiling 仅为容纳新正式范围设置为 1.75，其他 EGO 参数、Hector PID、Reward、Observation C 和 random Hover 范围未改。0.30、0.75 m/s 为 2/2 PASS；1.00、1.25、1.50、1.75 m/s 均为 0/2、真实 `invalid_observation:continuous` NO-GO，日志对齐到 EGO 轨迹结束/terminal convergence 时的 `trajectory_unavailable`。六档 planner/collision/controller failure 均为 0，所有 reset 12/12 成功；最高稳定通过速度为 0.75 m/s，完整 `[0.30,1.75]` 动作范围当前 NO-GO。0.75 首次尝试因 gzserver exit 139 在 0 Episode 失效，只按新 ID 做了一次基础设施重试；原失败工件保留。
 
-10k pilot 在 4207 valid transitions fail-closed，旧 checkpoint/replay 不允许恢复继续。修复后的 qualification 覆盖 2500 transitions、1500 stochastic steps、5 Episodes，action boundary/delta force-replan、planner/collision、reset、identity、10 Hz、replay、loss/Q/gradient/checkpoint 门均通过。该 PASS 只放行**新的、从空 replay 开始的受控训练**；下一步应先看 checkpoint 和 deterministic evaluation，再决定是否扩大规模，不能默认直接进入 100k/1M。training resume 当前未实现；Stage 2、PER、模型部署、full-stack transfer 和真机验证均待完成。
+10k pilot 在 4207 valid transitions fail-closed，旧 checkpoint/replay 不允许恢复继续。修复后的 qualification 覆盖 2500 transitions、1500 stochastic steps、5 Episodes，action boundary/delta force-replan、planner/collision、reset、identity、10 Hz、replay、loss/Q/gradient/checkpoint 门均通过。该历史 PASS 不覆盖 Reward v3；Reward v3 当前只有 unit/offline replay/landscape PASS，尚未进行 v3 runtime qualification，因此仍不放行正式训练。training resume 当前未实现；Stage 2 training、PER、模型部署、full-stack transfer 和真机验证均待完成。
 
-长期规则：不得为训练 PASS 给 SafetyFilter 加 slew/low-pass/hysteresis，不改当前候选 `[0.30,1.75]`、Learning Speed replan 阈值、Reward、Observation C、EGO core 或 Hector PID；真实 planner/collision/tracking/Observation failure 必须保留。新范围当前仍是 NO-GO，不得在解决并重新资格验证前启动正式长期 training。
+长期规则：不得为训练 PASS 给 SafetyFilter 加 slew/low-pass/hysteresis，不改当前候选 `[0.30,1.75]`、Learning Speed replan 阈值、Observation C、EGO core 或 Hector PID；Reward v3 参数在新的显式审计前不得继续漂移。真实 planner/collision/tracking/Observation failure 必须保留。Reward v3 只获准进入新的 bounded runtime qualification，不得据离线 PASS 启动正式长期 training。
 
 ## 9. 已实现但仍属部分验证 / 待验证
 
 - YOLO：三路推理接口已通过；三机绕塔中的非空 PPE 检测、覆盖率和业务告警闭环待验证。
 - outdoor_village：三机初始化和 UAV1 Learning Speed 飞行已通过；三机任务闭环待验证。
 - Observation C：接口与定向数据质量门通过；修复后的完整 12-run A/B 矩阵未重跑。
-- Learning Speed：fixed/mock、Reward、causal Episode identity、training-only SAC loop 和既有 action exploration 短程稳定性均已通过；新的 10000-Episode/500-checkpoint/100-evaluation 与 `[0.30,1.75]` 为 code/config/static-test ready，但 lightweight fixed-v_max 只通过到 0.75，完整范围 NO-GO，正式 training/evaluation 均未启动。长程收敛、resume、Stage 2、模型推理、full-stack transfer 与泛化未验证。
+- Learning Speed：fixed/mock、causal Episode identity、training-only SAC loop 和既有 action exploration 短程稳定性有历史验证；Reward v2 runtime qualification 保留为 NO-GO，Reward v3 已完成代码/unit/offline replay/landscape，尚无 v3 runtime qualification。新的 10000-Episode/500-checkpoint/100-evaluation 与 `[0.30,1.75]` 正式 run 仍未启动；正式 training 保持 NO-GO。长程收敛、resume、Stage 2 training、模型推理、full-stack transfer 与泛化未验证。
 - Training simulator：Hector execution、truth odometry、Mid360/Observation C、worksite Episode/teleport reset 与 SAC 已集成；这是 lightweight training backend，不等于 PX4/FAST-LIO high-fidelity 或 production reset。
 - D435：三机 RGB-D topics/TF 和 YOLO 彩色输入已接通；不参与当前规划，真实硬件外参/同步待验证。
 - 动态障碍：没有可靠目标跟踪、未来状态预测和时空动态避障闭环；静态占据更新不能称为动态避障。

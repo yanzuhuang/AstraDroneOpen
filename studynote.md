@@ -1240,7 +1240,7 @@ checkpoint 的 config 必须与 evaluation 加载的 config 完全一致。Train
 | Observation C | `3267` | `.../config/observation_c_trajectory_fusion.yaml` | `expected_lidar_bins=3200`, `trajectory_sample_count=20` | 3200 + 60 + 3 + 3 + 1 | 禁止随意修改 |
 | Mid360 rate | `10 Hz` | `.../urdf/quadrotor_mid360_training.gazebo.xacro` | `sensor/update_rate` | training raw PointCloud2 source rate | 否 |
 | lidar history | `5 frames` | `.../config/observation_v2_lidar_surrogate.yaml` | `history_frames`, `minimum_history_frames` | truth-pose causal aligned history | 禁止随意修改 |
-| Stage 1 Reward | 当前 calibrated v1 | `AstraDrone_ros1_ws/src/learning_speed_rl/config/stage1_reward.yaml` | `reward.*` | 唯一正式 Reward 配置 | 本轮不修改 |
+| Learning Speed Reward | paper-guided v3；默认 `stage_1` | `AstraDrone_ros1_ws/src/learning_speed_rl/config/stage1_reward.yaml` | `reward.*` | 唯一 Reward 配置；N/D weighted-geometric fusion、continuous branch、actual-speed + tracking error；Stage 2 仅候选 | v3 bounded runtime qualification 前仅离线 PASS；正式训练 NO-GO |
 | Reset coordinator | base defaults + worksite profile | `.../config/training_episode_reset.yaml`、`.../config/worksite_training_reset.yaml` 与 worksite launch | `hover_pose`, `entry_goal`, `random_start.*`, barriers/timeouts | sample/validate、adapter ack、teleport、generation 和 readiness owner | 禁止随意修改 |
 
 表中的 `...` 分别指 `AstraDrone_ros1_ws/src/learning_speed_rl` 或

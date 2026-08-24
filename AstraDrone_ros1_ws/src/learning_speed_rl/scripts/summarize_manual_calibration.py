@@ -144,16 +144,25 @@ def transition_audit(path):
             if defined:
                 reward = item.get("reward")
                 components = item.get("reward_components")
-                required = (
+                reward_version = item.get("reward_version")
+                required = [
                     "reward_total", "reward_speed", "reward_smoothing",
                     "reward_danger", "phi_1", "phi_2",
-                )
+                ]
+                if reward_version in (
+                    "astradrone_paper_guided_reward_v2.0",
+                    "astradrone_paper_guided_reward_v3.0",
+                ):
+                    required.append("reward_error")
                 valid = (
                     isinstance(reward, (int, float))
                     and math.isfinite(reward)
                     and item.get("training_ready") is True
-                    and item.get("reward_version")
-                    == "astradrone_stage1_reward_v1.0"
+                    and reward_version in (
+                        "astradrone_stage1_reward_v1.0",
+                        "astradrone_paper_guided_reward_v2.0",
+                        "astradrone_paper_guided_reward_v3.0",
+                    )
                     and isinstance(components, dict)
                     and components.get("reward_valid") is True
                     and all(

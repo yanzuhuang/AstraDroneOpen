@@ -25,6 +25,9 @@
   <arg name="spawn_wall_delay" default="0.0"/>
   <arg name="reset_profile_overlay" default="$(find hector_ego_training_backend)/config/training_episode_reset.yaml"/>
   <arg name="random_start_enabled" default="false"/>
+  <arg name="reward_runtime_audit_enabled" default="false"/>
+  <arg name="reward_config"
+       default="$(find learning_speed_rl)/config/stage1_reward.yaml"/>
 
   <include file="$(find hector_ego_training_backend)/launch/hector_training_observation_c.launch">
     <arg name="enable_control" value="true"/>
@@ -67,6 +70,9 @@
       <param name="max_episode_time" value="$(arg max_episode_time)"/>
       <rosparam param="hover_pose" subst_value="true">[$(arg hover_x), $(arg hover_y), $(arg hover_z), $(arg hover_yaw)]</rosparam>
       <param name="random_start/enabled" value="$(arg random_start_enabled)"/>
+      <param name="reward_runtime_audit_enabled"
+             value="$(arg reward_runtime_audit_enabled)"/>
+      <rosparam command="load" file="$(arg reward_config)"/>
       <rosparam param="entry_goal" subst_value="true">[$(arg entry_x), $(arg entry_y), $(arg entry_z)]</rosparam>
       <param name="publish_synthetic_ego_cloud"
              value="$(eval not arg('use_truth_registered_ego_cloud'))"/>

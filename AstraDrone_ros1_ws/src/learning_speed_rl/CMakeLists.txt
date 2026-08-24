@@ -54,6 +54,7 @@ catkin_install_python(PROGRAMS
   scripts/summarize_observation_c_final.py
   scripts/high_speed_parameter_preflight.py
   scripts/summarize_high_speed_progressive_qualification.py
+  scripts/analyze_reward_v3.py
   scripts/replay_stage1_reward.py
   scripts/astra_drone_episode_runner.py
   scripts/sac_training_runner.py

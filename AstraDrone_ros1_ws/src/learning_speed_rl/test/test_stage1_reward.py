@@ -1,4 +1,4 @@
-"""Unit coverage for the reviewed Stage 1 reward boundary."""
+"""Unit coverage for the unified paper-guided reward boundary."""
 
 from collections import Counter
 from dataclasses import fields
@@ -22,19 +22,21 @@ from learning_speed_rl.training import (
     ProgressRewardContext,
     RunEpisodeProvenance,
     SacTransitionV1,
-    Stage1Reward,
-    Stage1RewardConfig,
-    Stage1RewardInput,
+    LearningSpeedReward,
+    LearningSpeedRewardConfig,
+    LearningSpeedRewardInput,
+    STAGE_2_REWARD_MODE,
     actual_speed_mps_from_body_velocity,
     lidar_clutter_metrics,
     reward_from_config,
-    stage1_reward_input_from_signals,
+    reward_input_from_signals,
+    tracking_error_m_from_body_error,
 )
 
 
-class Stage1RewardTest(unittest.TestCase):
+class LearningSpeedRewardTest(unittest.TestCase):
     def setUp(self):
-        self.reward = Stage1Reward()
+        self.reward = LearningSpeedReward()
 
     @staticmethod
     def value(
@@ -44,19 +46,21 @@ class Stage1RewardTest(unittest.TestCase):
         applied=1.25,
         previous=1.25,
         actual=1.0,
+        tracking=0.1,
         dangerous=False,
         terminated=False,
         valid=True,
         same_episode=True,
         truncated=False,
     ):
-        return Stage1RewardInput(
+        return LearningSpeedRewardInput(
             nearest_obstacle_distance_m=nearest,
             known_obstacle_bin_fraction=density,
             unknown_majority=unknown,
             applied_v_max_mps=applied,
             previous_applied_v_max_mps=previous,
             actual_speed_mps=actual,
+            tracking_error_m=tracking,
             dangerous_terminal=dangerous,
             terminated=terminated,
             observation_valid=valid,
@@ -88,14 +92,36 @@ class Stage1RewardTest(unittest.TestCase):
             self.assertAlmostEqual(result.phi_1, phi_1)
             self.assertAlmostEqual(result.phi_2, phi_2)
 
-    def test_candidate_c_boundaries_are_inclusive(self):
+    def test_v3_diagnostic_boundaries_are_inclusive(self):
         low = self.reward.evaluate(self.value(nearest=6.0, density=0.040))
         near_high = self.reward.evaluate(self.value(nearest=2.5, density=0.040))
         density_high = self.reward.evaluate(self.value(nearest=8.0, density=0.080))
         self.assertEqual(low.complexity_context.label, "Low")
         self.assertEqual(near_high.complexity_context.label, "High")
         self.assertEqual(density_high.complexity_context.label, "High")
-        self.assertEqual((low.phi_2, near_high.phi_2, density_high.phi_2), (0.0, 1.0, 1.0))
+        self.assertEqual(low.phi_2, 0.0)
+        self.assertEqual(near_high.phi_2, 1.0)
+        self.assertEqual(density_high.phi_2, 1.0)
+
+    def test_weighted_fusion_keeps_both_features_active(self):
+        nearest_only = self.reward.evaluate(
+            self.value(nearest=4.25, density=0.040)
+        )
+        density_only = self.reward.evaluate(
+            self.value(nearest=6.0, density=0.060)
+        )
+        combined = self.reward.evaluate(
+            self.value(nearest=4.25, density=0.060)
+        )
+        self.assertAlmostEqual(nearest_only.phi_2, 1.0 - 0.5 ** 0.46)
+        self.assertAlmostEqual(density_only.phi_2, 1.0 - 0.5 ** 0.54)
+        self.assertAlmostEqual(combined.phi_2, 0.5)
+        self.assertGreater(combined.phi_2, nearest_only.phi_2)
+        self.assertGreater(combined.phi_2, density_only.phi_2)
+        self.assertEqual(
+            combined.complexity_context.fusion_method,
+            "weighted_geometric_survival",
+        )
 
     def test_nearest_na_unknown_and_non_unknown_are_distinct(self):
         unknown = self.reward.evaluate(
@@ -116,6 +142,30 @@ class Stage1RewardTest(unittest.TestCase):
         self.assertAlmostEqual(increase.reward_smoothing, -0.025)
         self.assertAlmostEqual(decrease.reward_smoothing, -0.025)
         self.assertLess(abs(increase.reward_smoothing), abs(increase.reward_speed))
+
+    def test_speed_reward_uses_actual_speed_not_applied_v_max(self):
+        same_actual_low_action = self.reward.evaluate(
+            self.value(nearest=8.0, density=0.02, applied=0.30, previous=0.30, actual=1.0)
+        )
+        same_actual_high_action = self.reward.evaluate(
+            self.value(nearest=8.0, density=0.02, applied=1.75, previous=1.75, actual=1.0)
+        )
+        different_actual = self.reward.evaluate(
+            self.value(nearest=8.0, density=0.02, applied=1.75, previous=1.75, actual=1.5)
+        )
+        self.assertEqual(
+            same_actual_low_action.reward_speed,
+            same_actual_high_action.reward_speed,
+        )
+        self.assertGreater(different_actual.reward_speed, same_actual_high_action.reward_speed)
+
+    def test_tracking_error_is_squared_and_clipped(self):
+        below = self.reward.evaluate(self.value(tracking=0.20))
+        at_clip = self.reward.evaluate(self.value(tracking=0.40))
+        above = self.reward.evaluate(self.value(tracking=9.0))
+        self.assertAlmostEqual(below.reward_error, -2.0 * 0.20 ** 2)
+        self.assertAlmostEqual(at_clip.reward_error, -2.0 * 0.40 ** 2)
+        self.assertEqual(above.reward_error, at_clip.reward_error)
 
     def test_dangerous_terminal_uses_actual_speed_squared(self):
         slow = self.reward.evaluate(
@@ -180,14 +230,15 @@ class Stage1RewardTest(unittest.TestCase):
             actual_speed_mps=actual_speed_mps_from_body_velocity(
                 [1.2, -0.3, 0.4]
             ),
+            tracking_error_m=tracking_error_m_from_body_error([0.1, -0.2, 0.2]),
             dangerous_terminal=False,
             terminated=False,
             observation_valid=True,
             same_episode=True,
             truncated=False,
         )
-        online = stage1_reward_input_from_signals(**common)
-        replay = stage1_reward_input_from_signals(
+        online = reward_input_from_signals(**common)
+        replay = reward_input_from_signals(
             **dict(
                 common,
                 nearest_obstacle_distance_m=float(
@@ -209,35 +260,83 @@ class Stage1RewardTest(unittest.TestCase):
         config_path = Path(__file__).resolve().parents[1] / "config/stage1_reward.yaml"
         values = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         configured = reward_from_config(values)
-        self.assertIsInstance(configured, Stage1Reward)
-        self.assertEqual(configured.config, Stage1RewardConfig())
+        self.assertIsInstance(configured, LearningSpeedReward)
+        self.assertEqual(configured.config, LearningSpeedRewardConfig())
 
-    def test_reward_input_cannot_read_tracking_or_future_state(self):
-        names = {field.name for field in fields(Stage1RewardInput)}
-        self.assertNotIn("tracking_error", names)
+    def test_reward_input_uses_existing_tracking_norm_but_not_future_state(self):
+        names = {field.name for field in fields(LearningSpeedRewardInput)}
+        self.assertIn("tracking_error_m", names)
         self.assertNotIn("tracking_error_body", names)
         self.assertNotIn("state_t_plus_1", names)
         self.assertNotIn("future_state", names)
 
-    def test_eq10_blend_is_continuous_at_phi_thresholds(self):
-        config = Stage1RewardConfig()
-        for threshold in (config.lambda_phi_2, 0.5, config.lambda_phi_1):
-            values = []
-            for offset in (-1.0e-7, 1.0e-7):
-                risk = threshold + offset
-                density = config.density_safe + risk * (
-                    config.density_dangerous - config.density_safe
-                )
-                values.append(
-                    self.reward.evaluate(
-                        self.value(nearest=10.0, density=density, applied=1.5)
-                    ).reward_speed
-                )
-            self.assertLess(abs(values[1] - values[0]), 1.0e-5)
+    def test_stage1_blend_is_continuous_across_full_phi_domain(self):
+        config = LearningSpeedRewardConfig()
+        previous = None
+        for risk in np.linspace(0.0, 1.0, 10001):
+            nearest = config.nearest_safe_m - risk * (
+                config.nearest_safe_m - config.nearest_dangerous_m
+            )
+            density = config.density_safe + risk * (
+                config.density_dangerous - config.density_safe
+            )
+            current = self.reward.evaluate(
+                self.value(nearest=nearest, density=density, actual=1.0)
+            ).reward_speed
+            if previous is not None:
+                self.assertLess(abs(current - previous), 0.001)
+            previous = current
+
+    def test_stage1_speed_slope_changes_continuously_with_complexity(self):
+        def speed_slope(risk):
+            config = self.reward.config
+            nearest = config.nearest_safe_m - risk * (
+                config.nearest_safe_m - config.nearest_dangerous_m
+            )
+            density = config.density_safe + risk * (
+                config.density_dangerous - config.density_safe
+            )
+            slow = self.reward.evaluate(
+                self.value(nearest=nearest, density=density, actual=0.30)
+            )
+            fast = self.reward.evaluate(
+                self.value(nearest=nearest, density=density, actual=1.75)
+            )
+            return (fast.reward_speed - slow.reward_speed) / 1.45
+
+        slopes = [speed_slope(risk) for risk in np.linspace(0.0, 1.0, 101)]
+        self.assertGreater(slopes[0], 0.0)
+        self.assertLess(slopes[-1], 0.0)
+        self.assertTrue(all(a >= b for a, b in zip(slopes, slopes[1:])))
+        zero_crossing = next(
+            risk
+            for risk, value in zip(np.linspace(0.0, 1.0, 101), slopes)
+            if value <= 0.0
+        )
+        self.assertGreaterEqual(zero_crossing, 0.54)
+        self.assertLessEqual(zero_crossing, 0.55)
 
     def test_paper_lambda_relation_is_enforced(self):
         with self.assertRaisesRegex(ValueError, "lambda_speed_2"):
-            Stage1RewardConfig(lambda_speed_2=0.25, lambda_speed_3=0.25)
+            LearningSpeedRewardConfig(lambda_speed_2=0.25, lambda_speed_3=0.25)
+
+    def test_fusion_weights_are_positive_and_normalized(self):
+        with self.assertRaisesRegex(ValueError, "both be positive"):
+            LearningSpeedRewardConfig(nearest_weight=1.0, density_weight=0.0)
+        with self.assertRaisesRegex(ValueError, "sum to one"):
+            LearningSpeedRewardConfig(nearest_weight=0.8, density_weight=0.3)
+
+    def test_stage_2_changes_only_speed_term(self):
+        value = self.value(nearest=8.0, density=0.02, actual=1.2, tracking=0.2)
+        stage_1 = self.reward.evaluate(value)
+        stage_2 = LearningSpeedReward(
+            LearningSpeedRewardConfig(mode=STAGE_2_REWARD_MODE)
+        ).evaluate(value)
+        self.assertAlmostEqual(stage_2.reward_speed, 0.25 * 1.2)
+        self.assertNotEqual(stage_1.reward_speed, stage_2.reward_speed)
+        self.assertEqual(stage_1.reward_smoothing, stage_2.reward_smoothing)
+        self.assertEqual(stage_1.reward_error, stage_2.reward_error)
+        self.assertEqual(stage_1.reward_danger, stage_2.reward_danger)
 
     @staticmethod
     def _state(stamp, receive, trajectory, tracking, velocity=(1.0, 0.0, 0.0)):
@@ -279,6 +378,7 @@ class Stage1RewardTest(unittest.TestCase):
         self.assertTrue(defined.training_ready)
         self.assertEqual(defined.reward, evaluation.reward_total)
         self.assertIn("complexity_context", defined.reward_components)
+        self.assertIn("reward_error", defined.reward_components)
         self.assertNotIn("reward_tracking", defined.reward_components)
 
     def test_recorder_writes_finite_reward_matching_offline_evaluation(self):
@@ -336,7 +436,7 @@ class Stage1RewardTest(unittest.TestCase):
 
         recorder._maybe_write_transition(state_t_plus_1, context_next)
         online = json.loads(recorder._transition_stream.getvalue())
-        offline_input = stage1_reward_input_from_signals(
+        offline_input = reward_input_from_signals(
             nearest_obstacle_distance_m=4.25,
             known_obstacle_bin_fraction=0.06,
             unknown_bin_count=400,
@@ -345,6 +445,9 @@ class Stage1RewardTest(unittest.TestCase):
             previous_applied_v_max_mps=state_t.previous_applied_v_max,
             actual_speed_mps=actual_speed_mps_from_body_velocity(
                 state_t.actual_velocity_body
+            ),
+            tracking_error_m=tracking_error_m_from_body_error(
+                state_t.tracking_error_body
             ),
             dangerous_terminal=True,
             terminated=True,

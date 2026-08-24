@@ -306,29 +306,44 @@ pair action/application by identity equality; timestamps remain causal and
 future-leak checks rather than identity guesses. Calibration candidates keep `reward=null`,
 `reward_defined=false` and `training_ready=false` only in the frozen legacy
 artifacts. The current recorder loads `config/stage1_reward.yaml`, evaluates
-the causal `state_t` signals through `Stage1Reward.evaluate()`, and binds a
+the causal `state_t` signals through `LearningSpeedReward.evaluate()`, and binds a
 finite, versioned reward to every valid, same-episode, non-truncated candidate.
 
-## Stage 1 Reward v1
+## Paper-guided Reward v3
 
-`training/reward.py` implements `astradrone_stage1_reward_v1.0` as a
-paper-guided adaptation of Eq. (6), (7), (9) and (10) in *Learning Speed
+`training/reward.py` implements `astradrone_paper_guided_reward_v3.0` as a
+paper-guided adaptation of Eq. (6)--(11) in *Learning Speed
 Adaptation for Flight in Clutter*. It is not an exact reproduction of the
 paper's unpublished feature coefficients or complete lambda values. Select it
-with `config/stage1_reward.yaml` (`reward.mode: stage1`).
+with `config/stage1_reward.yaml`. The maintained default is
+`reward.mode: stage_1`; `stage_2` is implemented but not authorized for
+training.
 
 Stage 1 uses only:
 
 ```text
-r_stage1 = r_speed_stage1 + r_smoothing + r_danger
+r_stage1 = r_speed_stage1 + r_smoothing + r_error + r_danger
 ```
 
-The continuous N/D/Unknown complexity feature preserves the frozen Candidate C
-boundaries and `1.75/1.25/0.75/1.25 m/s` human anchors. Smoothing uses current
-and previous applied `v_max`. Danger is nonzero only for the explicit frozen
-dangerous terminal and scales with current causal actual speed squared.
-Tracking error and progress context are not reward terms. The existing 1.0 m
+The continuous N/D/Unknown complexity feature keeps the reviewed
+`6.0/2.5 m`, `0.040/0.080`, and `1.75/1.25/0.75/1.25 m/s` anchors. Reward v3
+replaces the v2 `max(q_nearest,q_density)` owner with the calibrated continuous
+fusion `1-(1-q_nearest)^0.46*(1-q_density)^0.54`. Its three Eq. (10) branches
+use quadratic Bernstein weights, so the speed slope changes continuously from
+positive through zero to negative. Low/Medium/High remain diagnostics rather
+than reward switches. Smoothing uses current and previous applied `v_max`.
+Speed and danger use the causal actual-speed norm, not the action constraint.
+Tracking error reuses the existing Observation C body-frame error norm and is
+clipped before squaring. Danger is nonzero only for the explicit frozen
+dangerous terminal. Progress remains outside Reward. The existing 1.0 m
 continuous tracking safety gate is unchanged.
+
+The active offline candidate is `lambda_error=2.0`, `e_max=0.40 m`; it is not a
+published paper value and does not authorize formal training. Reward v3 has
+offline replay/landscape evidence only and still requires bounded runtime
+qualification. Stage 2 changes only `r_speed` to
+`lambda_speed3 * actual_speed`. The paper's CNN-freezing step is not copied
+because this package does not use the same CNN architecture.
 
 The transition contract can bind a valid Stage 1 evaluation with all component
 terms and marks only that resulting record training-ready. Invalid Observation,
@@ -355,7 +370,7 @@ strictly causal valid state_t
  -> SpeedActionStamped(same identity)
  -> EGO SpeedAppliedStamped(same identity)
  -> first unused valid Observation C after applied receipt + 0.1 s
- -> existing Stage1Reward.evaluate + SacTransitionV1
+ -> existing LearningSpeedReward.evaluate + SacTransitionV1
 ```
 
 The pending queue consumes every identity and next Observation at most once.

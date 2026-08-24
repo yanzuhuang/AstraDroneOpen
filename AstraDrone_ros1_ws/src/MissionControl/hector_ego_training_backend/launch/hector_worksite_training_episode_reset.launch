@@ -13,6 +13,9 @@
   <arg name="max_episode_time" default="45.0"/>
   <arg name="spawn_wall_delay" default="3.0"/>
   <arg name="random_start_enabled" default="false"/>
+  <arg name="reward_runtime_audit_enabled" default="false"/>
+  <arg name="reward_config"
+       default="$(find learning_speed_rl)/config/stage1_reward.yaml"/>
 
   <include file="$(find hector_ego_training_backend)/launch/hector_training_episode_reset.launch">
     <arg name="gui" value="$(arg gui)"/>
@@ -30,6 +33,9 @@
     <arg name="reset_profile_overlay"
          value="$(find hector_ego_training_backend)/config/worksite_training_reset.yaml"/>
     <arg name="random_start_enabled" value="$(arg random_start_enabled)"/>
+    <arg name="reward_runtime_audit_enabled"
+         value="$(arg reward_runtime_audit_enabled)"/>
+    <arg name="reward_config" value="$(arg reward_config)"/>
     <arg name="world_name"
          value="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
     <arg name="hover_x" value="0.0"/>

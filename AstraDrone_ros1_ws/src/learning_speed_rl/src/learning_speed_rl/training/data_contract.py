@@ -448,6 +448,7 @@ class SacTransitionV1:
             "reward_total",
             "reward_speed",
             "reward_smoothing",
+            "reward_error",
             "reward_danger",
             "phi_1",
             "phi_2",
@@ -462,7 +463,7 @@ class SacTransitionV1:
         present_forbidden = forbidden.intersection(self.reward_components)
         if present_forbidden:
             raise ValueError(
-                "Stage 1 reward contains forbidden terms {}".format(
+                "Learning Speed reward contains forbidden terms {}".format(
                     sorted(present_forbidden)
                 )
             )
@@ -470,6 +471,7 @@ class SacTransitionV1:
             "reward_total",
             "reward_speed",
             "reward_smoothing",
+            "reward_error",
             "reward_danger",
             "phi_1",
             "phi_2",

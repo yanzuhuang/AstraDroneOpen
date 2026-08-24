@@ -1,14 +1,22 @@
-# Every numeric value in this file is an AstraDroneOpen calibrated parameter.
-# The paper does not publish the complete phi construction or all lambda values.
+# One Reward owner supports stage_1 and stage_2. Stage 1 remains selected.
+# Every numeric value is an AstraDroneOpen parameter, not a claim that the
+# paper's unpublished feature coefficients or reward hyperparameters were
+# reproduced. lambda_error/error clip are offline-calibrated candidates and do
+# not authorize formal training.
 reward:
-  mode: stage1
-  version: astradrone_stage1_reward_v1.0
+  mode: stage_1
+  version: astradrone_paper_guided_reward_v3.0
 
   complexity:
     nearest_safe_m: 6.0
     nearest_dangerous_m: 2.5
     density_safe: 0.040
     density_dangerous: 0.080
+
+  fusion:
+    # Balanced fit over full-mission Open, route-transition, and ENTRY clutter.
+    nearest_weight: 0.46
+    density_weight: 0.54
 
   anchors_mps:
     low: 1.75
@@ -17,11 +25,12 @@ reward:
     unknown: 1.25
 
   lambdas:
-    # Eq. (10) branch thresholds; phi_1 is the upper/danger threshold.
-    phi_1: 0.65
-    phi_2: 0.35
     speed_1: 1.00
     speed_2: 0.80
     speed_3: 0.25
     smoothing: 0.10
+    error: 2.00
     danger: 2.00
+
+  tracking_error:
+    clip_max_m: 0.40

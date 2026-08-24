@@ -2,7 +2,7 @@
 
 > 更新日期：2026-08-24
 >
-> 当前边界：10000-Episode/500-checkpoint/100-evaluation 与 `v_max=[0.30,1.75]` 已完成代码/config/静态验证；fixed terminal-convergence bug 已最小修复，lightweight fixed-v_max 六档最终 PASS；正式 training、evaluation 均未启动，fixed PASS 不等于 SAC transition-closure runtime PASS
+> 当前边界：10000-Episode/500-checkpoint/100-evaluation 与 `v_max=[0.30,1.75]` 已完成代码/config/静态验证；fixed terminal-convergence bug 已最小修复，lightweight fixed-v_max 六档最终 PASS；Reward v2 的 4 档×5 Episode runtime qualification 保留为 NO-GO；Reward v3 已完成代码/unit/frozen replay/真实状态离线 landscape，获准进入新的 bounded Reward-only runtime qualification，但尚无 v3 runtime PASS；正式 training、evaluation 均未启动
 >
 > 证据原则：当前源码/配置/launch 优先于旧报告；历史 FAIL/NO-GO 不改写为 PASS；training-only 结论不外推到 PX4/FAST-LIO full-stack 或真机
 
@@ -141,16 +141,18 @@ selected cell、13 PASS/3 FAIL。不同 ceiling、acceleration、planner/bridge 
 不得混池。B 1.25–1.50 风险可重复但非确定性；时序敏感性有证据，唯一 planner-core
 cause 没有。
 
-Stage 1 `astradrone_stage1_reward_v1.0` 使用 Candidate C 连续 `phi_1/phi_2`，Unknown
+历史 Stage 1 `astradrone_stage1_reward_v1.0` 使用 Candidate C 连续 `phi_1/phi_2`，Unknown
 固定 1.25/0.5；项目 λ 为 0.65/0.35、speed 分支 1.00/0.80/0.25、smoothing 0.10、
-danger 2.00。这些是 AstraDroneOpen-specific，不是论文原参数。Reward 不含 tracking/
-progress；danger 只来自冻结 dangerous terminal。
+danger 2.00。2026-08-24 Reward v2 审计确认 v1 错把 applied `v_max` 用作 Eq. (10)
+速度且缺 Eq. (8)，已由第 24.1 节的新统一实现替代。所有 `phi`/λ 仍是
+AstraDroneOpen-specific，不是论文原参数。
 
 ## 10. Stage 1 Reward / transition validation
 
 Recorder 只对 valid、同 episode、非 truncated candidate 调用唯一
-`Stage1Reward.evaluate()`；invalid/truncated 不变成 training-ready，历史 reward-null
-calibration 不回写。online/offline equality 与 frozen replay validation PASS。
+`LearningSpeedReward.evaluate()`；invalid/truncated 不变成 training-ready，历史 frozen
+calibration 不回写。v2 online/offline equality 与 frozen replay validation PASS，分项增加
+`reward_error`；progress 仍不进 Reward。
 
 根目录 progress 报告的 `progress_ctx_A_v125_r01` 已吸收：progress 0→1、无下降，
 waypoint 8→1 不 reset；452 条 transition 的 receipt、run/episode provenance、
@@ -359,13 +361,157 @@ deterministic、无 training Replay、无 learner/network update。
 ## 24. 当前边界与下一阶段
 
 - 正式 10000-Episode training：**未启动**；fixed-v_max blocker 已清除，但本轮没有启动或
-  runtime 验证 SAC action-owner/transition closure，也不自动构成正式 training 授权；
+  runtime 验证 SAC action-owner/transition closure；Reward v2 fixed runtime 已完成但因 Low
+  覆盖为 0、实际 Medium blend 与整体状态分布低速偏置而 NO-GO，不构成正式 training 授权；
 - 正式 100-Episode evaluation：**未启动，且没有正式 checkpoint 可评估**；
 - random Hover fixed-v_max reset 与完整新动作范围六档均已通过；
 - fixed-only terminal hold 不改变 Observation C valid 规则，也未验证 SAC pending transition
   在同类终端阶段的 closure；若后续获准正式 training，仍须以全新 RUN_ID、空 Replay、
   fail-closed 监控开始，不能 resume 旧 pilot；
 - training 完成并产生正式 checkpoint 后，才可独立执行 100-Episode evaluation。
+
+## 24.1 Reward v2 论文对齐与离线 landscape
+
+Reward v2 代际把唯一 owner 统一为 `LearningSpeedReward.evaluate()`，version 为
+`astradrone_paper_guided_reward_v2.0`。Stage 1/2 只在同一实现内切换 `r_speed`；该代际配置
+选择 `stage_1`，没有启动 Stage 2 training。v3 的当前事实见 24.4。带符号总式为：
+
+```text
+r = r_speed + r_smoothing + r_error + r_danger
+```
+
+`r_speed` 与 `r_danger` 使用 `state_t` actual velocity 范数；`r_smoothing` 使用相邻 stamped
+identity canonical applied EGO speed constraint；`r_error` 复用 Observation C 已有
+`tracking_error_body` 范数，按 `-lambda_error*min(||e||,e_max)^2` 计算。progress、success、
+clearance 和 planner shaping 仍不进入 Reward。Stage 2 候选只使用
+`r_speed=lambda_speed_3*actual_speed`；当前网络不是论文相同 CNN 架构，未机械冻结 CNN。
+
+current-generation 正式范围 active-valid 33,180 行 tracking error 为 mean/median/p95/p99/max
+`0.12536/0.10663/0.26766/0.39746/0.79465 m`。离线候选
+`lambda_error=2.0,e_max=0.40 m` 约在 p99 clip，仅 0.964% 行被裁剪；error penalty
+median/p95/cap 为 `-0.0227/-0.1433/-0.3200`。该值不是论文公开参数，也未获准正式训练。
+
+受控 landscape 表明 Low 明确偏高速、High 明确偏低速；代表性 Medium 的 Eq. (10)
+middle branch 仍从 0.30 到 1.75 单调增大，没有内部中速峰值。历史 10,000-transition
+NO-GO 状态中，80.99% 的 `r_speed(1.75)-r_speed(0.30)` 为负，后 1,000 action mean 已降至
+旧域的 `0.0728 m/s`；actual-speed 修正与新增 tracking term没有消除该分布级低速偏置。
+因此结论为代码/unit/offline replay PASS，但 **REWARD AUDIT NO-GO for formal training**。
+完整公式、21-cell landscape、旧新重算、danger scale 和参数分类见根目录
+`LearningSpeed_reward_v2_paper_alignment_report.md`。
+
+## 24.2 Reward v2 fixed-speed runtime qualification
+
+2026-08-24 复用现有 worksite lightweight fixed coordinator，在不启动 SAC/Replay、也不改
+Reward、phi、EGO、Hector PID、Observation C、random Hover、动作范围或 SAC 参数的边界内，
+完成 `0.30/0.75/1.25/1.75 m/s` 各 5 Episode。fixed path 没有 formal SAC transition owner；
+原 coordinator 只增加默认关闭的 Reward-only audit，以每个 active-valid Observation C 为
+runtime step 并直接调用唯一 `LearningSpeedReward.evaluate()`。
+
+有效结果为 20/20 success、20/20 reset，planner/collision/controller failure 均为 0；
+4161 个 Reward step 全部 finite，online/offline 逐行复算最大差 0，Observation C 全窗口
+4161/4238 valid。`|r_error|` mean/p95/max 为 `0.00243/0.01358/0.08454`，而
+`|r_speed|` 为 `0.46862/0.79160/0.92361`；只有 0.529% step 在 speed term 近零时出现
+`|r_error|>|r_speed|`，故 `lambda_error=2.0,e_max=0.40 m` 未压倒 speed term。20 个终态
+全为 success，`r_danger` 4161/4161 为 0、无误触发；本轮没有故意制造 dangerous terminal。
+
+最终 blocker 是访问分布：Low/Medium/High/Unknown 为 `0/2032/2129/0`，即
+`0%/48.83%/51.17%/0%`；按连续 Eq. (10) 最大 branch weight，dangerous 主导
+3443/4161（82.74%）。High 2129/2129 明确偏低速；实际 Medium 只有 29.38% 偏高速，
+70.62% 因 blend 权重偏低速。全体 3564/4161（85.65%）状态满足
+`r_speed(1.75)-r_speed(0.30)<0`，没有 runtime Low/open 证据，且比历史 80.99% 低速偏向
+更强。因此最终为 **REWARD V2 RUNTIME QUALIFICATION NO-GO**，不允许进入 100-Episode
+SAC Stage 1 qualification，更不允许正式 10000-Episode training/evaluation。详细 20-Episode、
+分项、branch 与 A--H 结论见根目录
+`LearningSpeed_reward_v2_runtime_qualification_report.md`；原始非 Markdown 工件位于
+`runtime_artifacts/reward_v2_runtime_qualification/`。
+
+## 24.3 phi / branch 分布与 ENTRY route 根因
+
+对上述 4161 个 fixed Reward runtime step 做纯离线诊断后，完整链为：五帧 causal Mid360
+点云进入 80×40 球面 bins；`K=count(semantic==KNOWN_OBSTACLE)`、`D=K/3200`、
+`N=min(known-obstacle bin range)`；`q_N=clip((6-N)/3.5)`、
+`q_D=clip((D-0.040)/0.040)`、`phi2=max(q_N,q_D)`、`phi1=1.75-phi2`。
+K 是 angular-bin count，不是 object count；D 不是 volume fraction，Reward 也没有 obstacle
+volume 输入。
+
+实际 N/D/K 范围为 `1.4366–4.6899 m`、`0.040625–0.0721875`、`130–231 bins`。
+0 step 达到 `N>=6`，0 step 达到 `D<=0.040`（等价 occupied bins<=128），故 Low
+在当前 route 上结构性不可达。`q_N>q_D` 为 4161/4161，最小领先仍 0.10687；
+phi2 完全由 nearest owner。2129 个 High 全由 `N<=2.5` 触发 q_N=1，density 从未达到
+0.080 或赢得 max。phi2/phi1 的 min/p05/median/p95/max 分别为
+`0.3743/0.4574/1/1/1` 与 `0.75/0.75/0.75/1.2926/1.3757`。
+
+按实际 speed 积分的 route-progress proxy（不是实测 odometry）分段后，start/middle/ENTRY
+的 phi2 median 为 `0.507/0.975/1.000`，低速偏好率为 `36.29%/97.09%/100%`；phi2 与
+route progress Spearman 为 0.9025。静态同 mesh 松树代理显示五个 reset start 到 ENTRY
+近直线的最小松树表面净空仅约 1.04–1.36 m，ENTRY 附近约 1.30 m，支持当前路线本身是
+clutter corridor。
+
+为避免 label 自证，另取 N>=runtime p90 且 D<=runtime p10 的 72 个局部相对开阔样本：
+phi2 仅 `0.3766–0.4885`、dangerous weight=0，`r_speed(1.75)-r_speed(0.30)` 全为正；
+它们没有被错误压到 dangerous side。但其未来 5 m 松树净空代理仍只有 1.09–1.36 m，
+严格 open corridor count 仍为 0。同一 worksite 的历史 Environment B 完整任务 6 个
+current-generation run 提供不混池的对照：14,784 个 active-valid numeric row 中有
+2102（14.22%）Low，均在 NAVIGATING，证明 world/mapping 在其他路线片段可以产生 Low。
+
+Medium 之所以 70.62% 偏低速，是 label 覆盖整个 `0<phi2<1`，而 continuous weight 在
+phi2>=0.65 已 100% dangerous。实际 Medium phi2 median/p95 为 0.6895/0.9849；
+1109/2032（54.58%）已 full-dangerous，另 310 位于 0.55–0.65 dangerous-side blend。
+速度斜率在 phi2≈0.5431 变负。smoothstep 实现没有异常；问题是路线访问状态集中在
+Medium 名称的 dangerous 侧，加上 label 与 continuous weight 的解释口径不一致。
+
+最终分类为 **ROUTE COVERAGE ISSUE**，不是当前证据支持的 PHI MAPPING ISSUE；现在不改
+phi/normalization/threshold。下一轮应先用同一 fixed Reward-only framework 组合明确 open、
+Medium、当前 ENTRY High 三段并记录真实 odometry/forward probes，再讨论是否允许
+100-Episode SAC Stage 1 qualification。完整公式、分层、图表与建议见根目录
+`LearningSpeed_phi_branch_distribution_diagnosis_report.md`，派生非 Markdown 证据位于
+`runtime_artifacts/reward_v2_phi_branch_diagnosis/20260824_d01/`。
+
+## 24.4 Reward v3 complexity fusion 与连续 speed slope
+
+2026-08-24 在不启动 Gazebo、SAC training、100-Episode qualification 或 evaluation 的边界内，
+使用三类互补真实证据重新标定 Stage 1：Environment B 六个正式完整任务的 14784 个
+active-valid state（含 2102 个真实 Low/open）、Reward v2 Hover→ENTRY 四档 runtime 的
+4161 state（2032 Medium、2129 High），以及历史
+`sac_training_10k_20260823_194751` 的 10000 state。v2 的 Eq. (6)、actual-speed、
+tracking-error、smoothing 与 dangerous-terminal 结构均冻结不动。
+
+`q_N/q_D` normalization 继续为 `[6.0,2.5] m` 与 `[0.040,0.080]`；替代 normalization
+虽有部分 label-target MSE 更低，但会重映射已有 Open anchor，或对最终 fusion 不优于原范围，
+故不采用。v2 `phi_2=max(q_N,q_D)` 在 Hover→ENTRY 4161/4161 由 nearest 独占，已被
+唯一 continuous fusion 替换：
+
+```text
+phi_2 = 1 - (1-q_N)^0.46 * (1-q_D)^0.54
+phi_1 = 1.75 - phi_2
+```
+
+`0.46/0.54` 是 Open 2102、Medium 9199、High 2129 三 strata 等权 MSE 的 0.01 网格最优，
+不是经验 0.5/0.5。它保留 `phi_2=0/0.5/1 -> phi_1=1.75/1.25/0.75 m/s` 和任一风险
+端点到 High anchor；Unknown 仍为 `0.5/1.25`。Low/Medium/High 只作诊断 label，不再控制
+Reward branch。
+
+Stage 1 三个 Eq. (10) branch 改用 quadratic Bernstein 权重
+`(1-p)^2,2p(1-p),p^2`。因此 actual-speed slope 为
+`0.80-1.10p-0.70p^2`，从正到负连续单调变化，在 `p=0.5410125` 穿过 0；删除 v2
+`0.35/0.50/0.65` branch threshold。`lambda_speed_1/2/3=1.00/0.80/0.25`、
+`lambda_smoothing=0.10`、`lambda_error=2.00`、`e_max=0.40 m`、
+`lambda_danger=2.00` 均不变；progress/success/clearance/planner shaping 仍不进入 Reward。
+
+历史 10k 的 `Delta r_speed=r_speed(1.75)-r_speed(0.30)` 按 `±0.01` near-zero 带由 v2
+`1897/9/8094`（偏高/近中性/偏低）变为 v3 `5566/129/4305`；严格低速偏好由
+80.99% 降至 43.76%。current pooled Open 2102/2102 偏高速、High 7644/7644 偏低速；
+Medium v3 为 6474/63/2662。Hover→ENTRY 仍有 2906/4161 偏低速，因为该真实 route
+有 2129 High；没有为消除偏置而把 clutter 改写成偏高速。
+
+验证为 Reward 定向 unit 21/21；`learning_speed_rl` 包 119 tests、0 error、0 failure、
+3 个既有条件 skip；12209 条 frozen replay 全部 finite/PASS；28945 个真实状态乘 7 档
+speed 的 202615 次唯一 owner/独立公式对比最大差 `4.44e-16`。详细候选、landscape、
+分 strata 反事实和文件清单见根目录 `LearningSpeed_reward_v3_optimization_report.md`；派生
+非 Markdown JSON 位于 `runtime_artifacts/reward_v3_offline_optimization/` 和原 calibration
+目录。最终为 **REWARD V3 OFFLINE PASS**，只允许新的 bounded Reward-only runtime
+qualification；100-Episode SAC qualification、正式 10000-Episode training/evaluation
+继续 NO-GO。
 
 ## 25. Source Manifest 与章节映射
 

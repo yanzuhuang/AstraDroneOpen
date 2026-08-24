@@ -30,6 +30,13 @@ from learning_speed_rl.msg import (
     SpeedAppliedStamped,
     SpeedRequestStamped,
 )
+from learning_speed_rl.training import (
+    actual_speed_mps_from_body_velocity,
+    lidar_clutter_metrics,
+    reward_from_config,
+    reward_input_from_signals,
+    tracking_error_m_from_body_error,
+)
 
 from hector_ego_training_backend.episode_reset_contract import (
     EpisodeIdentityLedger,
@@ -109,6 +116,13 @@ class TrainingEpisodeResetCoordinator:
             rospy.get_param("~require_automated_acceptance", False)
         )
         self._fixed_v_max = float(rospy.get_param("~fixed_v_max", 0.30))
+        self._reward_runtime_audit_enabled = bool(
+            rospy.get_param("~reward_runtime_audit_enabled", False)
+        )
+        self._reward = (
+            reward_from_config({"reward": rospy.get_param("~reward")})
+            if self._reward_runtime_audit_enabled else None
+        )
         self._action_owner = str(
             rospy.get_param("~action_owner", "fixed")
         ).strip().lower()
@@ -288,6 +302,10 @@ class TrainingEpisodeResetCoordinator:
         self._episode_positions = []
         self._episode_tracking_errors = []
         self._episode_actual_speeds = []
+        self._episode_reward_steps = []
+        self._reward_runtime_step_count = 0
+        self._reward_runtime_invalid_count = 0
+        self._reward_runtime_audit_failure = ""
 
         self._events = []
         self._episodes = []
@@ -311,6 +329,13 @@ class TrainingEpisodeResetCoordinator:
         self._event_file = open(
             os.path.join(self._output_dir, "qualification_events.jsonl"),
             "w", encoding="utf-8",
+        )
+        self._reward_step_file = (
+            open(
+                os.path.join(self._output_dir, "reward_runtime_steps.jsonl"),
+                "w", encoding="utf-8",
+            )
+            if self._reward_runtime_audit_enabled else None
         )
 
         self._identity_pub = rospy.Publisher(
@@ -487,6 +512,12 @@ class TrainingEpisodeResetCoordinator:
                     self._tracking_errors.append(tracking)
                     self._episode_actual_speeds.append(speed)
                     self._episode_tracking_errors.append(tracking)
+                    if self._reward_runtime_audit_enabled:
+                        try:
+                            self._record_reward_runtime_step_locked(message)
+                        except (TypeError, ValueError) as error:
+                            self._reward_runtime_invalid_count += 1
+                            self._reward_runtime_audit_failure = str(error)
             # Between clear_temporal_history and ledger.advance_after_reset(),
             # current-generation+1 packets may validly arrive while no Episode
             # or replay owner is active. They are next-generation warm-up, not
@@ -504,6 +535,202 @@ class TrainingEpisodeResetCoordinator:
                 and int(message.trajectory_id) < self._accepted_trajectory_id
             ):
                 self._trajectory_generation_mismatch += 1
+
+    def _record_reward_runtime_step_locked(self, message):
+        """Audit one valid Observation C sample without creating SAC Replay."""
+
+        if self._reward is None or not message.valid:
+            return
+        applied_message = None if self._applied is None else self._applied[0]
+        if applied_message is None:
+            raise ValueError("canonical applied v_max is unavailable")
+        if not action_matches(
+            self._binding,
+            applied_message.episode_id,
+            applied_message.step_index,
+            applied_message.request_id,
+        ):
+            raise ValueError("canonical applied v_max identity mismatch")
+        clutter = lidar_clutter_metrics(
+            message.lidar_surrogate, message.lidar_semantic
+        )
+        actual_speed = actual_speed_mps_from_body_velocity(
+            (
+                message.actual_velocity_body.x,
+                message.actual_velocity_body.y,
+                message.actual_velocity_body.z,
+            )
+        )
+        tracking_error = tracking_error_m_from_body_error(
+            (
+                message.tracking_error_body.x,
+                message.tracking_error_body.y,
+                message.tracking_error_body.z,
+            )
+        )
+        reward_input = reward_input_from_signals(
+            nearest_obstacle_distance_m=clutter[
+                "nearest_obstacle_distance_m"
+            ],
+            known_obstacle_bin_fraction=clutter[
+                "known_obstacle_bin_fraction"
+            ],
+            unknown_bin_count=clutter["unknown_bin_count"],
+            lidar_bin_count=len(message.lidar_surrogate),
+            applied_v_max_mps=applied_message.applied_v_max,
+            previous_applied_v_max_mps=message.previous_v_max,
+            actual_speed_mps=actual_speed,
+            tracking_error_m=tracking_error,
+            dangerous_terminal=False,
+            terminated=False,
+            observation_valid=True,
+            same_episode=True,
+            truncated=False,
+        )
+        evaluation = self._reward.evaluate(reward_input)
+        if not evaluation.reward_valid:
+            raise ValueError(
+                "reward rejected runtime step: {}".format(
+                    evaluation.invalid_reason
+                )
+            )
+        planner = self._planner
+        backend = dict(self._backend)
+        record = {
+            "schema_version": "learning_speed_reward_runtime_step_v1.0",
+            "qualification_only": True,
+            "formal_sac_transition": False,
+            "episode_id": self._binding.episode_id,
+            "episode_key": self._binding.episode_key,
+            "reset_generation": self._binding.reset_generation,
+            "step_index": len(self._episode_reward_steps),
+            "observation_stamp": message.header.stamp.to_sec(),
+            "observation_trajectory_id": int(message.trajectory_id),
+            "actual_speed_mps": actual_speed,
+            "applied_v_max_mps": float(applied_message.applied_v_max),
+            "previous_applied_v_max_mps": float(message.previous_v_max),
+            "tracking_error_norm_m": tracking_error,
+            "nearest_obstacle_distance_m": clutter[
+                "nearest_obstacle_distance_m"
+            ],
+            "known_obstacle_bin_fraction": clutter[
+                "known_obstacle_bin_fraction"
+            ],
+            "known_obstacle_bin_count": clutter[
+                "known_obstacle_bin_count"
+            ],
+            "unknown_bin_count": clutter["unknown_bin_count"],
+            "lidar_bin_count": len(message.lidar_surrogate),
+            "reward_input": {
+                "dangerous_terminal": False,
+                "terminated": False,
+                "truncated": False,
+            },
+            "terminal_type": "NON_TERMINAL",
+            "terminal_reason": "",
+            "planner": {
+                "state": "" if planner is None else planner.planner_state,
+                "failure_reason": (
+                    "" if planner is None else planner.failure_reason
+                ),
+                "current_position_in_collision": bool(
+                    planner is not None
+                    and planner.current_position_in_collision
+                ),
+                "emergency_stop_active": bool(
+                    planner is not None and planner.emergency_stop_active
+                ),
+            },
+            "collision": bool(
+                planner is not None and planner.current_position_in_collision
+            ),
+            "controller": {
+                "mode": str(backend.get("mode", "missing")),
+                "ready": bool(backend.get("ready", False)),
+                "controllers_running": bool(
+                    backend.get("controllers_running", False)
+                ),
+            },
+        }
+        self._attach_reward_evaluation(record, evaluation)
+        self._episode_reward_steps.append(record)
+
+    @staticmethod
+    def _attach_reward_evaluation(record, evaluation):
+        context = evaluation.complexity_context
+        record.update(
+            reward=evaluation.to_record(),
+            reward_branch=(None if context is None else context.label),
+            branch_weights=(
+                None
+                if context is None
+                else {
+                    "safe": context.branch_weights[0],
+                    "middle": context.branch_weights[1],
+                    "dangerous": context.branch_weights[2],
+                }
+            ),
+            phi_1=evaluation.phi_1,
+            phi_2=evaluation.phi_2,
+            r_speed=evaluation.reward_speed,
+            r_smoothing=evaluation.reward_smoothing,
+            r_error=evaluation.reward_error,
+            r_danger=evaluation.reward_danger,
+            total_reward=evaluation.reward_total,
+        )
+
+    def _finalize_reward_runtime_steps(self, outcome, reason):
+        if not self._reward_runtime_audit_enabled:
+            return 0
+        with self._lock:
+            records = list(self._episode_reward_steps)
+            planner = self._planner
+        if not records:
+            raise RuntimeError("reward runtime audit captured no valid steps")
+        dangerous_terminal = bool(
+            reason == "collision"
+            or (planner is not None and planner.emergency_stop_active)
+        )
+        terminal_record = records[-1]
+        raw = terminal_record
+        truncated = outcome == "TRUNCATED"
+        reward_input = reward_input_from_signals(
+            nearest_obstacle_distance_m=raw[
+                "nearest_obstacle_distance_m"
+            ],
+            known_obstacle_bin_fraction=raw[
+                "known_obstacle_bin_fraction"
+            ],
+            unknown_bin_count=raw["unknown_bin_count"],
+            lidar_bin_count=raw["lidar_bin_count"],
+            applied_v_max_mps=raw["applied_v_max_mps"],
+            previous_applied_v_max_mps=raw[
+                "previous_applied_v_max_mps"
+            ],
+            actual_speed_mps=raw["actual_speed_mps"],
+            tracking_error_m=raw["tracking_error_norm_m"],
+            dangerous_terminal=dangerous_terminal,
+            terminated=not truncated,
+            observation_valid=True,
+            same_episode=True,
+            truncated=truncated,
+        )
+        evaluation = self._reward.evaluate(reward_input)
+        terminal_record["reward_input"] = {
+            "dangerous_terminal": dangerous_terminal,
+            "terminated": not truncated,
+            "truncated": truncated,
+        }
+        terminal_record["terminal_type"] = outcome
+        terminal_record["terminal_reason"] = reason
+        self._attach_reward_evaluation(terminal_record, evaluation)
+        for record in records:
+            self._reward_step_file.write(
+                json.dumps(record, sort_keys=True) + "\n"
+            )
+        self._reward_step_file.flush()
+        self._reward_runtime_step_count += len(records)
+        return len(records)
 
     def _trajectory_callback(self, message):
         with self._lock:
@@ -852,6 +1079,9 @@ class TrainingEpisodeResetCoordinator:
             last_valid_wall = self._last_valid_observation_wall
             trajectory = self._trajectory
             position_command = self._position_command
+            reward_audit_failure = self._reward_runtime_audit_failure
+        if reward_audit_failure:
+            return "FAILURE", "reward_runtime_audit:" + reward_audit_failure
         if state is None:
             return "FAILURE", "truth_odometry_unavailable"
         position, velocity, _, _, _ = state
@@ -959,6 +1189,7 @@ class TrainingEpisodeResetCoordinator:
         self._episode_positions = []
         self._episode_tracking_errors = []
         self._episode_actual_speeds = []
+        self._episode_reward_steps = []
         self._active_episode = True
         start_sim = rospy.Time.now().to_sec()
         start_wall = time.monotonic()
@@ -972,6 +1203,9 @@ class TrainingEpisodeResetCoordinator:
         if terminal is None:
             raise RuntimeError("ROS shutdown during active episode")
         outcome, reason = terminal
+        reward_runtime_steps = self._finalize_reward_runtime_steps(
+            outcome, reason
+        )
         self._state = "TERMINAL_LATCHED"
         self._terminal_latched = True
         self._terminal_outcome = outcome
@@ -1029,6 +1263,7 @@ class TrainingEpisodeResetCoordinator:
             "tracking_error": _statistics(tracking_errors),
             "actual_speed": _statistics(actual_speeds),
             "fixed_terminal_hold_used": self._fixed_terminal_hold_active,
+            "reward_runtime_step_count": reward_runtime_steps,
         }
         self._episodes.append(episode)
         return episode
@@ -1345,6 +1580,17 @@ class TrainingEpisodeResetCoordinator:
             acceptance_failures.append("surrogate_all_zero")
         if self._surrogate_all_unknown_count != 0:
             acceptance_failures.append("surrogate_all_unknown")
+        if (
+            self._reward_runtime_audit_enabled
+            and self._reward_runtime_invalid_count != 0
+        ):
+            acceptance_failures.append("reward_runtime_invalid")
+        if (
+            self._reward_runtime_audit_enabled
+            and self._episodes
+            and self._reward_runtime_step_count == 0
+        ):
+            acceptance_failures.append("reward_runtime_steps_missing")
         if self._require_registered_ego_cloud:
             if not self._registered_cloud_state.get("ready", False):
                 acceptance_failures.append("registered_ego_cloud_not_ready")
@@ -1383,6 +1629,24 @@ class TrainingEpisodeResetCoordinator:
         return {
             "version": VERSION,
             "qualification_only": True,
+            "reward_runtime_audit": {
+                "enabled": self._reward_runtime_audit_enabled,
+                "schema_version": (
+                    "learning_speed_reward_runtime_step_v1.0"
+                    if self._reward_runtime_audit_enabled else None
+                ),
+                "formal_sac_transition": False,
+                "reward_mode": (
+                    self._reward.config.mode if self._reward is not None else None
+                ),
+                "reward_version": (
+                    self._reward.config.version
+                    if self._reward is not None else None
+                ),
+                "runtime_step_count": self._reward_runtime_step_count,
+                "invalid_count": self._reward_runtime_invalid_count,
+                "failure": self._reward_runtime_audit_failure,
+            },
             "action_owner": self._action_owner,
             "runner_mode": self._runner_mode,
             "nominal_hover": list(self._nominal_hover),
@@ -1501,6 +1765,8 @@ class TrainingEpisodeResetCoordinator:
         self._write_json("qualification_summary.json", summary)
         self._event("QUALIFICATION_COMPLETE", verdict=summary["verdict"])
         self._event_file.close()
+        if self._reward_step_file is not None:
+            self._reward_step_file.close()
         rospy.logwarn("[TRAINING EPISODE] %s", summary["verdict"])
         return summary
 
