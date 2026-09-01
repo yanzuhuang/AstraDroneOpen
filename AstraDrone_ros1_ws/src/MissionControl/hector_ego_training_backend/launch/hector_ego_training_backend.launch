@@ -23,8 +23,11 @@
   <arg name="hover_yaw" default="0.0"/>
   <arg name="ego_cloud_topic" default="qualification/cloud"/>
   <arg name="spawn_wall_delay" default="0.0"/>
-  <arg name="max_vel" default="0.40"/>
-  <arg name="max_acc" default="0.80"/>
+  <arg name="max_vel" default="4.00"/>
+  <arg name="max_acc" default="3.00"/>
+  <arg name="map_size_x" default="20.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="4.0"/>
   <arg name="dynamic_speed_limit_enabled" default="false"/>
   <arg name="dynamic_speed_limit_minimum" default="0.05"/>
   <arg name="require_training_observation_c" default="false"/>
@@ -78,9 +81,9 @@
 
     <include file="$(find ego_planner)/launch/advanced_param.xml">
       <arg name="drone_id" value="0"/>
-      <arg name="map_size_x_" value="20.0"/>
-      <arg name="map_size_y_" value="20.0"/>
-      <arg name="map_size_z_" value="4.0"/>
+      <arg name="map_size_x_" value="$(arg map_size_x)"/>
+      <arg name="map_size_y_" value="$(arg map_size_y)"/>
+      <arg name="map_size_z_" value="$(arg map_size_z)"/>
       <arg name="odometry_topic" value="$(arg training_odom_topic)"/>
       <arg name="camera_pose_topic" value="qualification/unused_pose"/>
       <arg name="depth_topic" value="qualification/unused_depth"/>

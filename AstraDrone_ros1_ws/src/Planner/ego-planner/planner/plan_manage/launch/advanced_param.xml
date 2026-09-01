@@ -45,6 +45,10 @@
   <arg name="use_goal_height" default="false"/>
   <arg name="obstacles_inflation" default="0.099"/>
   <arg name="map_resolution" default="0.1"/>
+  <arg name="cloud_odom_timeout" default="0.15"/>
+  <arg name="cloud_sensor_origin_x" default="0.0"/>
+  <arg name="cloud_sensor_origin_y" default="0.0"/>
+  <arg name="cloud_sensor_origin_z" default="0.13"/>
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="2.5"/>
   <arg name="marker_namespace" default="ego_trajectory"/>
@@ -152,6 +156,10 @@
     <param name="grid_map/p_occ"  value="0.80"/>
     <param name="grid_map/min_ray_length" value="0.1"/>
     <param name="grid_map/max_ray_length" value="4.5"/>
+    <param name="grid_map/cloud_odom_timeout" value="$(arg cloud_odom_timeout)"/>
+    <param name="grid_map/cloud_sensor_origin_x" value="$(arg cloud_sensor_origin_x)"/>
+    <param name="grid_map/cloud_sensor_origin_y" value="$(arg cloud_sensor_origin_y)"/>
+    <param name="grid_map/cloud_sensor_origin_z" value="$(arg cloud_sensor_origin_z)"/>
 
     <param name="grid_map/virtual_ceil_height"   value="$(arg virtual_ceil_height)"/>
     <param name="grid_map/visualization_truncate_height"   value="$(arg virtual_ceil_height)"/>

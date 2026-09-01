@@ -35,8 +35,37 @@ def flatten_policy_input(value):
     return result
 
 
+def validate_action_range_with_capability(
+    action_min,
+    action_max,
+    capability_min,
+    capability_max,
+    tolerance=1.0e-9,
+):
+    """Require the configured SAC action range to fit downstream capability."""
+
+    action_mapping = ActionMapping(action_min, action_max)
+    capability_mapping = ActionMapping(capability_min, capability_max)
+    tolerance = float(tolerance)
+    if not math.isfinite(tolerance) or tolerance < 0.0:
+        raise ValueError("action/capability tolerance must be finite and non-negative")
+    if (
+        action_mapping.v_max_min < capability_mapping.v_max_min - tolerance
+        or action_mapping.v_max_max > capability_mapping.v_max_max + tolerance
+    ):
+        raise ValueError(
+            "SAC action range [{:.6f}, {:.6f}] is outside downstream "
+            "SpeedSafetyFilter capability [{:.6f}, {:.6f}]".format(
+                action_mapping.v_max_min,
+                action_mapping.v_max_max,
+                capability_mapping.v_max_min,
+                capability_mapping.v_max_max,
+            )
+        )
+
+
 class ActionMapping:
-    """Reviewed normalized SAC action to live SpeedSafetyFilter bounds."""
+    """Reviewed normalized SAC action to SAC-configured action bounds."""
 
     def __init__(self, v_max_min, v_max_max):
         self.v_max_min = float(v_max_min)
@@ -127,6 +156,7 @@ class SacReplayBuffer:
         self.reward_components = [None] * self._allocated_capacity
         self.terminal_reasons = [None] * self._allocated_capacity
         self._key_to_index = {}
+        self._episode_commit_state = {}
 
     @staticmethod
     def _grow_array(value, new_capacity):
@@ -200,6 +230,22 @@ class SacReplayBuffer:
         with self._lock:
             if key in self._key_to_index:
                 raise ValueError("duplicate replay request identity")
+            commit = self._episode_commit_state.get(episode_id)
+            if commit is None:
+                if step_index != 0 or request_id != 1:
+                    raise ValueError("replay Episode must begin at step 0/request 1")
+                commit = {
+                    "next_step_index": 0,
+                    "reset_generation": generation,
+                    "terminal_row_count": 0,
+                    "closed": False,
+                }
+            if commit["closed"]:
+                raise ValueError("replay transition arrived after terminal boundary")
+            if generation != commit["reset_generation"]:
+                raise ValueError("Replay generation changed within Episode")
+            if step_index != commit["next_step_index"]:
+                raise ValueError("replay transition step sequence is not contiguous")
             self._ensure_storage_for_add()
             index = self._position
             if self._size == self.capacity:
@@ -229,9 +275,16 @@ class SacReplayBuffer:
             self._key_to_index[key] = index
             self._position = (index + 1) % self.capacity
             self._size = min(self.capacity, self._size + 1)
+            commit["next_step_index"] += 1
+            if bool(transition["terminated"]):
+                commit["terminal_row_count"] += 1
+                commit["closed"] = True
+            self._episode_commit_state[episode_id] = commit
             return index
 
-    def mark_episode_boundary(self, episode_id, truncated, terminal_reason):
+    def mark_episode_boundary(
+        self, episode_id, *, terminated, truncated, terminal_reason
+    ):
         with self._lock:
             candidates = [
                 index
@@ -241,10 +294,25 @@ class SacReplayBuffer:
             if not candidates:
                 raise ValueError("Episode has no replay transition")
             index = max(candidates, key=lambda item: int(self.step_index[item]))
+            if bool(terminated) and bool(truncated):
+                raise ValueError("Replay Episode cannot terminate and truncate")
+            self.terminated[index] = bool(
+                self.terminated[index] or bool(terminated)
+            )
             self.truncated[index] = bool(truncated)
             self.terminal_reasons[index] = str(terminal_reason)
             if self.terminated[index] and self.truncated[index]:
                 raise ValueError("replay transition cannot terminate and truncate")
+            commit = self._episode_commit_state[str(episode_id)]
+            if bool(terminated) and not commit["terminal_row_count"]:
+                commit["terminal_row_count"] = 1
+            if bool(truncated):
+                if commit["terminal_row_count"]:
+                    raise ValueError("Replay Episode already has a terminal row")
+                commit["terminal_row_count"] = 1
+            if commit["terminal_row_count"] != 1:
+                raise ValueError("Replay Episode must close with one terminal row")
+            commit["closed"] = True
 
     def sample(self, batch_size, rng):
         count = int(batch_size)
@@ -301,6 +369,16 @@ class SacReplayBuffer:
                 for values in episode_sequences.values()
             ):
                 failures.append("episode_step_sequence")
+            if any(
+                int(commit["terminal_row_count"]) > 1
+                for commit in self._episode_commit_state.values()
+            ):
+                failures.append("episode_terminal_row_count")
+            if any(
+                int(commit["next_step_index"]) <= 0
+                for commit in self._episode_commit_state.values()
+            ):
+                failures.append("episode_commit_empty")
             return {
                 "size": size,
                 "logical_capacity": self.capacity,
@@ -315,6 +393,14 @@ class SacReplayBuffer:
                 "terminated_count": int(self.terminated[sl].sum()),
                 "truncated_count": int(self.truncated[sl].sum()),
                 "episode_count": len(episode_sequences),
+                "ordered_commit_episode_count": len(
+                    self._episode_commit_state
+                ),
+                "closed_episode_count": sum(
+                    1
+                    for commit in self._episode_commit_state.values()
+                    if commit["closed"]
+                ),
                 "normalized_action": {
                     "mean": float(self.policy_actions[sl].mean()),
                     "std": float(self.policy_actions[sl].std()),

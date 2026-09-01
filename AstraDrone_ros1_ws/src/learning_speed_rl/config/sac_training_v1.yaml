@@ -60,14 +60,11 @@ episode:
   start_timeout_sec: 30.0
   completion_timeout_sec: 30.0
   deadline_tolerance_sec: 0.02
-  maximum_in_flight: 16
   minimum_active_speed_mps: 0.05
 
 step:
-  duration_sec: 0.1
   action_timeout_sec: 3.0
   applied_timeout_sec: 4.0
-  hold_timeout_sec: 30.0
   next_observation_timeout_sec: 5.0
   requested_match_tolerance_mps: 1.0e-6
   applied_pair_tolerance_mps: 0.005
@@ -78,6 +75,7 @@ tracking_safety:
 
 training:
   mode: training
+  smoke_test: false
   total_training_episodes: 10000
   learning_starts: 1000
   warmup_action_sampling: deterministic_actor_mean
@@ -90,6 +88,14 @@ environment:
   # The launch overrides this to false for qualification/evaluation. The
   # runner fails closed if training is not randomized or evaluation is.
   reset_randomization_enabled: true
+
+forest:
+  enabled: false  # enabled only by hector_forest_sac_training.launch
+  scheduler_rng_seed: 20260824
+  episodes_per_map_block: 100
+  episodes_per_round: 800
+  training_logical_seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+  evaluation_logical_seeds: [8, 9]
 
 evaluation:
   episode_count: 100

@@ -11,10 +11,11 @@
 #include <ros/ros.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/Float64.h>
+#include <std_srvs/Trigger.h>
 #include <astra_custom_msgs/PlannerStatus.h>
 #include <learning_speed_rl/SpeedActionStamped.h>
 #include <learning_speed_rl/SpeedAppliedStamped.h>
-#include <unordered_map>
+#include <memory>
 #include <vector>
 #include <visualization_msgs/Marker.h>
 
@@ -75,10 +76,10 @@ namespace ego_planner
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
     bool dynamic_speed_limit_enabled_{false};
-    double current_speed_limit_{0.0};
-    DynamicSpeedLimitGate dynamic_speed_limit_gate_;
-    std::unordered_map<std::string, uint64_t> last_speed_request_id_by_episode_;
-    std::unordered_map<std::string, uint64_t> last_speed_step_by_episode_;
+    std::unique_ptr<DedicatedSpeedLimitChannel> speed_limit_channel_;
+    std::shared_ptr<const DynamicVmaxSnapshot> static_speed_snapshot_;
+    std::uint64_t consumed_force_replan_generation_{0};
+    std::uint64_t last_admitted_speed_snapshot_version_{0};
 
     /* planning data */
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
@@ -101,11 +102,9 @@ namespace ego_planner
     ros::Timer exec_timer_, safety_timer_;
     ros::Timer status_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, swarm_trajs_sub_, broadcast_bspline_sub_, trigger_sub_, cancel_sub_;
-    ros::Subscriber speed_limit_sub_;
     ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, swarm_trajs_pub_, broadcast_bspline_pub_;
     ros::Publisher status_pub_;
-    ros::Publisher applied_speed_limit_pub_;
-    ros::Publisher applied_speed_limit_stamped_pub_;
+    ros::ServiceServer environment_map_reset_service_;
     std::string odom_topic_, waypoint_topic_, cancel_topic_, swarm_trajectory_topic_;
     std::string status_topic_, status_frame_id_, target_id_;
     std::string swarm_common_frame_;
@@ -114,6 +113,7 @@ namespace ego_planner
     PlanningStatusTracker status_tracker_;
     ros::Time cancel_time_;
     bool have_cancel_{false};
+    std::uint64_t environment_map_reset_generation_{0};
 
     /* helper functions */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
@@ -128,7 +128,11 @@ namespace ego_planner
 
     void readGivenWps();
     void planNextWaypoint(const Eigen::Vector3d next_wp);
-    void getLocalTarget();
+    void getLocalTarget(double max_velocity);
+    std::shared_ptr<const DynamicVmaxSnapshot> latestSpeedSnapshot() const;
+    std::shared_ptr<const DynamicVmaxSnapshot> admitPlanningSnapshot();
+    void processForceReplanIntent();
+    void clearPendingForceReplanIntent();
 
     /* ROS functions */
     void execFSMCallback(const ros::TimerEvent &e);
@@ -137,10 +141,10 @@ namespace ego_planner
     void triggerCallback(const geometry_msgs::PoseStampedPtr &msg);
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void cancelCallback(const std_msgs::EmptyConstPtr &msg);
+    bool environmentMapResetCallback(
+        std_srvs::Trigger::Request &request,
+        std_srvs::Trigger::Response &response);
     void statusCallback(const ros::TimerEvent &e);
-    void speedLimitCallback(const learning_speed_rl::SpeedActionStampedConstPtr &msg);
-    void publishAppliedSpeedLimit(
-        const learning_speed_rl::SpeedActionStamped &action);
     void recordPlanningResult(bool success, const std::string &failure_reason);
     const char *stateName() const;
     void swarmTrajsCallback(const traj_utils::MultiBsplinesPtr &msg);
@@ -153,9 +157,7 @@ namespace ego_planner
     EGOReplanFSM(/* args */)
     {
     }
-    ~EGOReplanFSM()
-    {
-    }
+    ~EGOReplanFSM();
 
     void init(ros::NodeHandle &nh);
 

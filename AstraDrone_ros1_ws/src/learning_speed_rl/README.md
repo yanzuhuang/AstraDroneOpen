@@ -311,7 +311,7 @@ finite, versioned reward to every valid, same-episode, non-truncated candidate.
 
 ## Paper-guided Reward v3
 
-`training/reward.py` implements `astradrone_paper_guided_reward_v3.0` as a
+`training/reward.py` implements `astradrone_paper_guided_reward_v3.1` as a
 paper-guided adaptation of Eq. (6)--(11) in *Learning Speed
 Adaptation for Flight in Clutter*. It is not an exact reproduction of the
 paper's unpublished feature coefficients or complete lambda values. Select it
@@ -325,13 +325,16 @@ Stage 1 uses only:
 r_stage1 = r_speed_stage1 + r_smoothing + r_error + r_danger
 ```
 
-The continuous N/D/Unknown complexity feature keeps the reviewed
-`6.0/2.5 m`, `0.040/0.080`, and `1.75/1.25/0.75/1.25 m/s` anchors. Reward v3
+The continuous known-obstacle N/D complexity feature keeps the reviewed
+`6.0/2.5 m`, `0.040/0.080`, and `1.75/1.25/0.75 m/s` anchors. Reward v3.1
 replaces the v2 `max(q_nearest,q_density)` owner with the calibrated continuous
 fusion `1-(1-q_nearest)^0.46*(1-q_density)^0.54`. Its three Eq. (10) branches
 use quadratic Bernstein weights, so the speed slope changes continuously from
 positive through zero to negative. Low/Medium/High remain diagnostics rather
-than reward switches. Smoothing uses current and previous applied `v_max`.
+than reward switches. The paper does not specify the exact no-known-obstacle
+feature value; Astra therefore maps `N=None,D=0` to zero known-obstacle risk.
+UNKNOWN remains in Observation C and never changes the reward target directly.
+Smoothing uses current and previous applied `v_max`.
 Speed and danger use the causal actual-speed norm, not the action constraint.
 Tracking error reuses the existing Observation C body-frame error norm and is
 clipped before squaring. Danger is nonzero only for the explicit frozen
@@ -358,25 +361,31 @@ Design and offline replay evidence are consolidated in the repository-root
 ## AstraDroneEnv Episode v0.1 and 10 Hz causal scheduler
 
 `training/astra_drone_env.py` owns one continuous UAV1 Episode and publishes
-policy requests on a fixed 0.1 s ROS/simulation-time grid. It does not wait for
-the previous transition to close before publishing the next request. Each
-in-flight step retains its own `episode_id`, zero-based `step_index`, state,
-request marker, atomic action, applied acknowledgement, trajectory provenance
-and post-hold Observation:
+policy requests on an absolute 0.1 s ROS/simulation-time grid. At most one
+action interval is active. At each tick the latest causal-valid snapshot first
+forms and submits the previous immutable transition to the ordered writer; only
+after a terminal recheck may the same snapshot produce the next action:
 
 ```text
-strictly causal valid state_t
+tick T[k]: latest causal-valid state_k
+ -> form/submit (state_k-1, action_k-1, state_k)
+ -> terminal recheck
  -> 10 Hz SpeedRequestStamped(episode_id, step_index, request_id)
  -> SpeedActionStamped(same identity)
  -> EGO SpeedAppliedStamped(same identity)
- -> first unused valid Observation C after applied receipt + 0.1 s
- -> existing LearningSpeedReward.evaluate + SacTransitionV1
+ -> action remains applied until the next accepted policy tick
 ```
 
-The pending queue consumes every identity and next Observation at most once.
+The 0.1 s value is the policy/action period, not an extra transition hold. If a
+tick cannot close the unique active action interval, the scheduler records a tick
+miss, keeps the previous action, allocates no new step/request, and retries only
+at the next absolute boundary. It never catches up with a burst and never
+restores multiple in-flight transitions. `policy_tick_index` advances across
+misses independently of accepted `step_index` and `request_id`.
+
 Action/application matching is direct `(episode_id, request_id)` equality with
 `step_index` and values cross-checked; `state_t` must predate the action, while `state_t+1` must have a
-strictly newer source stamp and receipt no earlier than the hold boundary.
+strictly newer source stamp and receipt no earlier than the applied boundary.
 Native mapping/planning/replanning stays asynchronous, and state/action/next
 trajectory identities remain independent provenance rather than an equality
 gate.
@@ -404,9 +413,9 @@ semantics are not changed.
 `reset()` still raises `NotImplementedError`; reset remains owned by the
 training-only Hector coordinator. `AstraDroneEnv` itself does not own a SAC
 learner, Replay Buffer, checkpoint, teleport, normalization or multi-UAV RL. The old
-blocking `step()` API, sequential wait helper, 0.2 s fallback and unused
-pre-step observation timeout were removed. Historical 0.5/1.0 s and blocking
-0.1 s runtime artifacts remain unchanged as evidence.
+blocking `step()` API, sequential wait helper, 0.2 s fallback, and the former
+post-action `duration_sec=0.1` hold were removed. Historical 0.5/1.0 s and
+blocking 0.1 s runtime artifacts remain unchanged as evidence.
 
 The action-identity revalidation closed 100/100 scheduled requests at exactly
 10 Hz with 100/100 action and stamped applied acknowledgements, request IDs

@@ -72,6 +72,8 @@ def official_trajectory_identity_from_bspline(message):
         trajectory_id=int(message.traj_id),
         start_time_sec=message.start_time.to_sec(),
         source_frame=message.frame_id.lstrip("/"),
+        start_time_secs=int(message.start_time.secs),
+        start_time_nsecs=int(message.start_time.nsecs),
     )
 
 
@@ -82,6 +84,8 @@ def official_trajectory_identity_from_observation(message):
         trajectory_id=int(message.trajectory_id),
         start_time_sec=message.trajectory_start_time.to_sec(),
         source_frame=message.trajectory_source_frame.lstrip("/"),
+        start_time_secs=int(message.trajectory_start_time.secs),
+        start_time_nsecs=int(message.trajectory_start_time.nsecs),
     )
 
 
@@ -90,6 +94,8 @@ class OfficialTrajectoryIdentity:
     trajectory_id: int
     start_time_sec: float
     source_frame: str
+    start_time_secs: Optional[int] = None
+    start_time_nsecs: Optional[int] = None
 
     def __post_init__(self):
         if self.trajectory_id < 0:
@@ -98,6 +104,35 @@ class OfficialTrajectoryIdentity:
             raise ValueError("trajectory start time must be positive and finite")
         if not self.source_frame:
             raise ValueError("trajectory source frame is empty")
+        if self.start_time_secs is None and self.start_time_nsecs is None:
+            secs = int(math.floor(self.start_time_sec))
+            nsecs = int(round((self.start_time_sec - secs) * 1.0e9))
+            if nsecs == 1_000_000_000:
+                secs += 1
+                nsecs = 0
+        elif self.start_time_secs is None or self.start_time_nsecs is None:
+            raise ValueError("trajectory native start stamp is incomplete")
+        else:
+            secs = int(self.start_time_secs)
+            nsecs = int(self.start_time_nsecs)
+        if secs < 0 or nsecs < 0 or nsecs >= 1_000_000_000:
+            raise ValueError("trajectory native start stamp is invalid")
+        canonical = float(secs) + float(nsecs) * 1.0e-9
+        if canonical <= 0.0:
+            raise ValueError("trajectory native start stamp must be positive")
+        object.__setattr__(self, "start_time_secs", secs)
+        object.__setattr__(self, "start_time_nsecs", nsecs)
+        object.__setattr__(self, "start_time_sec", canonical)
+
+    @property
+    def identity_key(self):
+        """Exact ROS trajectory identity ordered as secs/nsecs/traj_id."""
+
+        return (
+            int(self.start_time_secs),
+            int(self.start_time_nsecs),
+            int(self.trajectory_id),
+        )
 
 
 @dataclass(frozen=True)
@@ -186,6 +221,8 @@ class PolicyStateV1:
             "official_trajectory": {
                 "trajectory_id": trajectory.trajectory_id,
                 "start_time_sec": trajectory.start_time_sec,
+                "start_time_secs": trajectory.start_time_secs,
+                "start_time_nsecs": trajectory.start_time_nsecs,
                 "source_frame": trajectory.source_frame,
             },
         }
@@ -516,6 +553,8 @@ class SacTransitionV1:
                 "latest_official_trajectory": {
                     "trajectory_id": action.latest_official_trajectory.trajectory_id,
                     "start_time_sec": action.latest_official_trajectory.start_time_sec,
+                    "start_time_secs": action.latest_official_trajectory.start_time_secs,
+                    "start_time_nsecs": action.latest_official_trajectory.start_time_nsecs,
                     "source_frame": action.latest_official_trajectory.source_frame,
                 },
             },

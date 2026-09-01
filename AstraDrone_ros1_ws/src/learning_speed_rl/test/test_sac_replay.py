@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import unittest
+import threading
+import time
 
 import numpy as np
 
@@ -9,6 +11,10 @@ from learning_speed_rl.training.sac_replay import (
     OBSERVATION_DIM,
     SacReplayBuffer,
     flatten_policy_input,
+)
+from learning_speed_rl.training import (
+    ImmutableTransitionRecord,
+    OrderedTransitionWriter,
 )
 
 
@@ -50,6 +56,62 @@ def transition(step, normalized, mapping):
 
 
 class SacReplayTest(unittest.TestCase):
+    def test_formed_transition_is_deeply_immutable(self):
+        mapping = ActionMapping(0.30, 1.75)
+        source = transition(0, 0.0, mapping)
+        formed = ImmutableTransitionRecord(source)
+        source["transition"]["reward"] = 99.0
+        self.assertEqual(formed["transition"]["reward"], 1.0)
+        with self.assertRaises(TypeError):
+            formed["transition"]["reward"] = 2.0
+        with self.assertRaises(TypeError):
+            formed["transition"]["state_t"]["lidar_surrogate"][0] = 2.0
+
+    def test_ordered_writer_delay_does_not_change_submission_order(self):
+        mapping = ActionMapping(0.30, 1.75)
+        release = threading.Event()
+        started = threading.Event()
+        persisted = []
+
+        def persist(record, _payload):
+            if int(record["step_index"]) == 0:
+                started.set()
+                self.assertTrue(release.wait(1.0))
+            persisted.append(int(record["step_index"]))
+
+        writer = OrderedTransitionWriter(persist)
+        writer.submit(transition(0, 0.0, mapping), {"reset_generation": 7})
+        self.assertTrue(started.wait(1.0))
+        writer.submit(transition(1, 0.0, mapping), {"reset_generation": 7})
+        self.assertEqual(writer.submitted_count, 2)
+        self.assertEqual(writer.persisted_count, 0)
+        self.assertGreaterEqual(writer.pending_count, 2)
+        release.set()
+        writer.close(timeout_sec=1.0)
+        self.assertEqual(persisted, [0, 1])
+        self.assertEqual(writer.persisted_count, 2)
+
+    def test_ordered_writer_rejects_holes_generation_change_and_post_terminal(self):
+        mapping = ActionMapping(0.30, 1.75)
+        persisted = []
+        writer = OrderedTransitionWriter(
+            lambda record, _payload: persisted.append(record["step_index"])
+        )
+        writer.submit(transition(0, 0.0, mapping), {"reset_generation": 4})
+        with self.assertRaisesRegex(ValueError, "not contiguous"):
+            writer.submit(transition(2, 0.0, mapping), {"reset_generation": 4})
+        with self.assertRaisesRegex(ValueError, "generation changed"):
+            writer.submit(transition(1, 0.0, mapping), {"reset_generation": 5})
+        terminal = transition(1, 0.0, mapping)
+        terminal["terminated"] = True
+        terminal["transition"]["terminated"] = True
+        terminal["terminal_reason"] = "collision"
+        writer.submit(terminal, {"reset_generation": 4})
+        with self.assertRaisesRegex(ValueError, "after terminal boundary"):
+            writer.submit(transition(2, 0.0, mapping), {"reset_generation": 4})
+        writer.close(timeout_sec=1.0)
+        self.assertEqual(persisted, [0, 1])
+
     def test_policy_input_dimension_is_frozen(self):
         vector = flatten_policy_input(policy_input())
         self.assertEqual(vector.shape, (OBSERVATION_DIM,))
@@ -74,7 +136,10 @@ class SacReplayTest(unittest.TestCase):
         for step, action in enumerate((-0.8, 0.0, 0.7)):
             replay.add(transition(step, action, mapping), action, 0)
         replay.mark_episode_boundary(
-            "training_episode_000001", True, "max_episode_time"
+            "training_episode_000001",
+            terminated=False,
+            truncated=True,
+            terminal_reason="max_episode_time",
         )
         audit = replay.audit()
         self.assertTrue(audit["passed"], audit)
@@ -103,6 +168,61 @@ class SacReplayTest(unittest.TestCase):
         self.assertEqual(audit["logical_capacity"], 100000)
         self.assertEqual(audit["allocated_capacity"], 4)
         self.assertEqual(audit["size"], 3)
+
+    def test_ordered_commit_rejects_gap_and_accepts_only_next_step(self):
+        mapping = ActionMapping(0.30, 1.75)
+        replay = SacReplayBuffer(16, mapping)
+        replay.add(transition(0, 0.0, mapping), 0.0, 7)
+        with self.assertRaisesRegex(ValueError, "not contiguous"):
+            replay.add(transition(2, 0.0, mapping), 0.0, 7)
+        replay.add(transition(1, 0.0, mapping), 0.0, 7)
+        self.assertEqual(replay.audit()["size"], 2)
+
+    def test_terminal_boundary_is_unique_and_blocks_future_commit(self):
+        mapping = ActionMapping(0.30, 1.75)
+        replay = SacReplayBuffer(16, mapping)
+        replay.add(transition(0, 0.0, mapping), 0.0, 3)
+        terminal = transition(1, 0.0, mapping)
+        terminal["transition"]["terminated"] = True
+        terminal["terminal_reason"] = "collision"
+        replay.add(terminal, 0.0, 3)
+        replay.mark_episode_boundary(
+            "training_episode_000001",
+            terminated=True,
+            truncated=False,
+            terminal_reason="collision",
+        )
+        with self.assertRaisesRegex(ValueError, "after terminal boundary"):
+            replay.add(transition(2, 0.0, mapping), 0.0, 3)
+        audit = replay.audit()
+        self.assertTrue(audit["passed"], audit)
+        self.assertEqual(audit["terminated_count"], 1)
+        self.assertEqual(audit["closed_episode_count"], 1)
+
+    def test_terminal_between_actions_promotes_only_last_real_replay_row(self):
+        mapping = ActionMapping(0.30, 1.75)
+        replay = SacReplayBuffer(16, mapping)
+        replay.add(transition(0, 0.0, mapping), 0.0, 3)
+        replay.mark_episode_boundary(
+            "training_episode_000001",
+            terminated=True,
+            truncated=False,
+            terminal_reason="planner_failure:NO_FEASIBLE_TRAJECTORY",
+        )
+        audit = replay.audit()
+        self.assertTrue(audit["passed"], audit)
+        self.assertEqual(audit["size"], 1)
+        self.assertEqual(audit["terminated_count"], 1)
+        self.assertEqual(audit["closed_episode_count"], 1)
+        with self.assertRaisesRegex(ValueError, "after terminal boundary"):
+            replay.add(transition(1, 0.0, mapping), 0.0, 3)
+
+    def test_generation_mismatch_is_rejected_before_commit(self):
+        mapping = ActionMapping(0.30, 1.75)
+        replay = SacReplayBuffer(16, mapping)
+        replay.add(transition(0, 0.0, mapping), 0.0, 4)
+        with self.assertRaisesRegex(ValueError, "generation changed"):
+            replay.add(transition(1, 0.0, mapping), 0.0, 5)
 
 
 if __name__ == "__main__":

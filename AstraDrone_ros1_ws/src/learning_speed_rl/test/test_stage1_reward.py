@@ -68,7 +68,7 @@ class LearningSpeedRewardTest(unittest.TestCase):
             truncated=truncated,
         )
 
-    def test_low_medium_high_unknown_typical_inputs(self):
+    def test_low_medium_high_no_known_obstacle_typical_inputs(self):
         cases = (
             (self.value(nearest=8.0, density=0.02, applied=1.75), "Low", 1.75, 0.0),
             (self.value(), "Medium", 1.25, 0.5),
@@ -80,9 +80,9 @@ class LearningSpeedRewardTest(unittest.TestCase):
             ),
             (
                 self.value(nearest=None, density=0.0, unknown=True),
-                "Unknown",
-                1.25,
-                0.5,
+                "NoKnownObstacle",
+                1.75,
+                0.0,
             ),
         )
         for value, label, phi_1, phi_2 in cases:
@@ -123,18 +123,36 @@ class LearningSpeedRewardTest(unittest.TestCase):
             "weighted_geometric_survival",
         )
 
-    def test_nearest_na_unknown_and_non_unknown_are_distinct(self):
+    def test_unknown_coverage_is_diagnostic_only(self):
         unknown = self.reward.evaluate(
             self.value(nearest=None, density=0.0, unknown=True)
         )
         observed_open = self.reward.evaluate(
             self.value(nearest=None, density=0.0, unknown=False)
         )
-        self.assertEqual(unknown.complexity_context.label, "Unknown")
-        self.assertEqual(observed_open.complexity_context.label, "Low")
-        self.assertNotEqual(unknown.phi_2, observed_open.phi_2)
+        self.assertEqual(unknown.complexity_context.label, "NoKnownObstacle")
+        self.assertEqual(observed_open.complexity_context.label, "NoKnownObstacle")
+        self.assertEqual(unknown.phi_1, observed_open.phi_1)
+        self.assertEqual(unknown.phi_2, observed_open.phi_2)
+        self.assertEqual(unknown.reward_total, observed_open.reward_total)
+        self.assertNotEqual(
+            unknown.complexity_context.unknown_majority,
+            observed_open.complexity_context.unknown_majority,
+        )
         with self.assertRaisesRegex(ValueError, "inconsistent"):
             self.value(nearest=None, density=0.01, unknown=False)
+
+    def test_same_reward_features_ignore_unknown_fraction(self):
+        known_view = self.reward.evaluate(
+            self.value(nearest=4.25, density=0.060, unknown=False)
+        )
+        unknown_majority_view = self.reward.evaluate(
+            self.value(nearest=4.25, density=0.060, unknown=True)
+        )
+        self.assertEqual(known_view.reward_total, unknown_majority_view.reward_total)
+        self.assertEqual(known_view.reward_speed, unknown_majority_view.reward_speed)
+        self.assertEqual(known_view.phi_1, unknown_majority_view.phi_1)
+        self.assertEqual(known_view.phi_2, unknown_majority_view.phi_2)
 
     def test_speed_increase_and_decrease_have_symmetric_weak_smoothing(self):
         increase = self.reward.evaluate(self.value(applied=1.5, previous=1.0))

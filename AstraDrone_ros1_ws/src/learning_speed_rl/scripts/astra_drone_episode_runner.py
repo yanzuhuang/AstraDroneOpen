@@ -83,9 +83,6 @@ def main():
         deadline_tolerance_sec=float(
             rospy.get_param("~episode/deadline_tolerance_sec", 0.02)
         ),
-        maximum_in_flight=int(
-            rospy.get_param("~episode/maximum_in_flight", 16)
-        ),
         minimum_active_speed_mps=float(
             rospy.get_param("~episode/minimum_active_speed_mps", 0.2)
         ),
@@ -122,7 +119,6 @@ def main():
             "max_steps": config.max_steps,
             "max_duration_sec": config.max_duration_sec,
             "deadline_tolerance_sec": config.deadline_tolerance_sec,
-            "maximum_in_flight": config.maximum_in_flight,
             "minimum_active_speed_mps": config.minimum_active_speed_mps,
         },
     }

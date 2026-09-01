@@ -5,6 +5,10 @@
 namespace ego_planner {
 namespace {
 
+TEST(PlanningStatusTracker, FailedPlanUsesNativeNoFeasibleReason) {
+  EXPECT_EQ(planningFailureReason(), "NO_FEASIBLE_TRAJECTORY");
+}
+
 TEST(PlanningStatusTracker, CountsActualAttemptsAndResetsOnSuccess) {
   PlanningStatusTracker tracker;
   tracker.reset("NONE");

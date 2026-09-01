@@ -151,7 +151,7 @@ def transition_audit(path):
                 ]
                 if reward_version in (
                     "astradrone_paper_guided_reward_v2.0",
-                    "astradrone_paper_guided_reward_v3.0",
+                    "astradrone_paper_guided_reward_v3.1",
                 ):
                     required.append("reward_error")
                 valid = (
@@ -161,7 +161,7 @@ def transition_audit(path):
                     and reward_version in (
                         "astradrone_stage1_reward_v1.0",
                         "astradrone_paper_guided_reward_v2.0",
-                        "astradrone_paper_guided_reward_v3.0",
+                        "astradrone_paper_guided_reward_v3.1",
                     )
                     and isinstance(components, dict)
                     and components.get("reward_valid") is True

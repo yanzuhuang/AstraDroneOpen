@@ -25,6 +25,7 @@
   <arg name="sensor_translation_x" default="-0.011"/>
   <arg name="sensor_translation_y" default="-0.02329"/>
   <arg name="sensor_translation_z" default="0.04412"/>
+  <arg name="cloud_rate_reference_hz" default="10.0"/>
 
   <include if="$(arg start_observation_v2)"
            file="$(find learning_speed_rl)/launch/observation_v2_lidar_surrogate.launch">
@@ -42,6 +43,8 @@
     <arg name="sensor_translation_x" value="$(arg sensor_translation_x)"/>
     <arg name="sensor_translation_y" value="$(arg sensor_translation_y)"/>
     <arg name="sensor_translation_z" value="$(arg sensor_translation_z)"/>
+    <arg name="cloud_rate_reference_hz"
+         value="$(arg cloud_rate_reference_hz)"/>
   </include>
 
   <group ns="$(arg namespace)">

@@ -10,7 +10,7 @@ import math
 from typing import Dict, Mapping, Optional, Tuple
 
 
-REWARD_VERSION = "astradrone_paper_guided_reward_v3.0"
+REWARD_VERSION = "astradrone_paper_guided_reward_v3.1"
 STAGE_1_REWARD_MODE = "stage_1"
 STAGE_2_REWARD_MODE = "stage_2"
 SUPPORTED_REWARD_MODES = (STAGE_1_REWARD_MODE, STAGE_2_REWARD_MODE)
@@ -40,7 +40,6 @@ class LearningSpeedRewardConfig:
     low_anchor_mps: float = 1.75
     medium_anchor_mps: float = 1.25
     high_anchor_mps: float = 0.75
-    unknown_anchor_mps: float = 1.25
     lambda_speed_1: float = 1.00
     lambda_speed_2: float = 0.80
     lambda_speed_3: float = 0.25
@@ -64,7 +63,6 @@ class LearningSpeedRewardConfig:
                 "low_anchor_mps",
                 "medium_anchor_mps",
                 "high_anchor_mps",
-                "unknown_anchor_mps",
                 "lambda_speed_1",
                 "lambda_speed_2",
                 "lambda_speed_3",
@@ -101,8 +99,6 @@ class LearningSpeedRewardConfig:
         midpoint = 0.5 * (self.low_anchor_mps + self.high_anchor_mps)
         if abs(self.medium_anchor_mps - midpoint) > 1.0e-12:
             raise ValueError("medium anchor must be the low/high midpoint")
-        if abs(self.unknown_anchor_mps - self.medium_anchor_mps) > 1.0e-12:
-            raise ValueError("unknown anchor must equal the conservative medium anchor")
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]):
@@ -126,7 +122,6 @@ class LearningSpeedRewardConfig:
             low_anchor_mps=float(anchors.get("low", 1.75)),
             medium_anchor_mps=float(anchors.get("medium", 1.25)),
             high_anchor_mps=float(anchors.get("high", 0.75)),
-            unknown_anchor_mps=float(anchors.get("unknown", 1.25)),
             lambda_speed_1=float(lambdas.get("speed_1", 1.00)),
             lambda_speed_2=float(lambdas.get("speed_2", 0.80)),
             lambda_speed_3=float(lambdas.get("speed_3", 0.25)),
@@ -168,12 +163,8 @@ class LearningSpeedRewardInput:
             nearest = _finite(self.nearest_obstacle_distance_m, "nearest_obstacle_distance_m")
             if nearest <= 0.0:
                 raise ValueError("numeric nearest distance must be positive")
-            if self.unknown_majority:
-                raise ValueError("numeric nearest cannot be unknown-majority")
         elif density > 1.0e-12:
             raise ValueError("nearest NA is inconsistent with nonzero obstacle density")
-        if self.unknown_majority and self.nearest_obstacle_distance_m is not None:
-            raise ValueError("unknown-majority requires nearest NA")
         if self.dangerous_terminal and not self.terminated:
             raise ValueError("dangerous terminal must terminate the episode")
 
@@ -201,6 +192,10 @@ def reward_input_from_signals(
     if total_count <= 0 or unknown_count < 0 or unknown_count > total_count:
         raise ValueError("lidar bin counts are invalid")
     density = float(known_obstacle_bin_fraction)
+    # UNKNOWN influences the policy input, not the reward target.  Retain this
+    # flag only as an audit diagnostic; LearningSpeedReward never branches on
+    # it.  This preserves online/offline provenance without hand-coding a
+    # reference speed from perception coverage.
     unknown_majority = bool(
         nearest_obstacle_distance_m is None
         and math.isfinite(density)
@@ -344,38 +339,38 @@ class LearningSpeedReward:
         config = self.config
         density = value.known_obstacle_bin_fraction
         nearest = value.nearest_obstacle_distance_m
-        if value.unknown_majority:
-            phi_2 = 0.5
-            phi_1 = config.unknown_anchor_mps
-            nearest_risk = 0.5
-            density_risk = 0.5
-            label = "Unknown"
+        # The paper states that phi features encode nearest-obstacle distance,
+        # obstacle volume, and obstacle count, but does not publish an exact
+        # no-known-obstacle formula.  ASTRA IMPLEMENTATION CHOICE: N=None and
+        # D=0 mean zero known-obstacle risk.  unknown_majority is deliberately
+        # not read here; UNKNOWN remains available only to the SAC observation.
+        nearest_risk = (
+            0.0
+            if nearest is None
+            else _clip01(
+                (config.nearest_safe_m - nearest)
+                / (config.nearest_safe_m - config.nearest_dangerous_m)
+            )
+        )
+        density_risk = _clip01(
+            (density - config.density_safe)
+            / (config.density_dangerous - config.density_safe)
+        )
+        phi_2 = 1.0 - (
+            (1.0 - nearest_risk) ** config.nearest_weight
+            * (1.0 - density_risk) ** config.density_weight
+        )
+        phi_1 = config.low_anchor_mps + phi_2 * (
+            config.high_anchor_mps - config.low_anchor_mps
+        )
+        if nearest is None and density <= 1.0e-12:
+            label = "NoKnownObstacle"
+        elif (nearest is None or nearest >= config.nearest_safe_m) and density <= config.density_safe:
+            label = "Low"
+        elif (nearest is not None and nearest <= config.nearest_dangerous_m) or density >= config.density_dangerous:
+            label = "High"
         else:
-            nearest_risk = (
-                0.0
-                if nearest is None
-                else _clip01(
-                    (config.nearest_safe_m - nearest)
-                    / (config.nearest_safe_m - config.nearest_dangerous_m)
-                )
-            )
-            density_risk = _clip01(
-                (density - config.density_safe)
-                / (config.density_dangerous - config.density_safe)
-            )
-            phi_2 = 1.0 - (
-                (1.0 - nearest_risk) ** config.nearest_weight
-                * (1.0 - density_risk) ** config.density_weight
-            )
-            phi_1 = config.low_anchor_mps + phi_2 * (
-                config.high_anchor_mps - config.low_anchor_mps
-            )
-            if (nearest is None or nearest >= config.nearest_safe_m) and density <= config.density_safe:
-                label = "Low"
-            elif (nearest is not None and nearest <= config.nearest_dangerous_m) or density >= config.density_dangerous:
-                label = "High"
-            else:
-                label = "Medium"
+            label = "Medium"
         weights = self._branch_weights(phi_2)
         context = ComplexityContext(
             label=label,

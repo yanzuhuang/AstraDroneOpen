@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import math
+import struct
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -19,6 +21,7 @@ from learning_speed_rl.observation.v2 import (
     PoseBuffer,
     preserve_source_stamp,
     sensor_to_body,
+    decode_xyz_points,
 )
 
 
@@ -70,6 +73,134 @@ def reference_builder(minimum_history_frames=1):
     )
 
 
+def legacy_unknown_estimate(estimator, directions, frames, current_pose):
+    """Frozen pre-optimization algorithm used only for numeric regression."""
+
+    config = estimator.config
+    directions = np.asarray(directions, dtype=np.float64)
+    radial = np.arange(
+        config.sensor_min_range_m + config.radial_sample_step_m,
+        config.distance_clip_m,
+        config.radial_sample_step_m,
+        dtype=np.float64,
+    )
+    radial = np.unique(np.append(radial, config.distance_clip_m))
+    points_current = directions[:, None, :] * radial[None, :, None]
+    points_world = current_pose.body_to_world(points_current.reshape(-1, 3))
+    observed = np.zeros((directions.shape[0], radial.size), dtype=bool)
+    rotation = config._rotation_body_sensor
+    translation = config.sensor_translation_body_m
+    full_azimuth = bool(
+        config.azimuth_max_deg - config.azimuth_min_deg >= 360.0 - 1.0e-6
+    )
+    az_bins = int(
+        np.ceil(
+            (config.azimuth_max_deg - config.azimuth_min_deg)
+            / config.occlusion_angular_resolution_deg
+        )
+    )
+    el_bins = int(
+        np.ceil(
+            (config.elevation_max_deg - config.elevation_min_deg)
+            / config.occlusion_angular_resolution_deg
+        )
+    )
+    for frame in frames:
+        candidate = (
+            frame.pose_world_body.world_to_body(points_world) - translation
+        ) @ rotation
+        ranges = np.linalg.norm(candidate, axis=1)
+        azimuth = np.degrees(np.arctan2(candidate[:, 1], candidate[:, 0]))
+        elevation = np.degrees(
+            np.arctan2(candidate[:, 2], np.hypot(candidate[:, 0], candidate[:, 1]))
+        )
+        visible = (
+            np.isfinite(ranges)
+            & (ranges >= config.sensor_min_range_m)
+            & (ranges <= config.distance_clip_m)
+            & (elevation >= config.elevation_min_deg)
+            & (elevation <= config.elevation_max_deg)
+        )
+        if not full_azimuth:
+            visible &= (
+                (azimuth >= config.azimuth_min_deg)
+                & (azimuth <= config.azimuth_max_deg)
+            )
+        source = (frame.points_body.astype(np.float64) - translation) @ rotation
+        source_ranges = np.linalg.norm(source, axis=1)
+        source_azimuth = np.degrees(np.arctan2(source[:, 1], source[:, 0]))
+        source_elevation = np.degrees(
+            np.arctan2(source[:, 2], np.hypot(source[:, 0], source[:, 1]))
+        )
+        source_valid = (
+            np.all(np.isfinite(source), axis=1)
+            & (source_ranges > config.sensor_min_range_m)
+            & (source_ranges <= config.distance_clip_m)
+            & (source_elevation >= config.elevation_min_deg)
+            & (source_elevation <= config.elevation_max_deg)
+        )
+        nearest = np.full(az_bins * el_bins, np.inf, dtype=np.float64)
+        if np.any(source_valid):
+            source_az = source_azimuth[source_valid]
+            if full_azimuth:
+                source_az = (
+                    (source_az - config.azimuth_min_deg) % 360.0
+                ) + config.azimuth_min_deg
+            source_az_index = np.clip(
+                np.floor(
+                    (source_az - config.azimuth_min_deg)
+                    / config.occlusion_angular_resolution_deg
+                ).astype(np.int64),
+                0,
+                az_bins - 1,
+            )
+            source_el_index = np.clip(
+                np.floor(
+                    (source_elevation[source_valid] - config.elevation_min_deg)
+                    / config.occlusion_angular_resolution_deg
+                ).astype(np.int64),
+                0,
+                el_bins - 1,
+            )
+            np.minimum.at(
+                nearest,
+                source_el_index * az_bins + source_az_index,
+                source_ranges[source_valid],
+            )
+        candidate_az = azimuth.copy()
+        if full_azimuth:
+            candidate_az = (
+                (candidate_az - config.azimuth_min_deg) % 360.0
+            ) + config.azimuth_min_deg
+        az_index = np.clip(
+            np.floor(
+                (candidate_az - config.azimuth_min_deg)
+                / config.occlusion_angular_resolution_deg
+            ).astype(np.int64),
+            0,
+            az_bins - 1,
+        )
+        el_index = np.clip(
+            np.floor(
+                (elevation - config.elevation_min_deg)
+                / config.occlusion_angular_resolution_deg
+            ).astype(np.int64),
+            0,
+            el_bins - 1,
+        )
+        limit = nearest[el_index * az_bins + az_index] + config.occlusion_margin_m
+        visible &= (ranges <= limit) | ~np.isfinite(limit)
+        observed |= visible.reshape(observed.shape)
+    contiguous = np.logical_and.accumulate(observed, axis=1)
+    counts = np.sum(contiguous, axis=1)
+    result = np.full(
+        directions.shape[0], config.sensor_min_range_m, dtype=np.float64
+    )
+    covered = counts > 0
+    result[covered] = radial[np.minimum(counts[covered] - 1, radial.size - 1)]
+    return np.minimum(result, config.distance_clip_m).astype(np.float32)
+
+
 class AngularPartitionTest(unittest.TestCase):
     def test_reference_shape_and_six_body_directions(self):
         partition = reference_partition()
@@ -116,6 +247,41 @@ class PoseAndHistoryTest(unittest.TestCase):
         forward_world = interpolated.body_to_world(np.asarray([[1.0, 0.0, 0.0]]))[0]
         np.testing.assert_allclose(
             forward_world, [0.5 + math.sqrt(0.5), math.sqrt(0.5), 0.0], atol=1.0e-6
+        )
+
+
+class PointCloudDecodeTest(unittest.TestCase):
+    @staticmethod
+    def _field(name, offset, datatype=7):
+        return SimpleNamespace(
+            name=name, offset=offset, datatype=datatype, count=1
+        )
+
+    def test_vectorized_decode_preserves_order_limit_and_finite_filter(self):
+        values = (
+            (1.0, 2.0, 3.0),
+            (float("nan"), 0.0, 0.0),
+            (4.0, 5.0, 6.0),
+            (7.0, 8.0, 9.0),
+        )
+        payload = b"".join(struct.pack("<fff", *value) for value in values)
+        message = SimpleNamespace(
+            fields=[
+                self._field("x", 0),
+                self._field("y", 4),
+                self._field("z", 8),
+            ],
+            is_bigendian=False,
+            point_step=12,
+            row_step=24,
+            width=2,
+            height=2,
+            data=payload,
+        )
+        decoded = decode_xyz_points(message, 3)
+        np.testing.assert_array_equal(
+            decoded,
+            np.asarray([[1, 2, 3], [4, 5, 6]], dtype=np.float32),
         )
 
     def test_pose_lookup_does_not_substitute_latest_pose(self):
@@ -192,6 +358,35 @@ class HistoryAlignmentTest(unittest.TestCase):
 
 
 class SurrogateSemanticTest(unittest.TestCase):
+    def test_optimized_unknown_estimator_is_bitwise_legacy_equivalent(self):
+        builder = reference_builder(minimum_history_frames=3)
+        partition = reference_partition()
+        rng = np.random.default_rng(20260827)
+        frames = []
+        for index in range(3):
+            points = rng.normal(size=(800, 3)).astype(np.float32)
+            points *= rng.uniform(0.3, 8.0, size=(800, 1)).astype(np.float32)
+            frames.append(
+                CloudFrame(
+                    1.0 + 0.1 * index,
+                    "mid360_link",
+                    points,
+                    pose(
+                        1.0 + 0.1 * index,
+                        (0.05 * index, -0.03 * index, 0.01 * index),
+                        2.0 * index,
+                    ),
+                )
+            )
+        directions = partition.direction_centers()
+        expected = legacy_unknown_estimate(
+            builder.unknown_estimator, directions, frames, frames[-1].pose_world_body
+        )
+        actual = builder.unknown_estimator.estimate(
+            directions, frames, frames[-1].pose_world_body
+        )
+        np.testing.assert_array_equal(actual, expected)
+
     def test_obstacle_free_unknown_are_distinct_and_dimension_is_fixed(self):
         builder = reference_builder()
         frame = CloudFrame(

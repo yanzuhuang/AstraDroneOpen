@@ -8,12 +8,74 @@ import yaml
 from learning_speed_rl.training.formal_training_contract import (
     FormalTrainingSchedule,
     checkpoint_filename,
+    infrastructure_terminal_reason,
     learning_started,
     mode_uses_training_replay,
+    validate_training_episode_target,
 )
 
 
 class FormalTrainingContractTest(unittest.TestCase):
+    def test_only_explicit_infrastructure_prefix_requests_fail_closed(self):
+        self.assertEqual(
+            infrastructure_terminal_reason(
+                "mission_failure",
+                "infrastructure:observation_c_producer_stall",
+            ),
+            "infrastructure:observation_c_producer_stall",
+        )
+        for ordinary in (
+            "collision",
+            "planner_failure:NO_FEASIBLE_TRAJECTORY",
+            "max_episode_time",
+            "invalid_observation:source_stale",
+        ):
+            with self.subTest(reason=ordinary):
+                self.assertEqual(
+                    infrastructure_terminal_reason(ordinary), ""
+                )
+
+    def test_timing_qualification_is_explicit_and_capped_at_ten(self):
+        self.assertEqual(
+            validate_training_episode_target(
+                10, timing_qualification=True
+            ),
+            "rl_timing_qualification",
+        )
+        with self.assertRaisesRegex(ValueError, "1..10"):
+            validate_training_episode_target(11, timing_qualification=True)
+        with self.assertRaisesRegex(ValueError, "exclusive"):
+            validate_training_episode_target(
+                10, smoke_test=True, timing_qualification=True
+            )
+        self.assertEqual(
+            validate_training_episode_target(31, smoke_test=True),
+            "forest_31episode_smoke",
+        )
+        self.assertEqual(
+            validate_training_episode_target(10000), "formal_training"
+        )
+
+    def test_early_learning_observation_is_explicit_and_exactly_100(self):
+        self.assertEqual(
+            validate_training_episode_target(
+                100, early_learning_observation=True
+            ),
+            "early_learning_100episode_observation",
+        )
+        for invalid in (99, 101, 10000):
+            with self.subTest(total=invalid):
+                with self.assertRaisesRegex(ValueError, "exactly 100"):
+                    validate_training_episode_target(
+                        invalid, early_learning_observation=True
+                    )
+        with self.assertRaisesRegex(ValueError, "exclusive"):
+            validate_training_episode_target(
+                100,
+                timing_qualification=True,
+                early_learning_observation=True,
+            )
+
     def setUp(self):
         self.checkpoints = tuple(range(500, 10001, 500))
         self.schedule = FormalTrainingSchedule(

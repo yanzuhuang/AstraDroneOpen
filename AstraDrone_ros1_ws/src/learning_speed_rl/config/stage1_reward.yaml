@@ -5,7 +5,7 @@
 # not authorize formal training.
 reward:
   mode: stage_1
-  version: astradrone_paper_guided_reward_v3.0
+  version: astradrone_paper_guided_reward_v3.1
 
   complexity:
     nearest_safe_m: 6.0
@@ -22,7 +22,6 @@ reward:
     low: 1.75
     medium: 1.25
     high: 0.75
-    unknown: 1.25
 
   lambdas:
     speed_1: 1.00

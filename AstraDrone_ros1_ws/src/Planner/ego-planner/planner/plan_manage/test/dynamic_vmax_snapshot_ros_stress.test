@@ -1,0 +1,6 @@
+<launch>
+  <test test-name="dynamic_vmax_snapshot_ros_stress"
+        pkg="ego_planner"
+        type="dynamic_vmax_snapshot_ros_stress_test"
+        time-limit="30.0" />
+</launch>

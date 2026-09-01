@@ -92,6 +92,53 @@ class EgoBsplineTest(unittest.TestCase):
 
 
 class TrajectorySamplingTest(unittest.TestCase):
+    def test_distance_horizon_matches_full_polyline_and_skips_unused_tail(self):
+        points = np.asarray(
+            [[float(index), 0.0, 0.0] for index in range(64)],
+            dtype=np.float64,
+        )
+        trajectory = make_trajectory(points)
+        sampler = TrajectorySampler(
+            TrajectorySamplingConfig(
+                sample_count=20,
+                sample_spacing=0.25,
+                max_distance=5.0,
+                sampling_mode="distance",
+                arc_length_resolution_m=0.02,
+            )
+        )
+        elapsed = trajectory.elapsed_at(trajectory.start_time_sec)
+        full_times, full_points, full_clipped = sampler._adaptive_polyline(
+            trajectory, elapsed
+        )
+        full_lengths = np.linalg.norm(np.diff(full_points, axis=0), axis=1)
+        full_cumulative = np.concatenate(([0.0], np.cumsum(full_lengths)))
+        query = 0.25 * np.arange(1, 21, dtype=np.float64)
+        expected = np.empty((20, 3), dtype=np.float64)
+        for index, distance in enumerate(query):
+            upper = int(np.searchsorted(full_cumulative, distance, side="left"))
+            lower = upper - 1
+            span = full_cumulative[upper] - full_cumulative[lower]
+            ratio = (distance - full_cumulative[lower]) / span
+            expected[index] = (
+                (1.0 - ratio) * full_points[lower]
+                + ratio * full_points[upper]
+            )
+
+        sampled, offsets, metadata = sampler.sample(
+            trajectory, trajectory.start_time_sec
+        )
+
+        self.assertFalse(full_clipped)
+        self.assertTrue(metadata["arc_length_horizon_clipped"])
+        self.assertTrue(metadata["remaining_arc_length_is_lower_bound"])
+        np.testing.assert_array_equal(offsets, query)
+        np.testing.assert_array_equal(sampled, expected)
+        self.assertLess(
+            metadata["arc_length_polyline_points"],
+            len(full_times) // 4,
+        )
+
     def test_distance_sampling_straight_points_are_forward(self):
         trajectory = make_trajectory()
         actual = trajectory.evaluate_elapsed(0.0)

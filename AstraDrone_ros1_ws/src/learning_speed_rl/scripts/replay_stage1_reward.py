@@ -416,7 +416,7 @@ def _cohort_summary(records: List[Dict[str, object]]) -> Dict[str, object]:
         values = [float(record[field]) for record in records]
         result["nonfinite_count"] += sum(not math.isfinite(value) for value in values)
         result["terms"][field] = _quantiles(values)
-    for label in ("Low", "Medium", "High", "Unknown"):
+    for label in ("Low", "Medium", "High", "NoKnownObstacle"):
         selected = [record for record in records if record["complexity"] == label]
         deltas = [float(record["preference_delta"]) for record in selected]
         result["complexity"][label] = {
@@ -532,7 +532,7 @@ def _validation_checks(summary: Dict[str, object]) -> Dict[str, bool]:
     low = formal["complexity"]["Low"]
     medium = formal["complexity"]["Medium"]
     high = formal["complexity"]["High"]
-    unknown = formal["complexity"]["Unknown"]
+    no_known_obstacle = formal["complexity"]["NoKnownObstacle"]
     terminal_checks = [
         event
         for event in summary["terminal_event_scale_checks"]
@@ -553,11 +553,9 @@ def _validation_checks(summary: Dict[str, object]) -> Dict[str, bool]:
         "medium_phi_between_anchors": (
             0.75 < medium["phi_1"]["p50"] < 1.75
         ),
-        "unknown_is_not_low": (
-            unknown["phi_2"]["min"] == 0.5
-            and unknown["phi_2"]["max"] == 0.5
-            and unknown["preference_delta_1p75_minus_0p30"]["mean"]
-            < low["preference_delta_1p75_minus_0p30"]["mean"]
+        "no_known_obstacle_has_zero_known_obstacle_risk": (
+            no_known_obstacle["phi_2"]["min"] == 0.0
+            and no_known_obstacle["phi_2"]["max"] == 0.0
         ),
         "dangerous_events_are_negative": (
             bool(terminal_checks)
@@ -628,7 +626,7 @@ def main() -> int:
         )
     config = reward.config
     summary = {
-        "schema_version": "astradrone_paper_guided_reward_replay_v3.0",
+        "schema_version": "astradrone_paper_guided_reward_replay_v3.1",
         "paper_reference": {
             "title": "Learning Speed Adaptation for Flight in Clutter",
             "arxiv": "2403.04586v2",
@@ -657,7 +655,6 @@ def main() -> int:
             "anchor_low_mps": config.low_anchor_mps,
             "anchor_medium_mps": config.medium_anchor_mps,
             "anchor_high_mps": config.high_anchor_mps,
-            "anchor_unknown_mps": config.unknown_anchor_mps,
             "nearest_weight": config.nearest_weight,
             "density_weight": config.density_weight,
             "lambda_speed_1": config.lambda_speed_1,

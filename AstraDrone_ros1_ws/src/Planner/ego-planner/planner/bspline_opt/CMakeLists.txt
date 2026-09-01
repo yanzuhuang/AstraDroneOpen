@@ -43,3 +43,35 @@ add_library( bspline_opt
 target_link_libraries( bspline_opt
     ${catkin_LIBRARIES} 
     )  
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(short_segment_guidance_test
+      test/short_segment_guidance_test.cpp)
+  if(TARGET short_segment_guidance_test)
+    target_link_libraries(short_segment_guidance_test ${catkin_LIBRARIES})
+  endif()
+
+  catkin_add_gtest(occupied_segment_guard_test
+      test/occupied_segment_guard_test.cpp)
+  if(TARGET occupied_segment_guard_test)
+    target_link_libraries(occupied_segment_guard_test ${catkin_LIBRARIES})
+  endif()
+
+  catkin_add_gtest(trajectory_collision_consistency_test
+      test/trajectory_collision_consistency_test.cpp)
+  if(TARGET trajectory_collision_consistency_test)
+    target_link_libraries(trajectory_collision_consistency_test
+        bspline_opt ${catkin_LIBRARIES})
+  endif()
+
+  catkin_add_gtest(frozen_replan72_test
+      test/frozen_replan72_test.cpp)
+  if(TARGET frozen_replan72_test)
+    target_compile_definitions(frozen_replan72_test PRIVATE
+        FROZEN_REPLAN72_DATA="${CMAKE_CURRENT_SOURCE_DIR}/test/data/frozen_replan72_occupancy.csv"
+        FROZEN_REPLAN55_DATA="${CMAKE_CURRENT_SOURCE_DIR}/test/data/frozen_replan55_occupancy.csv"
+        FROZEN_REPLAN69_DATA="${CMAKE_CURRENT_SOURCE_DIR}/test/data/frozen_replan69_occupancy.csv")
+    target_link_libraries(frozen_replan72_test
+        bspline_opt ${catkin_LIBRARIES})
+  endif()
+endif()

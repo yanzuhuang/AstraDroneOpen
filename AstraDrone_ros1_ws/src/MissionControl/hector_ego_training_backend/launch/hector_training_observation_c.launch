@@ -7,7 +7,8 @@
   <arg name="paused" default="false"/>
   <arg name="fixed_v_max" default="0.30"/>
   <arg name="v_max_min" default="0.30"/>
-  <arg name="static_max_vel" default="$(arg fixed_v_max)"/>
+  <arg name="static_max_vel" default="4.00"/>
+  <arg name="static_max_acc" default="3.00"/>
   <arg name="speed_policy_mode" default="fixed"/>
   <arg name="mock_request_driven" default="false"/>
   <arg name="coordinator_managed_goals" default="false"/>
@@ -22,6 +23,15 @@
   <arg name="truth_cloud_config"
        default="$(find hector_ego_training_backend)/config/truth_cloud_registration.yaml"/>
   <arg name="spawn_wall_delay" default="0.0"/>
+  <arg name="map_size_x" default="20.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="4.0"/>
+  <!-- Qualification injection seam only.  The default keeps the production
+       Observation C trajectory source unchanged. -->
+  <arg name="observation_trajectory_topic" default="planning/bspline"/>
+  <!-- Diagnostic/reference metadata only.  The actual training sensor rate is
+       owned by quadrotor_mid360_training.gazebo.xacro. -->
+  <arg name="cloud_rate_reference_hz" default="15.0"/>
 
   <include file="$(find hector_ego_training_backend)/launch/hector_ego_training_backend.launch">
     <arg name="enable_control" value="$(arg enable_control)"/>
@@ -35,6 +45,7 @@
     <arg name="dynamic_speed_limit_enabled" value="true"/>
     <arg name="dynamic_speed_limit_minimum" value="$(arg v_max_min)"/>
     <arg name="max_vel" value="$(arg static_max_vel)"/>
+    <arg name="max_acc" value="$(arg static_max_acc)"/>
     <arg name="require_training_observation_c" value="true"/>
     <arg name="qualification_required" value="true"/>
     <arg name="coordinator_managed_goals"
@@ -45,6 +56,9 @@
     <arg name="hover_yaw" value="$(arg hover_yaw)"/>
     <arg name="ego_cloud_topic" value="$(arg ego_cloud_topic)"/>
     <arg name="spawn_wall_delay" value="$(arg spawn_wall_delay)"/>
+    <arg name="map_size_x" value="$(arg map_size_x)"/>
+    <arg name="map_size_y" value="$(arg map_size_y)"/>
+    <arg name="map_size_z" value="$(arg map_size_z)"/>
   </include>
 
   <group ns="uav1" if="$(arg start_truth_cloud_registration)">
@@ -73,7 +87,7 @@
     <arg name="namespace" value="uav1"/>
     <arg name="cloud_topic" value="livox/lidar"/>
     <arg name="odom_topic" value="Odometry"/>
-    <arg name="trajectory_topic" value="planning/bspline"/>
+    <arg name="trajectory_topic" value="$(arg observation_trajectory_topic)"/>
     <arg name="ego_applied_v_max_topic" value="learning_speed/applied_v_max"/>
     <arg name="world_frame" value="world"/>
     <arg name="body_frame" value="base_link"/>
@@ -88,5 +102,7 @@
     <arg name="sensor_translation_x" value="0.0"/>
     <arg name="sensor_translation_y" value="0.0"/>
     <arg name="sensor_translation_z" value="0.13"/>
+    <arg name="cloud_rate_reference_hz"
+         value="$(arg cloud_rate_reference_hz)"/>
   </include>
 </launch>

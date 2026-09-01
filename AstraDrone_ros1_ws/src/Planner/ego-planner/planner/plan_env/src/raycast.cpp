@@ -1,6 +1,7 @@
 #include <Eigen/Eigen>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <plan_env/raycast.h>
 
 int signum(int x) {
@@ -287,6 +288,16 @@ bool RayCaster::step(Eigen::Vector3d& ray_pt) {
   if (x_ == endX_ && y_ == endY_ && z_ == endZ_) {
     return false;
   }
+
+  // A completed axis must never be selected again while the other axes
+  // catch up. Without this guard, floating-point ties near t=1 can step a
+  // completed axis past its endpoint and prevent three-axis termination.
+  if (x_ == endX_)
+    tMaxX_ = std::numeric_limits<double>::infinity();
+  if (y_ == endY_)
+    tMaxY_ = std::numeric_limits<double>::infinity();
+  if (z_ == endZ_)
+    tMaxZ_ = std::numeric_limits<double>::infinity();
 
   // if (dist_ > maxDist_)
   // {

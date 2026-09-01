@@ -40,3 +40,12 @@ add_library( path_searching
 target_link_libraries( path_searching
     ${catkin_LIBRARIES} 
     )  
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(dyn_a_star_swept_edge_test
+      test/dyn_a_star_swept_edge_test.cpp)
+  if(TARGET dyn_a_star_swept_edge_test)
+    target_link_libraries(dyn_a_star_swept_edge_test
+        path_searching ${catkin_LIBRARIES})
+  endif()
+endif()

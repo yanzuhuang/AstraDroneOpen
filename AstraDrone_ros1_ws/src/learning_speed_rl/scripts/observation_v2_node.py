@@ -33,6 +33,7 @@ from learning_speed_rl.observation.v2 import (
     LidarSurrogateConfig,
     Pose3D,
     PoseBuffer,
+    decode_xyz_points,
     preserve_source_stamp,
     sensor_to_body,
 )
@@ -305,15 +306,7 @@ class ObservationV2Node:
             self._process_cloud(cloud, allow_pending=False)
 
     def _decode_points(self, message):
-        points = []
-        for index, point in enumerate(point_cloud2.read_points(message, field_names=("x", "y", "z"), skip_nans=False)):
-            if index >= self._maximum_input_points:
-                break
-            if all(math.isfinite(value) for value in point):
-                points.append(point)
-        if not points:
-            return np.empty((0, 3), dtype=np.float32)
-        return np.asarray(points, dtype=np.float32)
+        return decode_xyz_points(message, self._maximum_input_points)
 
     def _cloud_callback(self, message):
         self._process_cloud(message, allow_pending=True)
@@ -586,7 +579,7 @@ class ObservationV2Node:
         self._valid_pub.publish(Bool(data=True))
 
     def _publish_float_array(self, publisher, values, label):
-        message = Float32MultiArray(data=np.asarray(values, dtype=np.float32).tolist())
+        message = Float32MultiArray(data=values)
         _array_layout(message, label, len(message.data))
         publisher.publish(message)
 
@@ -595,12 +588,38 @@ class ObservationV2Node:
         input_points, finite_points, in_range_points, history_frames,
         build_duration_ms,
     ):
-        self._publish_float_array(self._surrogate_pub, observation.lidar_surrogate, observation.version)
-        self._publish_float_array(self._valid_mask_pub, observation.lidar_valid_mask, "lidar_valid_mask")
-        self._publish_float_array(self._unknown_mask_pub, observation.unknown_mask, "unknown_mask")
-        semantic = UInt8MultiArray(data=observation.semantic.tolist())
-        _array_layout(semantic, "semantic:0_unknown,1_free,2_obstacle", observation.number_of_bins)
-        self._semantic_pub.publish(semantic)
+        surrogate_values = observation.lidar_surrogate.astype(
+            np.float32, copy=False
+        ).tolist()
+        valid_mask_values = observation.lidar_valid_mask.astype(
+            np.float32, copy=False
+        ).tolist()
+        unknown_mask_values = observation.unknown_mask.astype(
+            np.float32, copy=False
+        ).tolist()
+        semantic_values = observation.semantic.astype(
+            np.uint8, copy=False
+        ).tolist()
+        if self._surrogate_pub.get_num_connections() > 0:
+            self._publish_float_array(
+                self._surrogate_pub, surrogate_values, observation.version
+            )
+        if self._valid_mask_pub.get_num_connections() > 0:
+            self._publish_float_array(
+                self._valid_mask_pub, valid_mask_values, "lidar_valid_mask"
+            )
+        if self._unknown_mask_pub.get_num_connections() > 0:
+            self._publish_float_array(
+                self._unknown_mask_pub, unknown_mask_values, "unknown_mask"
+            )
+        if self._semantic_pub.get_num_connections() > 0:
+            semantic = UInt8MultiArray(data=semantic_values)
+            _array_layout(
+                semantic,
+                "semantic:0_unknown,1_free,2_obstacle",
+                observation.number_of_bins,
+            )
+            self._semantic_pub.publish(semantic)
         stamped = LidarSurrogateStamped()
         # Preserve the original ROS sec/nsec pair. A float to_sec()/from_sec()
         # round trip was observed to subtract exactly 1 ns in worksite, turning
@@ -619,10 +638,10 @@ class ObservationV2Node:
         stamped.cloud_frame_mode = self._cloud_frame_mode
         stamped.pose_source_stamp = rospy.Time.from_sec(pose_source_stamp)
         stamped.pose_used_future = pose_source_stamp > observation.stamp_sec + 1.0e-9
-        stamped.lidar_surrogate = observation.lidar_surrogate.astype(np.float32).tolist()
-        stamped.lidar_valid_mask = observation.lidar_valid_mask.astype(np.float32).tolist()
-        stamped.unknown_mask = observation.unknown_mask.astype(np.float32).tolist()
-        stamped.semantic = observation.semantic.astype(np.uint8).tolist()
+        stamped.lidar_surrogate = surrogate_values
+        stamped.lidar_valid_mask = valid_mask_values
+        stamped.unknown_mask = unknown_mask_values
+        stamped.semantic = semantic_values
         stamped.input_points = int(input_points)
         stamped.finite_points = int(finite_points)
         stamped.in_range_points = int(in_range_points)
@@ -637,8 +656,14 @@ class ObservationV2Node:
             stamp=preserve_source_stamp(source_stamp),
             frame_id=observation.frame_id,
         )
-        self._aligned_pub.publish(point_cloud2.create_cloud_xyz32(header, aligned.tolist()))
-        if self._visualization_enabled:
+        if self._aligned_pub.get_num_connections() > 0:
+            self._aligned_pub.publish(
+                point_cloud2.create_cloud_xyz32(header, aligned.tolist())
+            )
+        if (
+            self._visualization_enabled
+            and self._visualization_pub.get_num_connections() > 0
+        ):
             self._visualization_pub.publish(self._make_markers(observation))
 
     def _make_markers(self, observation):

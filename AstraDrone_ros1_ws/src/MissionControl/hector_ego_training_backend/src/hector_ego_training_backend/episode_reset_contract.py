@@ -5,6 +5,10 @@ import math
 import random
 from typing import Callable, Optional, Tuple
 
+from learning_speed_rl.training.formal_training_contract import (
+    infrastructure_terminal_reason,
+)
+
 
 @dataclass(frozen=True)
 class StaticObstacleXY:
@@ -257,6 +261,12 @@ def sac_closure_matches(binding, payload):
     if not isinstance(payload, dict):
         return False
     try:
+        active_interval_count = payload.get(
+            "active_action_interval_count"
+        )
+        if active_interval_count is None:
+            # Backward reader for frozen Phase 1 closure artifacts.
+            active_interval_count = payload.get("open_transition_count", -1)
         return bool(
             str(payload.get("episode_id", "")) == binding.episode_key
             and int(payload.get("reset_generation", -1))
@@ -267,9 +277,44 @@ def sac_closure_matches(binding, payload):
             and int(payload.get("last_request_id", 0))
             == int(payload.get("last_step_index", -1)) + 1
             and str(payload.get("status", "")) == "completed"
+            and str(payload.get("scheduler_state", "")) == "CLOSED"
+            and int(active_interval_count) == 0
+            and int(payload.get("actor_action_outstanding_count", -1)) == 0
+            and int(payload.get("terminal_row_count", 0)) == 1
+            and bool(payload.get("replay_step_sequence_contiguous", False))
+            and int(payload.get("ordered_replay_writer_submitted_count", -1))
+            == int(payload.get("transition_count", 0))
+            and int(payload.get("ordered_replay_writer_persisted_count", -1))
+            == int(payload.get("transition_count", 0))
+            and int(payload.get("ordered_replay_writer_pending_count", -1)) == 0
         )
     except (TypeError, ValueError):
         return False
+
+
+def sac_closure_reset_allowed(binding, payload, coordinator_terminal_reason):
+    """Allow reset only for a valid non-infrastructure Episode closure."""
+
+    if not sac_closure_matches(binding, payload):
+        raise ValueError("SAC closure is not valid for the active Episode")
+    coordinator_failure = infrastructure_terminal_reason(
+        coordinator_terminal_reason
+    )
+    closure_failure = infrastructure_terminal_reason(
+        payload.get("fail_closed_reason", "")
+    )
+    fail_closed = bool(payload.get("fail_closed_after_closure", False))
+    if coordinator_failure:
+        if not fail_closed or closure_failure != coordinator_failure:
+            raise ValueError(
+                "infrastructure closure is missing its exact fail-closed reason"
+            )
+        return False
+    if fail_closed or closure_failure:
+        raise ValueError(
+            "ordinary terminal cannot request infrastructure fail-closed"
+        )
+    return True
 
 
 def episode_count_stop_due(completed_episodes, episode_count):
@@ -282,6 +327,12 @@ def episode_count_stop_due(completed_episodes, episode_count):
     if configured <= 0 or completed > configured:
         raise ValueError("fixed Episode count is invalid or exceeded")
     return completed == configured
+
+
+def route_acceptance_required(runner_mode):
+    """Route-only checks do not apply to non-navigating map preflight."""
+
+    return str(runner_mode).strip().lower() != "map_switch_preflight"
 
 
 def trajectory_matches(
@@ -321,6 +372,57 @@ def observation_matches(
         and float(source_stamp_sec) > float(reset_barrier_sec)
         and int(trajectory_id) >= int(accepted_trajectory_id)
     )
+
+
+def classify_observation_staleness(
+    *,
+    observation_present,
+    observation_receipt_age_sec,
+    raw_lidar_present,
+    raw_lidar_receipt_age_sec,
+    observation_v2_present,
+    observation_v2_valid,
+    observation_v2_receipt_age_sec,
+    observation_freshness_sec,
+    raw_lidar_freshness_sec,
+):
+    """Classify a stale Observation C without hiding producer backlog.
+
+    A fresh Observation C returns ``None``.  When raw LiDAR and Observation v2
+    are both fresh and v2 is valid, a stale C is an infrastructure producer
+    stall, not an environment observation failure.  Every other stale case is
+    conservatively classified as source stale.
+    """
+
+    try:
+        c_limit = float(observation_freshness_sec)
+        lidar_limit = float(raw_lidar_freshness_sec)
+        if not all(
+            math.isfinite(value) and value > 0.0
+            for value in (c_limit, lidar_limit)
+        ):
+            raise ValueError("freshness limits must be positive and finite")
+
+        def age(value):
+            result = float(value)
+            return result if math.isfinite(result) and result >= 0.0 else math.inf
+
+        c_age = age(observation_receipt_age_sec)
+        if bool(observation_present) and c_age <= c_limit:
+            return None
+        raw_fresh = bool(raw_lidar_present) and age(
+            raw_lidar_receipt_age_sec
+        ) <= lidar_limit
+        v2_fresh = (
+            bool(observation_v2_present)
+            and bool(observation_v2_valid)
+            and age(observation_v2_receipt_age_sec) <= c_limit
+        )
+        if raw_fresh and v2_fresh:
+            return "infrastructure:observation_c_producer_stall"
+        return "invalid_observation:source_stale"
+    except (TypeError, ValueError):
+        return "invalid_observation:source_stale"
 
 
 def fixed_terminal_hold_matches(

@@ -1,16 +1,146 @@
 #include "bspline_opt/bspline_optimizer.h"
 #include "bspline_opt/gradient_descent_optimizer.h"
+#include "bspline_opt/short_segment_guidance.h"
+#include "bspline_opt/trajectory_collision_checker.h"
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 // using namespace std;
 
 namespace ego_planner
 {
 
-  bool BsplineOptimizer::setMaxVelocity(double max_velocity)
+  namespace
+  {
+    std::string diagnosticVector(const Eigen::Vector3d &value)
+    {
+      std::ostringstream stream;
+      stream << std::fixed << std::setprecision(6)
+             << value.x() << "," << value.y() << "," << value.z();
+      return stream.str();
+    }
+  }
+
+  void BsplineOptimizer::diagnosticLogAStar(
+      const char *context, std::uint64_t call_id, std::size_t segment_id,
+      int in_id, int out_id, const Eigen::Vector3d &occupied_entry,
+      const Eigen::Vector3d &occupied_exit, const Eigen::Vector3d &start,
+      const Eigen::Vector3d &end,
+      const std::vector<Eigen::Vector3d> &path) const
+  {
+    double max_abs_y = 0.0;
+    double max_abs_z_offset = 0.0;
+    const double reference_z = 0.5 * (start.z() + end.z());
+    std::ostringstream points;
+    points << std::fixed << std::setprecision(6);
+    for (std::size_t i = 0; i < path.size(); ++i)
+    {
+      max_abs_y = std::max(max_abs_y, std::abs(path[i].y()));
+      max_abs_z_offset =
+          std::max(max_abs_z_offset, std::abs(path[i].z() - reference_z));
+      if (i > 0)
+        points << ";";
+      points << path[i].x() << "," << path[i].y() << "," << path[i].z();
+    }
+    ROS_WARN_STREAM(
+        "[EGO_READONLY_DIAG] type=astar context=" << context
+        << " replan=" << diagnostic_replan_id_ << " call=" << call_id
+        << " segment=" << segment_id << " in_id=" << in_id
+        << " out_id=" << out_id
+        << " occupied_entry=" << diagnosticVector(occupied_entry)
+        << " occupied_exit=" << diagnosticVector(occupied_exit)
+        << " start=" << diagnosticVector(start)
+        << " end=" << diagnosticVector(end)
+        << " path_count=" << path.size()
+        << " max_abs_y=" << std::fixed << std::setprecision(6) << max_abs_y
+        << " max_abs_z_offset=" << max_abs_z_offset
+        << " path=" << points.str());
+  }
+
+  void BsplineOptimizer::diagnosticLogControlPoints(
+      const char *phase, std::uint64_t optimizer_call_id) const
+  {
+    std::ostringstream points;
+    points << std::fixed << std::setprecision(6);
+    for (Eigen::Index i = 0; i < cps_.points.cols(); ++i)
+    {
+      if (i > 0)
+        points << ";";
+      points << cps_.points(0, i) << "," << cps_.points(1, i) << ","
+             << cps_.points(2, i);
+    }
+    ROS_WARN_STREAM(
+        "[EGO_READONLY_DIAG] type=control_points phase=" << phase
+        << " replan=" << diagnostic_replan_id_
+        << " optimizer_call=" << optimizer_call_id
+        << " count=" << cps_.points.cols() << " points=" << points.str());
+  }
+
+  void BsplineOptimizer::diagnosticLogBaseDirections(
+      const char *phase, std::uint64_t call_id) const
+  {
+    for (int i = 0; i < cps_.size; ++i)
+    {
+      for (std::size_t j = 0; j < cps_.base_point[i].size(); ++j)
+      {
+        ROS_WARN_STREAM(
+            "[EGO_READONLY_DIAG] type=base_direction phase=" << phase
+            << " replan=" << diagnostic_replan_id_ << " call=" << call_id
+            << " cp=" << i << " base_index=" << j
+            << " point=" << diagnosticVector(cps_.points.col(i))
+            << " base=" << diagnosticVector(cps_.base_point[i][j])
+            << " direction=" << diagnosticVector(cps_.direction[i][j]));
+      }
+    }
+  }
+
+  void BsplineOptimizer::diagnosticLogCollisionGradients(
+      const char *phase, std::uint64_t optimizer_call_id,
+      double collision_weight) const
+  {
+    const double demarcation = cps_.clearance;
+    const double quadratic_a = 3.0 * demarcation;
+    const double quadratic_b = -3.0 * demarcation * demarcation;
+    const int end_idx = cps_.size - order_;
+    for (int i = order_; i < end_idx; ++i)
+    {
+      for (std::size_t j = 0; j < cps_.direction[i].size(); ++j)
+      {
+        const double distance =
+            (cps_.points.col(i) - cps_.base_point[i][j])
+                .dot(cps_.direction[i][j]);
+        const double distance_error = cps_.clearance - distance;
+        Eigen::Vector3d raw_gradient = Eigen::Vector3d::Zero();
+        if (distance_error >= 0.0 && distance_error < demarcation)
+          raw_gradient = -3.0 * distance_error * distance_error *
+                         cps_.direction[i][j];
+        else if (distance_error >= demarcation)
+          raw_gradient =
+              -(2.0 * quadratic_a * distance_error + quadratic_b) *
+              cps_.direction[i][j];
+        const Eigen::Vector3d weighted_gradient =
+            collision_weight * raw_gradient;
+        ROS_WARN_STREAM(
+            "[EGO_READONLY_DIAG] type=collision_gradient phase=" << phase
+            << " replan=" << diagnostic_replan_id_
+            << " optimizer_call=" << optimizer_call_id
+            << " cp=" << i << " base_index=" << j
+            << " distance=" << std::fixed << std::setprecision(6) << distance
+            << " distance_error=" << distance_error
+            << " collision_weight=" << collision_weight
+            << " raw_gradient=" << diagnosticVector(raw_gradient)
+            << " weighted_gradient=" << diagnosticVector(weighted_gradient));
+      }
+    }
+  }
+
+  bool BsplineOptimizer::bindMaxVelocityForInvocation(
+      double max_velocity, std::uint64_t snapshot_version)
   {
     if (!std::isfinite(max_velocity) || max_velocity <= 0.0)
       return false;
     max_vel_ = max_velocity;
+    max_velocity_snapshot_version_ = snapshot_version;
     return true;
   }
 
@@ -108,7 +238,7 @@ namespace ego_planner
           {
             Eigen::Vector3d pt(a * RichInfoSegs[i].first.points.col(j) + (1 - a) * RichInfoSegs[i].first.points.col(j + 1));
             //cout << " " << grid_map_->getInflateOccupancy(pt) << " pt=" << pt.transpose() << endl;
-            if (grid_map_->getInflateOccupancy(pt))
+            if (grid_map_->getPlanningOccupancy(pt))
             {
               occ_start_id = j;
               occ_start_pt = pt;
@@ -128,7 +258,7 @@ namespace ego_planner
             Eigen::Vector3d pt(a * RichInfoSegs[i].first.points.col(j) + (1 - a) * RichInfoSegs[i].first.points.col(j - 1));
             //cout << " " << grid_map_->getInflateOccupancy(pt) << " pt=" << pt.transpose() << endl;
             ;
-            if (grid_map_->getInflateOccupancy(pt))
+            if (grid_map_->getPlanningOccupancy(pt))
             {
               occ_end_id = j;
               occ_end_pt = pt;
@@ -208,7 +338,7 @@ namespace ego_planner
             base_pt_reverse = RichInfoSegs[i].first.points.col(j) + base_vec_reverse * (RichInfoSegs[i].first.base_point[j][0] - RichInfoSegs[i].first.points.col(j)).norm();
           }
 
-          if (grid_map_->getInflateOccupancy(base_pt_reverse)) // Search outward.
+          if (grid_map_->getPlanningOccupancy(base_pt_reverse)) // Search outward.
           {
             double l_upbound = 5 * CTRL_PT_DIST; // "5" is the threshold.
             double l = RESOLUTION;
@@ -216,7 +346,7 @@ namespace ego_planner
             {
               Eigen::Vector3d base_pt_temp = base_pt_reverse + l * base_vec_reverse;
               //cout << base_pt_temp.transpose() << endl;
-              if (!grid_map_->getInflateOccupancy(base_pt_temp))
+              if (!grid_map_->getPlanningOccupancy(base_pt_temp))
               {
                 RichInfoSegs[i].second.base_point[j][0] = base_pt_temp;
                 RichInfoSegs[i].second.direction[j][0] = base_vec_reverse;
@@ -283,7 +413,7 @@ namespace ego_planner
         Eigen::Vector3d base_vec_reverse = -RichInfoSegs[i].first.direction[0][0];
         Eigen::Vector3d base_pt_reverse = RichInfoSegs[i].first.points.col(0) + base_vec_reverse * (RichInfoSegs[i].first.base_point[0][0] - RichInfoSegs[i].first.points.col(0)).norm();
 
-        if (grid_map_->getInflateOccupancy(base_pt_reverse)) // Search outward.
+        if (grid_map_->getPlanningOccupancy(base_pt_reverse)) // Search outward.
         {
           double l_upbound = 5 * CTRL_PT_DIST; // "5" is the threshold.
           double l = RESOLUTION;
@@ -291,7 +421,7 @@ namespace ego_planner
           {
             Eigen::Vector3d base_pt_temp = base_pt_reverse + l * base_vec_reverse;
             //cout << base_pt_temp.transpose() << endl;
-            if (!grid_map_->getInflateOccupancy(base_pt_temp))
+            if (!grid_map_->getPlanningOccupancy(base_pt_temp))
             {
               RichInfoSegs[i].second.base_point[0][0] = base_pt_temp;
               RichInfoSegs[i].second.direction[0][0] = base_vec_reverse;
@@ -445,6 +575,15 @@ namespace ego_planner
 
     if (flag_first_init)
     {
+      if (diagnostic_have_replan_)
+        ++diagnostic_replan_id_;
+      else
+        diagnostic_have_replan_ = true;
+    }
+    const std::uint64_t diagnostic_call_id = diagnostic_init_call_id_++;
+
+    if (flag_first_init)
+    {
       cps_.clearance = dist0_;
       cps_.resize(init_points.cols());
       cps_.points = init_points;
@@ -458,13 +597,19 @@ namespace ego_planner
     int same_occ_state_times = ENOUGH_INTERVAL + 1;
     bool occ, last_occ = false;
     bool flag_got_start = false, flag_got_end = false, flag_got_end_maybe = false;
+    Eigen::Vector3d occupied_entry = Eigen::Vector3d::Constant(
+        std::numeric_limits<double>::quiet_NaN());
+    Eigen::Vector3d occupied_exit = occupied_entry;
+    vector<Eigen::Vector3d> occupied_entries, occupied_exits;
     int i_end = (int)init_points.cols() - order_ - ((int)init_points.cols() - 2 * order_) / 3; // only check closed 2/3 points.
     for (int i = order_; i <= i_end; ++i)
     {
       //cout << " *" << i-1 << "*" ;
       for (double a = 1.0; a > 0.0; a -= step_size)
       {
-        occ = grid_map_->getInflateOccupancy(a * init_points.col(i - 1) + (1 - a) * init_points.col(i));
+        const Eigen::Vector3d sampled_point =
+            a * init_points.col(i - 1) + (1 - a) * init_points.col(i);
+        occ = grid_map_->getPlanningOccupancy(sampled_point);
         //cout << " " << occ;
         // cout << setprecision(5);
         // cout << (a * init_points.col(i-1) + (1-a) * init_points.col(i)).transpose() << " occ1=" << occ << endl;
@@ -475,6 +620,7 @@ namespace ego_planner
           {
             in_id = i - 1;
             flag_got_start = true;
+            occupied_entry = sampled_point;
           }
           same_occ_state_times = 0;
           flag_got_end_maybe = false; // terminate in advance
@@ -483,6 +629,7 @@ namespace ego_planner
         {
           out_id = i;
           flag_got_end_maybe = true;
+          occupied_exit = sampled_point;
           same_occ_state_times = 0;
         }
         else
@@ -503,6 +650,8 @@ namespace ego_planner
           flag_got_start = false;
           flag_got_end = false;
           segment_ids.push_back(std::pair<int, int>(in_id, out_id));
+          occupied_entries.push_back(occupied_entry);
+          occupied_exits.push_back(occupied_exit);
         }
       }
     }
@@ -516,6 +665,11 @@ namespace ego_planner
     // return in advance
     if (segment_ids.size() == 0)
     {
+      ROS_WARN_STREAM(
+          "[EGO_READONLY_DIAG] type=collision_segments context=init"
+          << " replan=" << diagnostic_replan_id_
+          << " call=" << diagnostic_call_id << " count=0"
+          << " first_init=" << (flag_first_init ? "true" : "false"));
       vector<std::pair<int, int>> blank_ret;
       return blank_ret;
     }
@@ -528,10 +682,19 @@ namespace ego_planner
       Eigen::Vector3d in(init_points.col(segment_ids[i].first)), out(init_points.col(segment_ids[i].second));
       if (a_star_->AstarSearch(/*(in-out).norm()/10+0.05*/ 0.1, in, out))
       {
-        a_star_pathes.push_back(a_star_->getPath());
+        const vector<Eigen::Vector3d> path = a_star_->getPath();
+        diagnosticLogAStar(
+            "init", diagnostic_call_id, i, segment_ids[i].first,
+            segment_ids[i].second, occupied_entries[i], occupied_exits[i],
+            in, out, path);
+        a_star_pathes.push_back(path);
       }
       else
       {
+        diagnosticLogAStar(
+            "init_failed", diagnostic_call_id, i, segment_ids[i].first,
+            segment_ids[i].second, occupied_entries[i], occupied_exits[i],
+            in, out, vector<Eigen::Vector3d>());
         ROS_ERROR("a star error, force return!");
         vector<std::pair<int, int>> blank_ret;
         return blank_ret;
@@ -662,7 +825,7 @@ namespace ego_planner
             cps_.flag_temp[j] = true;
             for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
             {
-              occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * init_points.col(j));
+              occ = grid_map_->getPlanningOccupancy((a / length) * intersection_point + (1 - a / length) * init_points.col(j));
 
               if (occ || a < grid_map_->getResolution())
               {
@@ -685,39 +848,18 @@ namespace ego_planner
       /* Corner case: the segment length is too short. Here the control points may outside the A* path, leading to opposite gradient direction. So I have to take special care of it */
       if (segment_ids[i].second - segment_ids[i].first == 1)
       {
-        Eigen::Vector3d ctrl_pts_law(init_points.col(segment_ids[i].second) - init_points.col(segment_ids[i].first)), intersection_point;
-        Eigen::Vector3d middle_point = (init_points.col(segment_ids[i].second) + init_points.col(segment_ids[i].first)) / 2;
-        int Astar_id = a_star_pathes[i].size() / 2, last_Astar_id; // Let "Astar_id = id_of_the_most_far_away_Astar_point" will be better, but it needs more computation
-        double val = (a_star_pathes[i][Astar_id] - middle_point).dot(ctrl_pts_law), last_val = val;
-        while (Astar_id >= 0 && Astar_id < (int)a_star_pathes[i].size())
+        ShortSegmentGuidance guidance;
+        if (computeShortSegmentGuidance(
+                init_points.col(segment_ids[i].first),
+                init_points.col(segment_ids[i].second),
+                a_star_pathes[i], guidance))
         {
-          last_Astar_id = Astar_id;
-
-          if (val >= 0)
-            --Astar_id;
-          else
-            ++Astar_id;
-
-          val = (a_star_pathes[i][Astar_id] - middle_point).dot(ctrl_pts_law);
-
-          if (val * last_val <= 0 && (abs(val) > 0 || abs(last_val) > 0)) // val = last_val = 0.0 is not allowed
-          {
-            intersection_point =
-                a_star_pathes[i][Astar_id] +
-                ((a_star_pathes[i][Astar_id] - a_star_pathes[i][last_Astar_id]) *
-                 (ctrl_pts_law.dot(middle_point - a_star_pathes[i][Astar_id]) / ctrl_pts_law.dot(a_star_pathes[i][Astar_id] - a_star_pathes[i][last_Astar_id])) // = t
-                );
-
-            if ((intersection_point - middle_point).norm() > 0.01) // 1cm.
-            {
-              cps_.flag_temp[segment_ids[i].first] = true;
-              cps_.base_point[segment_ids[i].first].push_back(init_points.col(segment_ids[i].first));
-              cps_.direction[segment_ids[i].first].push_back((intersection_point - middle_point).normalized());
-
-              got_intersection_id = segment_ids[i].first;
-            }
-            break;
-          }
+          cps_.flag_temp[segment_ids[i].first] = true;
+          cps_.base_point[segment_ids[i].first].push_back(
+              guidance.base_point);
+          cps_.direction[segment_ids[i].first].push_back(
+              guidance.direction);
+          got_intersection_id = segment_ids[i].first;
         }
       }
 
@@ -744,11 +886,11 @@ namespace ego_planner
       }
       else
       {
-        // Just ignore, it does not matter ^_^.
-        // ROS_ERROR("Failed to generate direction! segment_id=%d", i);
+        ROS_ERROR("Failed to generate deterministic collision guidance for segment %zu; fail closed.", i);
       }
     }
 
+    diagnosticLogBaseDirections("init_complete", diagnostic_call_id);
     return final_segment_ids;
   }
 
@@ -1207,17 +1349,20 @@ namespace ego_planner
   bool BsplineOptimizer::check_collision_and_rebound(void)
   {
 
+    const std::uint64_t diagnostic_call_id = diagnostic_init_call_id_++;
+
     int end_idx = cps_.size - order_;
 
     /*** Check and segment the initial trajectory according to obstacles ***/
     int in_id, out_id;
     vector<std::pair<int, int>> segment_ids;
+    vector<Eigen::Vector3d> occupied_entries, occupied_exits;
     bool flag_new_obs_valid = false;
     int i_end = end_idx - (end_idx - order_) / 3;
     for (int i = order_ - 1; i <= i_end; ++i)
     {
 
-      bool occ = grid_map_->getInflateOccupancy(cps_.points.col(i));
+      bool occ = grid_map_->getPlanningOccupancy(cps_.points.col(i));
 
       /*** check if the new collision will be valid ***/
       if (occ)
@@ -1236,11 +1381,12 @@ namespace ego_planner
       if (occ)
       {
         flag_new_obs_valid = true;
+        const Eigen::Vector3d occupied_entry = cps_.points.col(i);
 
         int j;
         for (j = i - 1; j >= 0; --j)
         {
-          occ = grid_map_->getInflateOccupancy(cps_.points.col(j));
+          occ = grid_map_->getPlanningOccupancy(cps_.points.col(j));
           if (!occ)
           {
             in_id = j;
@@ -1255,7 +1401,7 @@ namespace ego_planner
 
         for (j = i + 1; j < cps_.size; ++j)
         {
-          occ = grid_map_->getInflateOccupancy(cps_.points.col(j));
+          occ = grid_map_->getPlanningOccupancy(cps_.points.col(j));
 
           if (!occ)
           {
@@ -1274,6 +1420,8 @@ namespace ego_planner
         i = j + 1;
 
         segment_ids.push_back(std::pair<int, int>(in_id, out_id));
+        occupied_entries.push_back(occupied_entry);
+        occupied_exits.push_back(cps_.points.col(out_id - 1));
       }
     }
 
@@ -1286,12 +1434,24 @@ namespace ego_planner
         Eigen::Vector3d in(cps_.points.col(segment_ids[i].first)), out(cps_.points.col(segment_ids[i].second));
         if (a_star_->AstarSearch(/*(in-out).norm()/10+0.05*/ 0.1, in, out))
         {
-          a_star_pathes.push_back(a_star_->getPath());
+          const vector<Eigen::Vector3d> path = a_star_->getPath();
+          diagnosticLogAStar(
+              "optimizer_rebound", diagnostic_call_id, i,
+              segment_ids[i].first, segment_ids[i].second,
+              occupied_entries[i], occupied_exits[i], in, out, path);
+          a_star_pathes.push_back(path);
         }
         else
         {
+          diagnosticLogAStar(
+              "optimizer_rebound_failed", diagnostic_call_id, i,
+              segment_ids[i].first, segment_ids[i].second,
+              occupied_entries[i], occupied_exits[i], in, out,
+              vector<Eigen::Vector3d>());
           ROS_ERROR("a star error");
           segment_ids.erase(segment_ids.begin() + i);
+          occupied_entries.erase(occupied_entries.begin() + i);
+          occupied_exits.erase(occupied_exits.begin() + i);
           i--;
         }
       }
@@ -1354,7 +1514,7 @@ namespace ego_planner
               cps_.flag_temp[j] = true;
               for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
               {
-                bool occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j));
+                bool occ = grid_map_->getPlanningOccupancy((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j));
 
                 if (occ || a < grid_map_->getResolution())
                 {
@@ -1370,6 +1530,23 @@ namespace ego_planner
             {
               got_intersection_id = -1;
             }
+          }
+        }
+
+        if (segment_ids[i].second - segment_ids[i].first == 1)
+        {
+          ShortSegmentGuidance guidance;
+          if (computeShortSegmentGuidance(
+                  cps_.points.col(segment_ids[i].first),
+                  cps_.points.col(segment_ids[i].second),
+                  a_star_pathes[i], guidance))
+          {
+            cps_.flag_temp[segment_ids[i].first] = true;
+            cps_.base_point[segment_ids[i].first].push_back(
+                guidance.base_point);
+            cps_.direction[segment_ids[i].first].push_back(
+                guidance.direction);
+            got_intersection_id = segment_ids[i].first;
           }
         }
 
@@ -1391,9 +1568,15 @@ namespace ego_planner
             }
         }
         else
-          ROS_WARN("Failed to generate direction. It doesn't matter.");
+        {
+          ROS_ERROR("Failed to generate deterministic collision guidance; fail closed.");
+          force_stop_type_ = STOP_FOR_ERROR;
+          return false;
+        }
       }
 
+      diagnosticLogBaseDirections("optimizer_rebound_complete",
+                                  diagnostic_call_id);
       force_stop_type_ = STOP_FOR_REBOUND;
       return true;
     }
@@ -1441,6 +1624,8 @@ namespace ego_planner
 
   bool BsplineOptimizer::rebound_optimize(double &final_cost)
   {
+    const std::uint64_t diagnostic_optimizer_call_id =
+        diagnostic_optimizer_call_id_++;
     iter_num_ = 0;
     int start_id = order_;
     // int end_id = this->cps_.size - order_; //Fixed end
@@ -1452,6 +1637,12 @@ namespace ego_planner
     ;
     bool flag_force_return, flag_occ, success;
     new_lambda2_ = lambda2_;
+    diagnosticLogControlPoints("optimizer_pre",
+                               diagnostic_optimizer_call_id);
+    diagnosticLogBaseDirections("optimizer_pre",
+                                diagnostic_optimizer_call_id);
+    diagnosticLogCollisionGradients(
+        "optimizer_pre", diagnostic_optimizer_call_id, new_lambda2_);
     constexpr int MAX_RESART_NUMS_SET = 3;
     do
     {
@@ -1505,25 +1696,32 @@ namespace ego_planner
         UniformBspline traj = UniformBspline(cps_.points, 3, bspline_interval_);
         double tm, tmp;
         traj.getTimeSpan(tm, tmp);
-        double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution());
-        for (double t = tm; t < tmp * 2 / 3; t += t_step) // Only check the closest 2/3 partition of the whole trajectory.
+        TrajectoryCollisionResult collision_result;
+        flag_occ = !isUniformBsplineSweptCollisionFree(
+            traj, *grid_map_, tm, tmp * 2.0 / 3.0,
+            &collision_result);
+        if (flag_occ)
         {
-          flag_occ = grid_map_->getInflateOccupancy(traj.evaluateDeBoorT(t));
-          if (flag_occ)
-          {
+          const double t = collision_result.first_collision_parameter;
             //cout << "hit_obs, t=" << t << " P=" << traj.evaluateDeBoorT(t).transpose() << endl;
 
-            if (t <= bspline_interval_) // First 3 control points in obstacles!
-            {
+          if (t <= bspline_interval_) // First 3 control points in obstacles!
+          {
               // cout << cps_.points.col(1).transpose() << "\n"
               //      << cps_.points.col(2).transpose() << "\n"
               //      << cps_.points.col(3).transpose() << "\n"
               //      << cps_.points.col(4).transpose() << endl;
               ROS_WARN("First 3 control points in obstacles! return false, t=%f", t);
-              return false;
-            }
-
-            break;
+              diagnosticLogControlPoints(
+                  "optimizer_post_first3_failure",
+                  diagnostic_optimizer_call_id);
+              diagnosticLogBaseDirections(
+                  "optimizer_post_first3_failure",
+                  diagnostic_optimizer_call_id);
+              diagnosticLogCollisionGradients(
+                  "optimizer_post_first3_failure",
+                  diagnostic_optimizer_call_id, new_lambda2_);
+            return false;
           }
         }
 
@@ -1605,6 +1803,15 @@ namespace ego_planner
         ((flag_occ || ((min_ellip_dist_ != INIT_min_ellip_dist_) && (min_ellip_dist_ > swarm_clearance_))) && restart_nums < MAX_RESART_NUMS_SET) ||
         (flag_force_return && force_stop_type_ == STOP_FOR_REBOUND && rebound_times <= 20));
 
+    diagnosticLogControlPoints(
+        success ? "optimizer_post_success" : "optimizer_post_failure",
+        diagnostic_optimizer_call_id);
+    diagnosticLogBaseDirections(
+        success ? "optimizer_post_success" : "optimizer_post_failure",
+        diagnostic_optimizer_call_id);
+    diagnosticLogCollisionGradients(
+        success ? "optimizer_post_success" : "optimizer_post_failure",
+        diagnostic_optimizer_call_id, new_lambda2_);
     return success;
   }
 
@@ -1647,11 +1854,11 @@ namespace ego_planner
       UniformBspline traj = UniformBspline(cps_.points, 3, bspline_interval_);
       double tm, tmp;
       traj.getTimeSpan(tm, tmp);
-      double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution()); // Step size is defined as the maximum size that can passes throgth every gird.
-      for (double t = tm; t < tmp * 2 / 3; t += t_step)
+      TrajectoryCollisionResult collision_result;
+      if (!isUniformBsplineSweptCollisionFree(
+              traj, *grid_map_, tm, tmp * 2.0 / 3.0,
+              &collision_result))
       {
-        if (grid_map_->getInflateOccupancy(traj.evaluateDeBoorT(t)))
-        {
           // cout << "Refined traj hit_obs, t=" << t << " P=" << traj.evaluateDeBoorT(t).transpose() << endl;
 
           Eigen::MatrixXd ref_pts(ref_pts_.size(), 3);
@@ -1661,8 +1868,6 @@ namespace ego_planner
           }
 
           flag_safe = false;
-          break;
-        }
       }
 
       if (!flag_safe)

@@ -60,7 +60,7 @@ private:
 
 	//bool (*checkOccupancyPtr)( const Eigen::Vector3d &pos );
 
-	inline bool checkOccupancy(const Eigen::Vector3d &pos) { return (bool)grid_map_->getInflateOccupancy(pos); }
+	inline bool checkOccupancy(const Eigen::Vector3d &pos) { return grid_map_->getPlanningOccupancy(pos); }
 
 	std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 
@@ -75,6 +75,8 @@ private:
 	std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
 
 	int rounds_{0};
+	std::size_t last_expanded_node_count_{0};
+	std::size_t last_swept_collision_count_{0};
 
 public:
 	typedef std::shared_ptr<AStar> Ptr;
@@ -87,6 +89,12 @@ public:
 	bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
 
 	std::vector<Eigen::Vector3d> getPath();
+	std::size_t getLastExpandedNodeCount() const {
+		return last_expanded_node_count_;
+	}
+	std::size_t getLastSweptCollisionCount() const {
+		return last_swept_collision_count_;
+	}
 };
 
 inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)

@@ -30,6 +30,7 @@ catkin_install_python(PROGRAMS
   scripts/hector_backend_qualifier.py
   scripts/training_episode_reset_coordinator.py
   scripts/truth_cloud_registration_adapter.py
+  scripts/forest_map_manager.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -42,4 +43,6 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_truth_odom_contract.py)
   catkin_add_nosetests(test/test_episode_reset_contract.py)
   catkin_add_nosetests(test/test_cloud_registration_contract.py)
+  catkin_add_nosetests(test/test_forest_map_contract.py)
+  catkin_add_nosetests(test/test_hector_overlay_preflight.py)
 endif()

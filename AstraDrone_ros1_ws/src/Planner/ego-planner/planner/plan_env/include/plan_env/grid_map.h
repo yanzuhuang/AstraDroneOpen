@@ -5,12 +5,16 @@
 #include <Eigen/StdVector>
 #include <cv_bridge/cv_bridge.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <cstdint>
+#include <deque>
 #include <iostream>
 #include <random>
 #include <nav_msgs/Odometry.h>
 #include <queue>
 #include <ros/ros.h>
+#include <std_msgs/String.h>
 #include <tuple>
+#include <unordered_map>
 #include <visualization_msgs/Marker.h>
 
 #include <pcl/point_cloud.h>
@@ -73,6 +77,8 @@ struct MappingParameters {
   double prob_hit_log_, prob_miss_log_, clamp_min_log_, clamp_max_log_,
       min_occupancy_log_;                   // logit of occupancy probability
   double min_ray_length_, max_ray_length_;  // range of doing raycasting
+  double cloud_odom_timeout_;
+  Eigen::Vector3d cloud_sensor_origin_body_;
 
   /* local map update and clear */
   int local_map_margin_;
@@ -92,6 +98,7 @@ struct MappingData {
 
   std::vector<double> occupancy_buffer_;
   std::vector<char> occupancy_buffer_inflate_;
+  std::vector<uint16_t> occupancy_buffer_inflate_count_;
 
   // camera position and pose data
 
@@ -109,6 +116,7 @@ struct MappingData {
   bool occ_need_update_, local_updated_;
   bool has_first_depth_;
   bool has_odom_, has_cloud_;
+  ros::Time last_cloud_stamp_;
 
   // odom_depth_timeout_
   ros::Time last_occ_update_time_;
@@ -118,18 +126,32 @@ struct MappingData {
   // depth image projected point cloud
 
   vector<Eigen::Vector3d> proj_points_;
+  vector<uint8_t> proj_points_hit_;
   int proj_points_cnt;
 
   // flag buffers for speeding up raycasting
 
-  vector<short> count_hit_, count_hit_and_miss_;
-  vector<char> flag_traverse_, flag_rayend_;
-  char raycast_num_;
+  vector<uint16_t> count_hit_, count_hit_and_miss_;
+  vector<uint8_t> flag_traverse_, flag_rayend_;
+  uint8_t raycast_num_;
   queue<Eigen::Vector3i> cache_voxel_;
+
+  struct StampedSensorOrigin {
+    ros::Time stamp;
+    Eigen::Vector3d position;
+  };
+  deque<StampedSensorOrigin> sensor_origin_history_;
 
   // range of updating grid
 
   Eigen::Vector3i local_bound_min_, local_bound_max_;
+  Eigen::Vector3i previous_local_bound_min_, previous_local_bound_max_;
+  bool local_window_initialized_;
+
+  size_t last_input_point_count_, last_endpoint_voxel_count_;
+  size_t last_raycast_voxel_count_, last_raw_occupied_count_;
+  size_t last_known_free_count_, last_unknown_count_, last_inflated_count_;
+  double last_raycast_wall_ms_, last_inflation_wall_ms_, last_callback_wall_ms_;
 
   // computation time
 
@@ -145,15 +167,24 @@ public:
   ~GridMap() {}
 
   enum { POSE_STAMPED = 1, ODOMETRY = 2, INVALID_IDX = -10000 };
+  enum class VoxelState : uint8_t { UNKNOWN = 0, KNOWN_FREE = 1, OCCUPIED = 2 };
+  enum class BlockReason : uint8_t {
+    NONE = 0,
+    OCCUPIED = 1,
+    OUT_OF_MAP = 2
+  };
 
   // occupancy map management
   void resetBuffer();
   void resetBuffer(Eigen::Vector3d min, Eigen::Vector3d max);
+  // Environment lifecycle hook used only between closed training Episodes.
+  // It clears both raw and inflated occupancy plus raycasting cache state.
+  void clearForEnvironmentReset();
 
   inline void posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& id);
   inline void indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos);
   inline int toAddress(const Eigen::Vector3i& id);
-  inline int toAddress(int& x, int& y, int& z);
+  inline int toAddress(int x, int y, int z);
   inline bool isInMap(const Eigen::Vector3d& pos);
   inline bool isInMap(const Eigen::Vector3i& idx);
 
@@ -162,12 +193,29 @@ public:
   inline int getOccupancy(Eigen::Vector3d pos);
   inline int getOccupancy(Eigen::Vector3i id);
   inline int getInflateOccupancy(Eigen::Vector3d pos);
+  inline bool getPlanningOccupancy(const Eigen::Vector3d& pos);
+  inline double getResolution() const { return mp_.resolution_; }
+  struct SweptCollisionResult {
+    bool collision{false};
+    bool outside_map{false};
+    size_t visited_voxels{0};
+    Eigen::Vector3i first_blocked_index{Eigen::Vector3i::Constant(-1)};
+    BlockReason reason{BlockReason::NONE};
+  };
+  bool isSweptSegmentFree(const Eigen::Vector3d& start,
+                          const Eigen::Vector3d& end,
+                          SweptCollisionResult* result = nullptr);
+  bool isSweptPolylineFree(const std::vector<Eigen::Vector3d>& points,
+                           SweptCollisionResult* result = nullptr);
+  inline VoxelState getVoxelState(const Eigen::Vector3i& id) const;
+  inline VoxelState getVoxelState(const Eigen::Vector3d& pos) const;
 
   inline void boundIndex(Eigen::Vector3i& id);
   inline bool isUnknown(const Eigen::Vector3i& id);
   inline bool isUnknown(const Eigen::Vector3d& pos);
   inline bool isKnownFree(const Eigen::Vector3i& id);
   inline bool isKnownOccupied(const Eigen::Vector3i& id);
+  inline bool isInflatedOccupied(const Eigen::Vector3i& id);
 
   void initMap(ros::NodeHandle& nh);
 
@@ -189,6 +237,8 @@ public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 private:
+  friend class GridMapTestAccess;
+
   MappingParameters mp_;
   MappingData md_;
 
@@ -199,6 +249,9 @@ private:
   void depthOdomCallback(const sensor_msgs::ImageConstPtr& img, const nav_msgs::OdometryConstPtr& odom);
   void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& img);
   void odomCallback(const nav_msgs::OdometryConstPtr& odom);
+  void processPointCloud(const vector<Eigen::Vector3d>& points,
+                         const Eigen::Vector3d& sensor_origin);
+  bool selectSensorOrigin(const ros::Time& cloud_stamp, Eigen::Vector3d& sensor_origin) const;
 
   // update occupancy by raycasting
   void updateOccupancyCallback(const ros::TimerEvent& /*event*/);
@@ -208,6 +261,13 @@ private:
   void projectDepthImage();
   void raycastProcess();
   void clearAndInflateLocalMap();
+  void updateLocalMapWindow(const Eigen::Vector3d& sensor_origin);
+  void clearExitedLocalWindow(const Eigen::Vector3i& old_min, const Eigen::Vector3i& old_max,
+                              const Eigen::Vector3i& new_min, const Eigen::Vector3i& new_max);
+  void initializeMapBuffers();
+  void publishMappingStats();
+  void publishVoxelStateMap(VoxelState state, const ros::Publisher& publisher);
+  void updateInflationForVoxel(const Eigen::Vector3i& occupied_id, int delta);
 
   inline void inflatePoint(const Eigen::Vector3i& pt, int step, vector<Eigen::Vector3i>& pts);
   int setCacheOccupancy(Eigen::Vector3d pos, int occ);
@@ -224,7 +284,7 @@ private:
   typedef shared_ptr<message_filters::Synchronizer<SyncPolicyImagePose>> SynchronizerImagePose;
   typedef shared_ptr<message_filters::Synchronizer<SyncPolicyImageOdom>> SynchronizerImageOdom;
 
-  ros::NodeHandle node_;
+  shared_ptr<ros::NodeHandle> node_;
   shared_ptr<message_filters::Subscriber<sensor_msgs::Image>> depth_sub_;
   shared_ptr<message_filters::Subscriber<geometry_msgs::PoseStamped>> pose_sub_;
   shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_sub_;
@@ -232,7 +292,7 @@ private:
   SynchronizerImageOdom sync_image_odom_;
 
   ros::Subscriber indep_cloud_sub_, indep_odom_sub_, extrinsic_sub_;
-  ros::Publisher map_pub_, map_inf_pub_;
+  ros::Publisher map_pub_, map_inf_pub_, map_free_pub_, map_unknown_pub_, mapping_stats_pub_;
   ros::Timer occ_timer_, vis_timer_;
 
   //
@@ -248,7 +308,7 @@ inline int GridMap::toAddress(const Eigen::Vector3i& id) {
   return id(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2) + id(1) * mp_.map_voxel_num_(2) + id(2);
 }
 
-inline int GridMap::toAddress(int& x, int& y, int& z) {
+inline int GridMap::toAddress(int x, int y, int z) {
   return x * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2) + y * mp_.map_voxel_num_(2) + z;
 }
 
@@ -260,10 +320,31 @@ inline void GridMap::boundIndex(Eigen::Vector3i& id) {
   id = id1;
 }
 
+inline GridMap::VoxelState GridMap::getVoxelState(const Eigen::Vector3i& id) const {
+  if (id(0) < 0 || id(0) >= mp_.map_voxel_num_(0) ||
+      id(1) < 0 || id(1) >= mp_.map_voxel_num_(1) ||
+      id(2) < 0 || id(2) >= mp_.map_voxel_num_(2)) {
+    return VoxelState::UNKNOWN;
+  }
+  const double value = md_.occupancy_buffer_[
+      id(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2) +
+      id(1) * mp_.map_voxel_num_(2) + id(2)];
+  if (value < mp_.clamp_min_log_ - 1e-3)
+    return VoxelState::UNKNOWN;
+  if (value > mp_.min_occupancy_log_)
+    return VoxelState::OCCUPIED;
+  return VoxelState::KNOWN_FREE;
+}
+
+inline GridMap::VoxelState GridMap::getVoxelState(const Eigen::Vector3d& pos) const {
+  Eigen::Vector3i id;
+  for (int i = 0; i < 3; ++i)
+    id(i) = floor((pos(i) - mp_.map_origin_(i)) * mp_.resolution_inv_);
+  return getVoxelState(id);
+}
+
 inline bool GridMap::isUnknown(const Eigen::Vector3i& id) {
-  Eigen::Vector3i id1 = id;
-  boundIndex(id1);
-  return md_.occupancy_buffer_[toAddress(id1)] < mp_.clamp_min_log_ - 1e-3;
+  return getVoxelState(id) == VoxelState::UNKNOWN;
 }
 
 inline bool GridMap::isUnknown(const Eigen::Vector3d& pos) {
@@ -273,21 +354,17 @@ inline bool GridMap::isUnknown(const Eigen::Vector3d& pos) {
 }
 
 inline bool GridMap::isKnownFree(const Eigen::Vector3i& id) {
-  Eigen::Vector3i id1 = id;
-  boundIndex(id1);
-  int adr = toAddress(id1);
-
-  // return md_.occupancy_buffer_[adr] >= mp_.clamp_min_log_ &&
-  //     md_.occupancy_buffer_[adr] < mp_.min_occupancy_log_;
-  return md_.occupancy_buffer_[adr] >= mp_.clamp_min_log_ && md_.occupancy_buffer_inflate_[adr] == 0;
+  return getVoxelState(id) == VoxelState::KNOWN_FREE;
 }
 
 inline bool GridMap::isKnownOccupied(const Eigen::Vector3i& id) {
-  Eigen::Vector3i id1 = id;
-  boundIndex(id1);
-  int adr = toAddress(id1);
+  return getVoxelState(id) == VoxelState::OCCUPIED;
+}
 
-  return md_.occupancy_buffer_inflate_[adr] == 1;
+inline bool GridMap::isInflatedOccupied(const Eigen::Vector3i& id) {
+  if (!isInMap(id))
+    return false;
+  return md_.occupancy_buffer_inflate_[toAddress(id)] == 1;
 }
 
 inline void GridMap::setOccupied(Eigen::Vector3d pos) {
@@ -330,6 +407,16 @@ inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos) {
   posToIndex(pos, id);
 
   return int(md_.occupancy_buffer_inflate_[toAddress(id)]);
+}
+
+inline bool GridMap::getPlanningOccupancy(const Eigen::Vector3d& pos) {
+  if (!isInMap(pos))
+    return true;
+
+  Eigen::Vector3i id;
+  posToIndex(pos, id);
+  return md_.occupancy_buffer_inflate_[toAddress(id)] != 0 ||
+         getVoxelState(id) == VoxelState::OCCUPIED;
 }
 
 inline int GridMap::getOccupancy(Eigen::Vector3i id) {

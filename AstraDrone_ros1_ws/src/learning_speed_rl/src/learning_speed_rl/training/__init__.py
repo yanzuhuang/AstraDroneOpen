@@ -47,7 +47,6 @@ from .reward import (
 )
 from .astra_drone_env import (
     EPISODE_VERSION,
-    SUPPORTED_STEP_DURATIONS_SEC,
     AstraDroneEnv,
     AstraDroneEpisodeConfig,
     AstraDroneEpisodeError,
@@ -56,12 +55,26 @@ from .astra_drone_env import (
     AstraDroneStepError,
     AstraDroneStepTimeout,
 )
+from .actor_action_ownership import (
+    ActorActionCandidate,
+    ActorActionOwnership,
+)
+from .transition_persistence import (
+    ImmutableTransitionRecord,
+    OrderedTransitionWriter,
+)
 from .formal_training_contract import (
     SUPPORTED_RUNNER_MODES,
     FormalTrainingSchedule,
     checkpoint_filename,
+    infrastructure_terminal_reason,
     learning_started,
     mode_uses_training_replay,
+    validate_training_episode_target,
+)
+from .forest_schedule import (
+    BalancedForestMapScheduler,
+    ForestMapAssignment,
 )
 
 __all__ = [
@@ -73,10 +86,16 @@ __all__ = [
     "AstraDroneStepConfig",
     "AstraDroneStepError",
     "AstraDroneStepTimeout",
+    "ActorActionCandidate",
+    "ActorActionOwnership",
+    "ImmutableTransitionRecord",
+    "OrderedTransitionWriter",
     "DIAGNOSTIC_ONLY_FIELDS",
     "EPISODE_VERSION",
     "FUTURE_POSITION_SAMPLES",
     "FormalTrainingSchedule",
+    "BalancedForestMapScheduler",
+    "ForestMapAssignment",
     "LIDAR_BINS",
     "OfficialTrajectoryIdentity",
     "POLICY_INPUT_FIELDS",
@@ -95,7 +114,6 @@ __all__ = [
     "STAGE_1_REWARD_MODE",
     "STAGE_2_REWARD_MODE",
     "SUPPORTED_REWARD_MODES",
-    "SUPPORTED_STEP_DURATIONS_SEC",
     "SacTransitionV1",
     "ComplexityContext",
     "LearningSpeedReward",
@@ -117,6 +135,8 @@ __all__ = [
     "reward_input_from_signals",
     "tracking_error_m_from_body_error",
     "checkpoint_filename",
+    "infrastructure_terminal_reason",
     "learning_started",
+    "validate_training_episode_target",
     "mode_uses_training_replay",
 ]

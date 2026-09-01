@@ -1,0 +1,47 @@
+{
+  "schema_version": "astradrone_forest_pool_v1.0",
+  "map": {
+    "size_x_m": 60.0,
+    "size_y_m": 20.0,
+    "start_safe_x_m": [0.0, 10.0],
+    "end_safe_x_m": [55.0, 60.0],
+    "center_sampling_y_m": [-8.0, 8.0]
+  },
+  "cylinders": {
+    "height_m": 5.0,
+    "z_center_m": 2.5,
+    "radius_m": [0.25, 1.0]
+  },
+  "zones": {
+    "sparse": {"x_m": [10.0, 25.0], "density_per_m2": 0.01},
+    "medium": {"x_m": [25.0, 40.0], "density_per_m2": 0.02},
+    "dense": {"x_m": [40.0, 55.0], "density_per_m2": 0.03}
+  },
+  "qualification": {
+    "grid_resolution_m": 0.1,
+    "uav_collision_radius_xy_m": 0.395567,
+    "ego_obstacles_inflation_m": 0.30,
+    "additional_static_clearance_m": 0.50,
+    "qa_clearance_m": 1.195567,
+    "overlap_admission_rule": "zero geometric overlap"
+  },
+  "seed_pool": [
+    {"logical_seed": 0, "raw_seed": 0, "role": "training", "replacement_reason": "original raw seed passed zero-overlap and traversability QA"},
+    {"logical_seed": 1, "raw_seed": 10, "role": "training", "replacement_reason": "raw seed 1 rejected: geometric overlap"},
+    {"logical_seed": 2, "raw_seed": 11, "role": "training", "replacement_reason": "raw seed 2 rejected: geometric overlap"},
+    {"logical_seed": 3, "raw_seed": 18, "role": "training", "replacement_reason": "raw seed 3 rejected: geometric overlap"},
+    {"logical_seed": 4, "raw_seed": 23, "role": "training", "replacement_reason": "raw seed 4 rejected: geometric overlap"},
+    {"logical_seed": 5, "raw_seed": 32, "role": "training", "replacement_reason": "raw seed 5 rejected: geometric overlap"},
+    {"logical_seed": 6, "raw_seed": 36, "role": "training", "replacement_reason": "raw seed 6 rejected: geometric overlap"},
+    {"logical_seed": 7, "raw_seed": 37, "role": "training", "replacement_reason": "raw seed 7 rejected: geometric overlap"},
+    {"logical_seed": 8, "raw_seed": 40, "role": "evaluation", "replacement_reason": "raw seed 8 rejected: geometric overlap"},
+    {"logical_seed": 9, "raw_seed": 44, "role": "evaluation", "replacement_reason": "raw seed 9 rejected: geometric overlap"}
+  ],
+  "scheduler": {
+    "training_logical_seeds": [0, 1, 2, 3, 4, 5, 6, 7],
+    "evaluation_logical_seeds": [8, 9],
+    "episodes_per_map_block": 100,
+    "episodes_per_full_round": 800,
+    "rng_seed": 20260824
+  }
+}

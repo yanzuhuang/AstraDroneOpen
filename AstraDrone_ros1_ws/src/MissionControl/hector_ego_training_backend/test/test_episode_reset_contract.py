@@ -15,10 +15,13 @@ from hector_ego_training_backend.episode_reset_contract import (
     ResetSamplingError,
     StaticObstacleXY,
     action_matches,
+    classify_observation_staleness,
     episode_count_stop_due,
     fixed_terminal_hold_matches,
     observation_matches,
+    route_acceptance_required,
     sac_closure_matches,
+    sac_closure_reset_allowed,
     trajectory_matches,
     validate_reset_candidate,
 )
@@ -45,6 +48,42 @@ def random_config(seed=1001, attempts=8, obstacles=()):
 
 
 class EpisodeResetContractTest(unittest.TestCase):
+    def test_stale_recheck_distinguishes_recovery_source_and_producer(self):
+        common = {
+            "raw_lidar_present": True,
+            "raw_lidar_receipt_age_sec": 0.10,
+            "observation_v2_present": True,
+            "observation_v2_valid": True,
+            "observation_v2_receipt_age_sec": 0.01,
+            "observation_freshness_sec": 0.35,
+            "raw_lidar_freshness_sec": 0.35,
+        }
+        self.assertIsNone(
+            classify_observation_staleness(
+                observation_present=True,
+                observation_receipt_age_sec=0.02,
+                **common
+            )
+        )
+        self.assertEqual(
+            classify_observation_staleness(
+                observation_present=True,
+                observation_receipt_age_sec=0.36,
+                **common
+            ),
+            "infrastructure:observation_c_producer_stall",
+        )
+        source_stale = dict(common)
+        source_stale["raw_lidar_receipt_age_sec"] = 0.40
+        self.assertEqual(
+            classify_observation_staleness(
+                observation_present=True,
+                observation_receipt_age_sec=0.36,
+                **source_stale
+            ),
+            "invalid_observation:source_stale",
+        )
+
     def test_identity_advances_exactly_once_per_reset(self):
         ledger = EpisodeIdentityLedger()
         self.assertEqual(ledger.current, EpisodeBinding(1, 0))
@@ -81,6 +120,14 @@ class EpisodeResetContractTest(unittest.TestCase):
             "last_step_index": 100,
             "last_request_id": 101,
             "status": "completed",
+            "scheduler_state": "CLOSED",
+            "active_action_interval_count": 0,
+            "actor_action_outstanding_count": 0,
+            "terminal_row_count": 1,
+            "replay_step_sequence_contiguous": True,
+            "ordered_replay_writer_submitted_count": 101,
+            "ordered_replay_writer_persisted_count": 101,
+            "ordered_replay_writer_pending_count": 0,
         }
         self.assertTrue(sac_closure_matches(binding, payload))
         payload["reset_generation"] = 2
@@ -88,6 +135,89 @@ class EpisodeResetContractTest(unittest.TestCase):
         payload["reset_generation"] = 3
         payload["last_request_id"] = 100
         self.assertFalse(sac_closure_matches(binding, payload))
+        payload["last_request_id"] = 101
+        payload["active_action_interval_count"] = 1
+        self.assertFalse(sac_closure_matches(binding, payload))
+        payload["active_action_interval_count"] = 0
+        payload["ordered_replay_writer_pending_count"] = 1
+        self.assertFalse(sac_closure_matches(binding, payload))
+        payload["ordered_replay_writer_pending_count"] = 0
+        payload["ordered_replay_writer_persisted_count"] = 100
+        self.assertFalse(sac_closure_matches(binding, payload))
+        payload["ordered_replay_writer_persisted_count"] = 101
+        payload["open_transition_count"] = payload.pop(
+            "active_action_interval_count"
+        )
+        self.assertTrue(sac_closure_matches(binding, payload))
+
+    def test_infrastructure_closure_forbids_reset_after_exactly_once_close(self):
+        binding = EpisodeBinding(12, 11)
+        payload = {
+            "episode_id": binding.episode_key,
+            "reset_generation": 11,
+            "terminal_transition_closed": True,
+            "transition_count": 1,
+            "last_step_index": 0,
+            "last_request_id": 1,
+            "status": "completed",
+            "scheduler_state": "CLOSED",
+            "active_action_interval_count": 0,
+            "actor_action_outstanding_count": 0,
+            "terminal_row_count": 1,
+            "replay_step_sequence_contiguous": True,
+            "ordered_replay_writer_submitted_count": 1,
+            "ordered_replay_writer_persisted_count": 1,
+            "ordered_replay_writer_pending_count": 0,
+            "fail_closed_after_closure": True,
+            "fail_closed_reason": (
+                "infrastructure:observation_c_producer_stall"
+            ),
+        }
+        self.assertFalse(
+            sac_closure_reset_allowed(
+                binding,
+                payload,
+                "infrastructure:observation_c_producer_stall",
+            )
+        )
+        payload["fail_closed_after_closure"] = False
+        with self.assertRaisesRegex(ValueError, "exact fail-closed reason"):
+            sac_closure_reset_allowed(
+                binding,
+                payload,
+                "infrastructure:observation_c_producer_stall",
+            )
+
+    def test_ordinary_terminals_continue_after_valid_closure(self):
+        binding = EpisodeBinding(4, 3)
+        base = {
+            "episode_id": binding.episode_key,
+            "reset_generation": 3,
+            "terminal_transition_closed": True,
+            "transition_count": 101,
+            "last_step_index": 100,
+            "last_request_id": 101,
+            "status": "completed",
+            "scheduler_state": "CLOSED",
+            "active_action_interval_count": 0,
+            "actor_action_outstanding_count": 0,
+            "terminal_row_count": 1,
+            "replay_step_sequence_contiguous": True,
+            "ordered_replay_writer_submitted_count": 101,
+            "ordered_replay_writer_persisted_count": 101,
+            "ordered_replay_writer_pending_count": 0,
+            "fail_closed_after_closure": False,
+            "fail_closed_reason": "",
+        }
+        for reason in (
+            "collision",
+            "planner_failure:NO_FEASIBLE_TRAJECTORY",
+            "max_episode_time",
+        ):
+            with self.subTest(reason=reason):
+                self.assertTrue(
+                    sac_closure_reset_allowed(binding, base, reason)
+                )
 
     def test_training_stops_exactly_at_completed_episode_10000(self):
         self.assertFalse(episode_count_stop_due(9999, 10000))
@@ -98,6 +228,20 @@ class EpisodeResetContractTest(unittest.TestCase):
     def test_evaluation_still_uses_its_independent_episode_count(self):
         self.assertFalse(episode_count_stop_due(2, 3))
         self.assertTrue(episode_count_stop_due(3, 3))
+
+    def test_map_switch_preflight_excludes_route_only_acceptance(self):
+        self.assertFalse(route_acceptance_required("map_switch_preflight"))
+        self.assertTrue(route_acceptance_required("training"))
+        self.assertTrue(route_acceptance_required("qualification"))
+
+        launch_text = (
+            Path(__file__).resolve().parents[1]
+            / "launch/hector_forest_sac_training.launch"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "arg('runner_mode') == 'map_switch_preflight'",
+            launch_text,
+        )
 
     def test_sac_launch_has_one_episode_stop_owner_and_no_transition_target(self):
         package = Path(__file__).resolve().parents[1]
@@ -127,6 +271,24 @@ class EpisodeResetContractTest(unittest.TestCase):
 
     def test_formal_vmax_bounds_reach_ego_and_speed_filter_launches(self):
         package = Path(__file__).resolve().parents[1]
+        backend_arguments = {
+            element.attrib["name"]: element.attrib.get("default")
+            for element in ET.parse(
+                package / "launch/hector_ego_training_backend.launch"
+            ).getroot().findall("arg")
+        }
+        self.assertEqual(backend_arguments["max_vel"], "4.00")
+        self.assertEqual(backend_arguments["max_acc"], "3.00")
+
+        episode_arguments = {
+            element.attrib["name"]: element.attrib.get("default")
+            for element in ET.parse(
+                package / "launch/hector_training_episode_reset.launch"
+            ).getroot().findall("arg")
+        }
+        self.assertEqual(episode_arguments["static_max_vel"], "4.00")
+        self.assertEqual(episode_arguments["static_max_acc"], "3.00")
+
         observation_launch = (
             package / "launch/hector_training_observation_c.launch"
         ).read_text(encoding="utf-8")
@@ -136,6 +298,10 @@ class EpisodeResetContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn(
             '<arg name="max_vel" value="$(arg static_max_vel)"/>',
+            observation_launch,
+        )
+        self.assertIn(
+            '<arg name="max_acc" value="$(arg static_max_acc)"/>',
             observation_launch,
         )
         self.assertIn(
@@ -150,6 +316,19 @@ class EpisodeResetContractTest(unittest.TestCase):
             '<param name="safety/v_max_min" value="$(arg static_min_vel)"/>',
             speed_launch,
         )
+        self.assertIn(
+            '<param name="safety/v_max_max" value="$(arg static_max_vel)"/>',
+            speed_launch,
+        )
+
+        for launch_name in (
+            "hector_worksite_sac_training.launch",
+            "hector_forest_sac_training.launch",
+        ):
+            text = (package / "launch" / launch_name).read_text(encoding="utf-8")
+            self.assertIn('<arg name="v_max_max" default="1.75"/>', text)
+            self.assertIn('<arg name="static_max_vel" value="4.00"/>', text)
+            self.assertIn('<arg name="static_max_acc" value="3.00"/>', text)
 
     def test_observation_requires_current_generation_and_trajectory(self):
         binding = EpisodeBinding(3, 2)

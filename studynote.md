@@ -902,15 +902,8 @@ set -e
 export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
 export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
 
-mkdir -p "$HECTOR_OVERLAY/src"
-if [ ! -f "$HECTOR_OVERLAY/devel/setup.bash" ]; then
-  cp -a /home/yanzu/rl_reference/controllers/hector-quadrotor-noetic/. \
-    "$HECTOR_OVERLAY/src/"
-  cd "$HECTOR_OVERLAY"
-  source /opt/ros/noetic/setup.bash
-  catkin_make -j2 \
-    -DCATKIN_WHITELIST_PACKAGES='hector_uav_msgs;hector_gazebo_plugins;hector_quadrotor_model;hector_quadrotor_controller;hector_quadrotor_controller_gazebo;hector_quadrotor_gazebo_plugins;hector_quadrotor_description;hector_quadrotor_gazebo;message_to_tf'
-fi
+"$ASTRA_ROOT/scripts/run_sh/prepare_hector_training_overlay.sh" \
+  --overlay "$HECTOR_OVERLAY"
 
 cd "$ASTRA_ROOT"
 source /opt/ros/noetic/setup.bash

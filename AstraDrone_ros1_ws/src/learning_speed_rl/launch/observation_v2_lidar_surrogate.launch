@@ -19,6 +19,7 @@
   <arg name="sensor_rotation_y" default="0.0"/>
   <arg name="sensor_rotation_z" default="0.0"/>
   <arg name="sensor_rotation_w" default="1.0"/>
+  <arg name="cloud_rate_reference_hz" default="10.0"/>
 
   <group ns="$(arg namespace)">
     <node pkg="learning_speed_rl" type="observation_v2_node.py"
@@ -37,6 +38,8 @@
              value="$(arg cloud_frame_mode)"/>
       <param name="observation_v2/timing/pose_lookup_policy"
              value="$(arg pose_lookup_policy)"/>
+      <param name="observation_v2/cloud_rate_reference_hz"
+             value="$(arg cloud_rate_reference_hz)"/>
       <rosparam subst_value="true"
                 param="observation_v2/sensor_extrinsic/translation_body_sensor_m">[$(arg sensor_translation_x), $(arg sensor_translation_y), $(arg sensor_translation_z)]</rosparam>
       <rosparam subst_value="true"

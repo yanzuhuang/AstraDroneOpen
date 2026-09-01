@@ -63,6 +63,14 @@ uint32 lidar_history_frames
 float64 lidar_source_rate_hz
 float64 lidar_build_duration_ms
 
+# Observation C producer telemetry; excluded from policy input and Reward.
+float64 producer_input_queue_lag_wall_sec
+float64 producer_source_to_callback_sec
+float64 producer_fusion_duration_wall_ms
+uint64 producer_input_count
+uint64 producer_processed_count
+uint64 producer_coalesced_drop_count
+
 float32[] lidar_surrogate
 float32[] lidar_valid_mask
 float32[] lidar_unknown_mask

@@ -13,17 +13,6 @@ namespace ego_planner
 
   EGOPlannerManager::~EGOPlannerManager() {}
 
-  bool EGOPlannerManager::setMaxVelocity(double max_velocity)
-  {
-    if (!std::isfinite(max_velocity) || max_velocity <= 0.0 ||
-        !bspline_optimizer_ ||
-        !bspline_optimizer_->setMaxVelocity(max_velocity))
-      return false;
-
-    pp_.max_vel_ = max_velocity;
-    return true;
-  }
-
   void EGOPlannerManager::initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis)
   {
     /* read algorithm parameters */
@@ -36,6 +25,7 @@ namespace ego_planner
     nh.param("manager/planning_horizon", pp_.planning_horizen_, 5.0);
     nh.param("manager/use_distinctive_trajs", pp_.use_distinctive_trajs, false);
     nh.param("manager/drone_id", pp_.drone_id, -1);
+    capability_max_velocity_ = pp_.max_vel_;
 
     local_data_.traj_id_ = 0;
     grid_map_.reset(new GridMap);
@@ -50,7 +40,6 @@ namespace ego_planner
     bspline_optimizer_->setEnvironment(grid_map_, obj_predictor_);
     bspline_optimizer_->a_star_.reset(new AStar);
     bspline_optimizer_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
-
     visualization_ = vis;
   }
 
@@ -60,8 +49,31 @@ namespace ego_planner
 
   bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
-                                        Eigen::Vector3d local_target_vel, bool flag_polyInit, bool flag_randomPolyTraj)
+                                        Eigen::Vector3d local_target_vel, bool flag_polyInit,
+                                        bool flag_randomPolyTraj,
+                                        const DynamicVmaxSnapshot &speed_snapshot)
   {
+    const double invocation_max_velocity = speed_snapshot.v_max;
+    if (!std::isfinite(invocation_max_velocity) ||
+        invocation_max_velocity <= 0.0 ||
+        invocation_max_velocity > capability_max_velocity_ + 1.0e-9 ||
+        !bspline_optimizer_ ||
+        !bspline_optimizer_->bindMaxVelocityForInvocation(
+            invocation_max_velocity, speed_snapshot.version))
+    {
+      ROS_ERROR("[EGO SPEED SNAPSHOT] invalid planner admission version=%llu "
+                "v_max=%.6f ceiling=%.6f.",
+                static_cast<unsigned long long>(speed_snapshot.version),
+                invocation_max_velocity, capability_max_velocity_);
+      return false;
+    }
+    ROS_INFO("[EGO SPEED SNAPSHOT] planner admission version=%llu v_max=%.6f "
+             "force_generation=%llu.",
+             static_cast<unsigned long long>(speed_snapshot.version),
+             invocation_max_velocity,
+             static_cast<unsigned long long>(
+                 speed_snapshot.force_replan_generation));
+
     static int count = 0;
     printf("\033[47;30m\n[drone %d replan %d]==============================================\033[0m\n", pp_.drone_id, count++);
     // cout.precision(3);
@@ -81,7 +93,7 @@ namespace ego_planner
     ros::Duration t_init, t_opt, t_refine;
 
     /*** STEP 1: INIT ***/
-    double ts = (start_pt - local_target_pt).norm() > 0.1 ? pp_.ctrl_pt_dist / pp_.max_vel_ * 1.5 : pp_.ctrl_pt_dist / pp_.max_vel_ * 5; // pp_.ctrl_pt_dist / pp_.max_vel_ is too tense, and will surely exceed the acc/vel limits
+    double ts = (start_pt - local_target_pt).norm() > 0.1 ? pp_.ctrl_pt_dist / invocation_max_velocity * 1.5 : pp_.ctrl_pt_dist / invocation_max_velocity * 5; // pp_.ctrl_pt_dist / max velocity is too tense, and will surely exceed the acc/vel limits
     vector<Eigen::Vector3d> point_set, start_end_derivatives;
     static bool flag_first_call = true, flag_force_polynomial = false;
     bool flag_regenerate = false;
@@ -99,7 +111,7 @@ namespace ego_planner
         PolynomialTraj gl_traj;
 
         double dist = (start_pt - local_target_pt).norm();
-        double time = pow(pp_.max_vel_, 2) / pp_.max_acc_ > dist ? sqrt(dist / pp_.max_acc_) : (dist - pow(pp_.max_vel_, 2) / pp_.max_acc_) / pp_.max_vel_ + 2 * pp_.max_vel_ / pp_.max_acc_;
+        double time = pow(invocation_max_velocity, 2) / pp_.max_acc_ > dist ? sqrt(dist / pp_.max_acc_) : (dist - pow(invocation_max_velocity, 2) / pp_.max_acc_) / invocation_max_velocity + 2 * invocation_max_velocity / pp_.max_acc_;
 
         if (!flag_randomPolyTraj)
         {
@@ -167,7 +179,7 @@ namespace ego_planner
         }
         t -= ts;
 
-        double poly_time = (local_data_.position_traj_.evaluateDeBoorT(t) - local_target_pt).norm() / pp_.max_vel_ * 2;
+        double poly_time = (local_data_.position_traj_.evaluateDeBoorT(t) - local_target_pt).norm() / invocation_max_velocity * 2;
         if (poly_time > ts)
         {
           PolynomialTraj gl_traj = PolynomialTraj::one_segment_traj_gen(local_data_.position_traj_.evaluateDeBoorT(t),
@@ -299,7 +311,7 @@ namespace ego_planner
     t_start = ros::Time::now();
 
     UniformBspline pos = UniformBspline(ctrl_pts, 3, ts);
-    pos.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_, pp_.feasibility_tolerance_);
+    pos.setPhysicalLimits(invocation_max_velocity, pp_.max_acc_, pp_.feasibility_tolerance_);
 
     /*** STEP 3: REFINE(RE-ALLOCATE TIME) IF NECESSARY ***/
     // Note: Only adjust time in single drone mode. But we still allow drone_0 to adjust its time profile.
@@ -337,7 +349,8 @@ namespace ego_planner
 
     t_refine = ros::Time::now() - t_start;
 
-    // save planned results
+    // EGO owns the single native-style publication path.  Collision handling
+    // remains in A*/optimizer/FSM; there is no second committed owner.
     updateTrajInfo(pos, ros::Time::now());
 
     static double sum_time = 0;
@@ -353,14 +366,12 @@ namespace ego_planner
 
   bool EGOPlannerManager::EmergencyStop(Eigen::Vector3d stop_pos)
   {
+    if (!stop_pos.allFinite())
+      return false;
     Eigen::MatrixXd control_points(3, 6);
-    for (int i = 0; i < 6; i++)
-    {
-      control_points.col(i) = stop_pos;
-    }
-
+    for (int index = 0; index < 6; ++index)
+      control_points.col(index) = stop_pos;
     updateTrajInfo(UniformBspline(control_points, 3, 1.0), ros::Time::now());
-
     return true;
   }
 
@@ -389,8 +400,13 @@ namespace ego_planner
   }
 
   bool EGOPlannerManager::planGlobalTrajWaypoints(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
-                                                  const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
+                                                  const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
+                                                  double max_velocity)
   {
+
+    if (!std::isfinite(max_velocity) || max_velocity <= 0.0 ||
+        max_velocity > capability_max_velocity_ + 1.0e-9)
+      return false;
 
     // generate global reference trajectory
 
@@ -448,7 +464,7 @@ namespace ego_planner
     Eigen::VectorXd time(pt_num - 1);
     for (int i = 0; i < pt_num - 1; ++i)
     {
-      time(i) = (pos.col(i + 1) - pos.col(i)).norm() / (pp_.max_vel_);
+      time(i) = (pos.col(i + 1) - pos.col(i)).norm() / max_velocity;
     }
 
     time(0) *= 2.0;
@@ -469,8 +485,13 @@ namespace ego_planner
   }
 
   bool EGOPlannerManager::planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
-                                         const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
+                                         const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
+                                         double max_velocity)
   {
+
+    if (!std::isfinite(max_velocity) || max_velocity <= 0.0 ||
+        max_velocity > capability_max_velocity_ + 1.0e-9)
+      return false;
 
     // generate global reference trajectory
 
@@ -512,7 +533,7 @@ namespace ego_planner
     Eigen::VectorXd time(pt_num - 1);
     for (int i = 0; i < pt_num - 1; ++i)
     {
-      time(i) = (pos.col(i + 1) - pos.col(i)).norm() / (pp_.max_vel_);
+      time(i) = (pos.col(i + 1) - pos.col(i)).norm() / max_velocity;
     }
 
     time(0) *= 2.0;

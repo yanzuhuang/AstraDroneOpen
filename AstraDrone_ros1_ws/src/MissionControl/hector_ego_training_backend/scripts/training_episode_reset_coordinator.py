@@ -4,6 +4,8 @@
 import json
 import math
 import os
+from pathlib import Path
+import resource
 import statistics
 import threading
 import time
@@ -31,6 +33,7 @@ from learning_speed_rl.msg import (
     SpeedRequestStamped,
 )
 from learning_speed_rl.training import (
+    BalancedForestMapScheduler,
     actual_speed_mps_from_body_velocity,
     lidar_clutter_metrics,
     reward_from_config,
@@ -45,10 +48,13 @@ from hector_ego_training_backend.episode_reset_contract import (
     ResetSamplingError,
     StaticObstacleXY,
     action_matches,
+    classify_observation_staleness,
     episode_count_stop_due,
     fixed_terminal_hold_matches,
     observation_matches,
+    route_acceptance_required,
     sac_closure_matches,
+    sac_closure_reset_allowed,
     trajectory_matches,
     validate_reset_candidate,
 )
@@ -103,6 +109,38 @@ def _statistics(values):
     }
 
 
+def _stamp_sec(message):
+    if message is None or not hasattr(message, "header"):
+        return None
+    return float(message.header.stamp.to_sec())
+
+
+def _bspline_timing(message, now_sim):
+    if message is None:
+        return {
+            "trajectory_id": None,
+            "start_stamp_sec": None,
+            "end_stamp_sec": None,
+            "duration_sec": None,
+            "remaining_lifetime_sec": None,
+        }
+    degree = int(message.order)
+    knots = list(message.knots)
+    start = float(message.start_time.to_sec())
+    end = None
+    if degree > 0 and len(knots) > 2 * degree:
+        end = start + float(knots[len(knots) - 1 - degree]) - float(
+            knots[degree]
+        )
+    return {
+        "trajectory_id": int(message.traj_id),
+        "start_stamp_sec": start,
+        "end_stamp_sec": end,
+        "duration_sec": None if end is None else end - start,
+        "remaining_lifetime_sec": None if end is None else end - float(now_sim),
+    }
+
+
 class TrainingEpisodeResetCoordinator:
     def __init__(self):
         self._lock = threading.RLock()
@@ -133,7 +171,9 @@ class TrainingEpisodeResetCoordinator:
             raise ValueError("qualification_only must remain true")
         if not self._output_dir:
             raise ValueError("~output_dir is required")
-        if self._runner_mode not in ("qualification", "training", "evaluation"):
+        if self._runner_mode not in (
+            "qualification", "training", "evaluation", "map_switch_preflight"
+        ):
             raise ValueError("runner_mode is invalid")
         if self._episode_count <= 0:
             raise ValueError("episode_count must be positive")
@@ -179,6 +219,12 @@ class TrainingEpisodeResetCoordinator:
         self._truth_cloud_clear_service = str(
             rospy.get_param("~truth_cloud_clear_service", "")
         ).strip()
+        self._require_forest_map_ready = bool(
+            rospy.get_param("~require_forest_map_ready", False)
+        )
+        self._forest_map_switch_timeout = float(
+            rospy.get_param("~forest_map_switch_timeout_wall", 45.0)
+        )
         self._controllers = list(rospy.get_param("~controller_names", ["controller/pose", "controller/twist"]))
         if len(self._entry) != 3 or len(self._hover) != 4:
             raise ValueError("entry_goal/hover_pose dimensions are invalid")
@@ -274,23 +320,32 @@ class TrainingEpisodeResetCoordinator:
         self._previous_trajectory_id = 0
         self._accepted_trajectory_id = 0
         self._accepted_trajectory_start = 0.0
+        self._accepted_trajectory_start_secs = 0
+        self._accepted_trajectory_start_nsecs = 0
         self._goal_sequence = 0
         self._goal_stamp = 0.0
         self._odom = None
         self._odom_receipt_wall = 0.0
+        self._odom_sequence = 0
         self._lidar = None
         self._lidar_receipt_wall = 0.0
+        self._lidar_sequence = 0
         self._v2 = None
         self._v2_receipt_wall = 0.0
+        self._v2_sequence = 0
         self._observation = None
         self._observation_receipt_wall = 0.0
+        self._observation_sequence = 0
         self._last_valid_observation_wall = 0.0
         self._trajectory = None
         self._backend = {}
         self._planner = None
+        self._request = None
         self._action = None
         self._applied = None
         self._sac_closure = None
+        self._sac_closure_keys = set()
+        self._duplicate_sac_closure_count = 0
         self._position_command = None
         self._v2_diagnostics = {}
         self._c_diagnostics = {}
@@ -324,11 +379,21 @@ class TrainingEpisodeResetCoordinator:
         self._tracking_errors = []
         self._actual_speeds = []
         self._registered_cloud_state = {}
+        self._forest_map_state = {}
+        self._forest_map_switches = []
+        self._forest_preflight_records = []
+        self._stale_snapshots = []
+        self._active_stale_snapshot_id = None
+        self._stale_gap_active = False
         self._registered_corridor_counts = []
         self._registered_corridor_minimum_distances = []
         self._event_file = open(
             os.path.join(self._output_dir, "qualification_events.jsonl"),
             "w", encoding="utf-8",
+        )
+        self._stale_snapshot_file = open(
+            os.path.join(self._output_dir, "stale_observation_snapshots.jsonl"),
+            "w", encoding="utf-8", buffering=1,
         )
         self._reward_step_file = (
             open(
@@ -346,8 +411,16 @@ class TrainingEpisodeResetCoordinator:
             "training/reset_hover", PoseStamped, queue_size=1, latch=True
         )
         self._cancel_pub = rospy.Publisher("planning/cancel", EmptyMessage, queue_size=1)
+        self._forest_map_request_pub = rospy.Publisher(
+            "/uav1/learning_speed/forest_map_request", String,
+            queue_size=1, latch=True,
+        )
         self._request_pub = rospy.Publisher(
             "learning_speed/mock_v_max", SpeedRequestStamped, queue_size=10
+        )
+        self._stale_snapshot_pub = rospy.Publisher(
+            "learning_speed/stale_observation_snapshot",
+            String, queue_size=10, latch=True,
         )
         self._cloud_pub = None
         if self._publish_synthetic_ego_cloud:
@@ -361,11 +434,16 @@ class TrainingEpisodeResetCoordinator:
         rospy.Subscriber("planning/pos_cmd", PositionCommand, self._position_command_callback, queue_size=50)
         rospy.Subscriber("planner/status", PlannerStatus, self._planner_callback, queue_size=20)
         rospy.Subscriber("position_command_to_hector/backend_state", String, self._backend_callback, queue_size=10)
+        rospy.Subscriber("learning_speed/mock_v_max", SpeedRequestStamped, self._request_callback, queue_size=20)
         rospy.Subscriber("learning_speed/action_stamped", SpeedActionStamped, self._action_callback, queue_size=20)
         rospy.Subscriber("learning_speed/applied_v_max_stamped", SpeedAppliedStamped, self._applied_callback, queue_size=20)
         rospy.Subscriber(
             "learning_speed/sac_episode_closed", String,
             self._sac_closure_callback, queue_size=10,
+        )
+        rospy.Subscriber(
+            "/uav1/learning_speed/forest_map_state", String,
+            self._forest_map_state_callback, queue_size=10,
         )
         rospy.Subscriber("learning_speed/observation_v2/diagnostics", DiagnosticArray, self._v2_diagnostic_callback, queue_size=10)
         rospy.Subscriber("learning_speed/observation_c/diagnostics", DiagnosticArray, self._c_diagnostic_callback, queue_size=10)
@@ -386,6 +464,9 @@ class TrainingEpisodeResetCoordinator:
         self._adapter_activate = rospy.ServiceProxy("position_command_to_hector/activate_trajectory", Trigger)
         self._clear_c = rospy.ServiceProxy("observation_c/clear_temporal_history", Trigger)
         self._clear_v2 = rospy.ServiceProxy("observation_v2/clear_temporal_history", Trigger)
+        self._clear_environment_map = rospy.ServiceProxy(
+            "planning/clear_environment_map", Trigger
+        )
         self._clear_truth_cloud = (
             rospy.ServiceProxy(self._truth_cloud_clear_service, Trigger)
             if self._truth_cloud_clear_service else None
@@ -435,6 +516,8 @@ class TrainingEpisodeResetCoordinator:
             "start_reset": dict(self._current_episode_start),
             "trajectory_id": self._accepted_trajectory_id,
             "trajectory_start_time": self._accepted_trajectory_start,
+            "trajectory_start_time_secs": self._accepted_trajectory_start_secs,
+            "trajectory_start_time_nsecs": self._accepted_trajectory_start_nsecs,
             "reset_barrier_stamp": self._reset_barrier,
         }
         self._identity_pub.publish(String(data=json.dumps(payload, sort_keys=True)))
@@ -447,7 +530,7 @@ class TrainingEpisodeResetCoordinator:
 
     def _odom_callback(self, message):
         with self._lock:
-            self._next_sequence_locked()
+            self._odom_sequence = self._next_sequence_locked()
             self._odom = message
             self._odom_receipt_wall = time.monotonic()
             if self._active_episode:
@@ -458,7 +541,7 @@ class TrainingEpisodeResetCoordinator:
 
     def _lidar_callback(self, message):
         with self._lock:
-            self._next_sequence_locked()
+            self._lidar_sequence = self._next_sequence_locked()
             self._lidar = message
             self._lidar_receipt_wall = time.monotonic()
 
@@ -469,7 +552,7 @@ class TrainingEpisodeResetCoordinator:
             else list(bytearray(message.semantic))
         )
         with self._lock:
-            self._next_sequence_locked()
+            self._v2_sequence = self._next_sequence_locked()
             self._v2 = message
             self._v2_receipt_wall = time.monotonic()
             if self._binding.reset_generation > 0 and (
@@ -496,9 +579,10 @@ class TrainingEpisodeResetCoordinator:
     def _observation_callback(self, message):
         receipt = time.monotonic()
         with self._lock:
-            self._next_sequence_locked()
+            self._observation_sequence = self._next_sequence_locked()
             self._observation = message
             self._observation_receipt_wall = receipt
+            self._stale_gap_active = False
             if message.valid:
                 self._last_valid_observation_wall = receipt
             if self._active_episode:
@@ -756,6 +840,11 @@ class TrainingEpisodeResetCoordinator:
             self._next_sequence_locked()
             self._backend = payload
 
+    def _request_callback(self, message):
+        with self._lock:
+            sequence = self._next_sequence_locked()
+            self._request = (message, sequence, time.monotonic())
+
     def _action_callback(self, message):
         with self._lock:
             sequence = self._next_sequence_locked()
@@ -771,8 +860,24 @@ class TrainingEpisodeResetCoordinator:
             payload = json.loads(message.data)
         except (TypeError, ValueError):
             return
+        key = (
+            str(payload.get("episode_id", "")),
+            int(payload.get("reset_generation", -1)),
+        )
         with self._lock:
+            if key in self._sac_closure_keys:
+                self._duplicate_sac_closure_count += 1
+                return
+            self._sac_closure_keys.add(key)
             self._sac_closure = payload
+
+    def _forest_map_state_callback(self, message):
+        try:
+            payload = json.loads(message.data)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            self._forest_map_state = payload
 
     def _v2_diagnostic_callback(self, message):
         with self._lock:
@@ -822,6 +927,7 @@ class TrainingEpisodeResetCoordinator:
             "/uav1/observation_v2/clear_temporal_history",
         )
         required = list(names)
+        required.append("/uav1/planning/clear_environment_map")
         if self._truth_cloud_clear_service:
             required.append(self._truth_cloud_clear_service)
         for name in required:
@@ -843,6 +949,347 @@ class TrainingEpisodeResetCoordinator:
         v = self._odom.twist.twist.linear
         roll, pitch = _roll_pitch(self._odom.pose.pose.orientation)
         return (p.x, p.y, p.z), (v.x, v.y, v.z), roll, pitch, self._odom.header.stamp.to_sec()
+
+    @staticmethod
+    def _stamped_speed_snapshot(item, now_monotonic, kind):
+        if item is None:
+            return None
+        message, sequence, receipt_monotonic = item
+        result = {
+            "kind": kind,
+            "callback_sequence": int(sequence),
+            "header_stamp_sec": _stamp_sec(message),
+            "receipt_monotonic_sec": float(receipt_monotonic),
+            "receipt_age_wall_sec": max(
+                0.0, float(now_monotonic) - float(receipt_monotonic)
+            ),
+            "episode_id": str(message.episode_id),
+            "step_index": int(message.step_index),
+            "request_id": int(message.request_id),
+            "version": str(message.version),
+        }
+        if hasattr(message, "requested_v_max"):
+            result["requested_v_max"] = float(message.requested_v_max)
+        if hasattr(message, "filtered_v_max"):
+            result["filtered_v_max"] = float(message.filtered_v_max)
+        if hasattr(message, "applied_v_max"):
+            result["applied_v_max"] = float(message.applied_v_max)
+        return result
+
+    def _capture_stale_snapshot_locked(
+        self, now_sim, now_monotonic, now_wall_epoch, start_sim
+    ):
+        observation = self._observation
+        lidar = self._lidar
+        v2 = self._v2
+        trajectory_item = self._trajectory
+        trajectory = None if trajectory_item is None else trajectory_item[0]
+        trajectory_sequence = (
+            None if trajectory_item is None else int(trajectory_item[1])
+        )
+        trajectory_receipt = (
+            None if trajectory_item is None else float(trajectory_item[2])
+        )
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        try:
+            load_average = list(os.getloadavg())
+        except OSError:
+            load_average = None
+        observation_receipt_age = (
+            None
+            if self._observation_receipt_wall <= 0.0
+            else max(
+                0.0,
+                float(now_monotonic) - self._observation_receipt_wall,
+            )
+        )
+        snapshot_id = "{}:g{}:stale:{}".format(
+            self._binding.episode_key,
+            self._binding.reset_generation,
+            len(self._stale_snapshots) + 1,
+        )
+        snapshot = {
+            "schema_version": "astradrone_stale_observation_snapshot_v1.0",
+            "event": "STALE_CANDIDATE",
+            "snapshot_id": snapshot_id,
+            "episode_id": int(self._binding.episode_id),
+            "episode_key": str(self._binding.episode_key),
+            "reset_generation": int(self._binding.reset_generation),
+            "coordinator_state": str(self._state),
+            "terminal_reason_candidate": "invalid_observation:stale",
+            "stale_threshold_wall_sec": float(self._observation_freshness),
+            "candidate_sim_time_sec": float(now_sim),
+            "candidate_wall_time_sec": float(now_wall_epoch),
+            "candidate_monotonic_time_sec": float(now_monotonic),
+            "episode_elapsed_sim_sec": float(now_sim) - float(start_sim),
+            "observation": {
+                "present": observation is not None,
+                "valid": None if observation is None else bool(observation.valid),
+                "diagnostics": (
+                    [] if observation is None else list(observation.diagnostics)
+                ),
+                "header_stamp_sec": _stamp_sec(observation),
+                "lookup_receipt_stamp_sec": (
+                    None
+                    if observation is None
+                    else float(observation.lookup_receipt_time.to_sec())
+                ),
+                "coordinator_receipt_monotonic_sec": (
+                    None
+                    if self._observation_receipt_wall <= 0.0
+                    else float(self._observation_receipt_wall)
+                ),
+                "coordinator_receipt_age_wall_sec": observation_receipt_age,
+                "source_age_sim_sec": (
+                    None
+                    if observation is None
+                    else float(now_sim) - float(observation.header.stamp.to_sec())
+                ),
+                "source_to_receipt_latency_sec": (
+                    None
+                    if observation is None
+                    else float(observation.source_to_receipt_latency_sec)
+                ),
+                "temporal_generation": (
+                    None
+                    if observation is None
+                    else int(observation.temporal_generation)
+                ),
+                "lidar_temporal_generation": (
+                    None
+                    if observation is None
+                    else int(observation.lidar_temporal_generation)
+                ),
+                "lidar_pose_source_stamp_sec": (
+                    None
+                    if observation is None
+                    else float(observation.lidar_pose_source_stamp.to_sec())
+                ),
+                "selected_trajectory_id": (
+                    None
+                    if observation is None
+                    else int(observation.selected_trajectory_id)
+                ),
+                "selected_trajectory_missing": (
+                    None
+                    if observation is None
+                    else bool(observation.selected_trajectory_missing)
+                ),
+                "selected_trajectory_start_stamp_sec": (
+                    None
+                    if observation is None
+                    else float(observation.selected_trajectory_start_stamp.to_sec())
+                ),
+                "selected_trajectory_end_stamp_sec": (
+                    None
+                    if observation is None
+                    else float(observation.selected_trajectory_end_stamp.to_sec())
+                ),
+                "latest_trajectory_id_at_lookup": (
+                    None
+                    if observation is None
+                    else int(observation.latest_trajectory_id_at_lookup)
+                ),
+                "latest_trajectory_start_stamp_sec": (
+                    None
+                    if observation is None
+                    else float(observation.latest_trajectory_start_stamp.to_sec())
+                ),
+                "callback_sequence": int(self._observation_sequence),
+            },
+            "raw_lidar": {
+                "present": lidar is not None,
+                "header_stamp_sec": _stamp_sec(lidar),
+                "source_age_sim_sec": (
+                    None
+                    if lidar is None
+                    else float(now_sim) - float(lidar.header.stamp.to_sec())
+                ),
+                "coordinator_receipt_monotonic_sec": (
+                    None
+                    if self._lidar_receipt_wall <= 0.0
+                    else float(self._lidar_receipt_wall)
+                ),
+                "receipt_age_wall_sec": (
+                    None
+                    if self._lidar_receipt_wall <= 0.0
+                    else max(
+                        0.0,
+                        float(now_monotonic) - self._lidar_receipt_wall,
+                    )
+                ),
+                "callback_sequence": int(self._lidar_sequence),
+            },
+            "observation_v2": {
+                "present": v2 is not None,
+                "valid": None if v2 is None else bool(v2.valid),
+                "diagnostics": [] if v2 is None else list(v2.diagnostics),
+                "header_stamp_sec": _stamp_sec(v2),
+                "pose_source_stamp_sec": (
+                    None if v2 is None else float(v2.pose_source_stamp.to_sec())
+                ),
+                "temporal_generation": (
+                    None if v2 is None else int(v2.temporal_generation)
+                ),
+                "build_duration_ms": (
+                    None if v2 is None else float(v2.build_duration_ms)
+                ),
+                "coordinator_receipt_monotonic_sec": (
+                    None
+                    if self._v2_receipt_wall <= 0.0
+                    else float(self._v2_receipt_wall)
+                ),
+                "receipt_age_wall_sec": (
+                    None
+                    if self._v2_receipt_wall <= 0.0
+                    else max(
+                        0.0,
+                        float(now_monotonic) - self._v2_receipt_wall,
+                    )
+                ),
+                "callback_sequence": int(self._v2_sequence),
+            },
+            "current_bspline": {
+                **_bspline_timing(trajectory, now_sim),
+                "callback_sequence": trajectory_sequence,
+                "receipt_monotonic_sec": trajectory_receipt,
+                "receipt_age_wall_sec": (
+                    None
+                    if trajectory_receipt is None
+                    else max(0.0, float(now_monotonic) - trajectory_receipt)
+                ),
+            },
+            "latest_request": self._stamped_speed_snapshot(
+                self._request, now_monotonic, "request"
+            ),
+            "latest_action": self._stamped_speed_snapshot(
+                self._action, now_monotonic, "action"
+            ),
+            "latest_applied": self._stamped_speed_snapshot(
+                self._applied, now_monotonic, "applied"
+            ),
+            "callback_evidence": {
+                "global_callback_sequence": int(self._callback_sequence),
+                "odom_sequence": int(self._odom_sequence),
+                "raw_lidar_sequence": int(self._lidar_sequence),
+                "observation_v2_sequence": int(self._v2_sequence),
+                "observation_c_sequence": int(self._observation_sequence),
+                "callbacks_since_last_observation_c": int(
+                    self._callback_sequence - self._observation_sequence
+                ),
+                "subscriber_queue_sizes": {
+                    "raw_lidar": 20,
+                    "observation_v2": 20,
+                    "observation_c": 50,
+                    "trajectory": 20,
+                    "request_action_applied": 20,
+                },
+                "queue_depth_directly_available": False,
+                "observation_c_diagnostics": dict(self._c_diagnostics),
+                "observation_v2_diagnostics": dict(self._v2_diagnostics),
+            },
+            "process_load": {
+                "load_average_1_5_15": load_average,
+                "coordinator_user_cpu_sec": float(usage.ru_utime),
+                "coordinator_system_cpu_sec": float(usage.ru_stime),
+                "coordinator_max_rss_mib": float(usage.ru_maxrss) / 1024.0,
+            },
+        }
+        self._stale_snapshots.append(snapshot)
+        self._active_stale_snapshot_id = snapshot_id
+        self._stale_gap_active = True
+        self._stale_snapshot_file.write(json.dumps(snapshot, sort_keys=True) + "\n")
+        self._stale_snapshot_file.flush()
+        return snapshot
+
+    def _record_stale_terminal_latch(self, snapshot_id, terminal_reason):
+        with self._lock:
+            record = {
+                "schema_version": "astradrone_stale_observation_snapshot_v1.0",
+                "event": "STALE_TERMINAL_LATCH",
+                "snapshot_id": str(snapshot_id),
+                "episode_id": int(self._binding.episode_id),
+                "episode_key": str(self._binding.episode_key),
+                "reset_generation": int(self._binding.reset_generation),
+                "terminal_reason": str(terminal_reason),
+                "terminal_sim_time_sec": float(rospy.Time.now().to_sec()),
+                "terminal_wall_time_sec": float(time.time()),
+                "terminal_monotonic_time_sec": float(time.monotonic()),
+                "callback_sequence": int(self._callback_sequence),
+            }
+            self._stale_snapshot_file.write(json.dumps(record, sort_keys=True) + "\n")
+            self._stale_snapshot_file.flush()
+        self._stale_snapshot_pub.publish(
+            String(data=json.dumps(record, sort_keys=True))
+        )
+        return record
+
+    def _classify_observation_staleness_locked(self, now_monotonic):
+        observation_age = (
+            math.inf
+            if self._observation_receipt_wall <= 0.0
+            else max(0.0, now_monotonic - self._observation_receipt_wall)
+        )
+        lidar_age = (
+            math.inf
+            if self._lidar_receipt_wall <= 0.0
+            else max(0.0, now_monotonic - self._lidar_receipt_wall)
+        )
+        v2_age = (
+            math.inf
+            if self._v2_receipt_wall <= 0.0
+            else max(0.0, now_monotonic - self._v2_receipt_wall)
+        )
+        return classify_observation_staleness(
+            observation_present=self._observation is not None,
+            observation_receipt_age_sec=observation_age,
+            raw_lidar_present=self._lidar is not None,
+            raw_lidar_receipt_age_sec=lidar_age,
+            observation_v2_present=self._v2 is not None,
+            observation_v2_valid=(
+                self._v2 is not None and bool(self._v2.valid)
+            ),
+            observation_v2_receipt_age_sec=v2_age,
+            observation_freshness_sec=self._observation_freshness,
+            raw_lidar_freshness_sec=self._lidar_freshness,
+        )
+
+    def _commit_stale_terminal_if_current(self):
+        """Atomically revalidate freshness and linearize a stale terminal."""
+
+        with self._lock:
+            now_monotonic = time.monotonic()
+            reason = self._classify_observation_staleness_locked(now_monotonic)
+            if reason is None:
+                record = {
+                    "schema_version": "astradrone_stale_observation_snapshot_v1.0",
+                    "event": "STALE_CANDIDATE_RECOVERED",
+                    "snapshot_id": str(
+                        self._active_stale_snapshot_id
+                        or "missing_stale_candidate"
+                    ),
+                    "episode_id": int(self._binding.episode_id),
+                    "episode_key": str(self._binding.episode_key),
+                    "reset_generation": int(self._binding.reset_generation),
+                    "recovery_monotonic_time_sec": float(now_monotonic),
+                    "observation_callback_sequence": int(
+                        self._observation_sequence
+                    ),
+                    "global_callback_sequence": int(self._callback_sequence),
+                }
+                self._stale_snapshot_file.write(
+                    json.dumps(record, sort_keys=True) + "\n"
+                )
+                self._stale_snapshot_file.flush()
+                self._stale_gap_active = False
+                self._active_stale_snapshot_id = None
+                return None
+            # The observation callback uses the same lock.  Once these fields
+            # are set, a later callback is causally after the terminal latch.
+            self._terminal_latched = True
+            self._terminal_outcome = "FAILURE"
+            self._terminal_reason = reason
+            return "FAILURE", reason
 
     def _physical_ready(self):
         now = time.monotonic()
@@ -873,6 +1320,20 @@ class TrainingEpisodeResetCoordinator:
             and backend.get("coordinator_managed_goals", False)
             and not backend.get("trajectory_gate_armed", True)
             and registered_ready
+        )
+
+    def _forest_ready(self):
+        if not self._require_forest_map_ready:
+            return True
+        with self._lock:
+            state = dict(self._forest_map_state)
+        return bool(
+            state.get("status") == "ready"
+            and state.get("map_ready", False)
+            and state.get("passed", False)
+            and int(state.get("loaded_obstacle_count", -1)) == 18
+            and int(state.get("residual_obstacle_count", -1)) == 0
+            and state.get("old_obstacles_absent_verified", False)
         )
 
     def _v2_ready(self):
@@ -1006,6 +1467,11 @@ class TrainingEpisodeResetCoordinator:
     def _prepare_episode(self, reset_result=None):
         self._state = "OBSERVATION_WARMUP"
         self._publish_identity()
+        if not self._wait(
+            self._forest_ready, self._forest_map_switch_timeout,
+            "qualified Forest map ready",
+        ):
+            raise RuntimeError("Forest map readiness timeout")
         if not self._wait(self._physical_ready, self._startup_timeout, "truth/Mid360/EGO/Hector readiness"):
             raise RuntimeError("physical readiness timeout")
         if not self._wait(self._v2_ready, self._observation_timeout, "five-frame Observation v2 warmup"):
@@ -1021,6 +1487,8 @@ class TrainingEpisodeResetCoordinator:
             message = self._trajectory[0]
             self._accepted_trajectory_id = int(message.traj_id)
             self._accepted_trajectory_start = message.start_time.to_sec()
+            self._accepted_trajectory_start_secs = int(message.start_time.secs)
+            self._accepted_trajectory_start_nsecs = int(message.start_time.nsecs)
             self._previous_trajectory_id = max(self._previous_trajectory_id, self._accepted_trajectory_id)
         if not self._wait(self._current_observation_ready, self._observation_timeout, "current-generation Observation C"):
             raise RuntimeError("invalid observation: current-generation Observation C timeout")
@@ -1049,11 +1517,17 @@ class TrainingEpisodeResetCoordinator:
             raise RuntimeError("SAC terminal transition closure timeout")
         with self._lock:
             payload = dict(self._sac_closure)
+        self._state = "CLOSED"
+        self._publish_identity()
         self._event(
             "SAC_EPISODE_CLOSED",
             transition_count=payload["transition_count"],
             last_step_index=payload["last_step_index"],
             last_request_id=payload["last_request_id"],
+            active_action_interval_count=payload[
+                "active_action_interval_count"
+            ],
+            terminal_row_count=payload["terminal_row_count"],
         )
         return payload
 
@@ -1070,6 +1544,7 @@ class TrainingEpisodeResetCoordinator:
     def _terminal_condition(self, start_sim, start_wall):
         now_sim = rospy.Time.now().to_sec()
         now_wall = time.monotonic()
+        stale_snapshot = None
         with self._lock:
             state = self._actual_state_locked()
             planner = self._planner
@@ -1080,6 +1555,18 @@ class TrainingEpisodeResetCoordinator:
             trajectory = self._trajectory
             position_command = self._position_command
             reward_audit_failure = self._reward_runtime_audit_failure
+            stale_candidate = bool(
+                observation is None
+                or now_wall - observation_wall > self._observation_freshness
+            )
+            if stale_candidate and not self._stale_gap_active:
+                stale_snapshot = self._capture_stale_snapshot_locked(
+                    now_sim, now_wall, time.time(), start_sim
+                )
+        if stale_snapshot is not None:
+            self._stale_snapshot_pub.publish(
+                String(data=json.dumps(stale_snapshot, sort_keys=True))
+            )
         if reward_audit_failure:
             return "FAILURE", "reward_runtime_audit:" + reward_audit_failure
         if state is None:
@@ -1097,7 +1584,18 @@ class TrainingEpisodeResetCoordinator:
             return "FAILURE", "controller_failure:" + str(backend.get("mode", "missing"))
         distance = _norm3(position[0] - self._entry[0], position[1] - self._entry[1], position[2] - self._entry[2])
         if observation is None or now_wall - observation_wall > self._observation_freshness:
-            return "FAILURE", "invalid_observation:stale"
+            stale_terminal = self._commit_stale_terminal_if_current()
+            if stale_terminal is not None:
+                return stale_terminal
+            # A fresh callback won the stale-candidate race.  Refresh every
+            # observation-dependent value before evaluating later predicates.
+            with self._lock:
+                observation = self._observation
+                observation_wall = self._observation_receipt_wall
+                last_valid_wall = self._last_valid_observation_wall
+                trajectory = self._trajectory
+                position_command = self._position_command
+            now_wall = time.monotonic()
         fixed_terminal_hold = False
         if (
             self._action_owner == "fixed"
@@ -1107,14 +1605,9 @@ class TrainingEpisodeResetCoordinator:
         ):
             trajectory_message = trajectory[0]
             command_message, _, command_receipt_wall = position_command
-            degree = int(trajectory_message.order)
-            knots = list(trajectory_message.knots)
-            trajectory_end = float("nan")
-            if degree > 0 and len(knots) > 2 * degree:
-                trajectory_end = trajectory_message.start_time.to_sec() + (
-                    float(knots[len(knots) - 1 - degree])
-                    - float(knots[degree])
-                )
+            trajectory_end = self._trajectory_end_sim_sec(
+                trajectory_message
+            )
             command_position = command_message.position
             command_velocity = command_message.velocity
             fixed_terminal_hold = fixed_terminal_hold_matches(
@@ -1190,6 +1683,8 @@ class TrainingEpisodeResetCoordinator:
         self._episode_tracking_errors = []
         self._episode_actual_speeds = []
         self._episode_reward_steps = []
+        self._active_stale_snapshot_id = None
+        self._stale_gap_active = False
         self._active_episode = True
         start_sim = rospy.Time.now().to_sec()
         start_wall = time.monotonic()
@@ -1207,16 +1702,26 @@ class TrainingEpisodeResetCoordinator:
             outcome, reason
         )
         self._state = "TERMINAL_LATCHED"
-        self._terminal_latched = True
-        self._terminal_outcome = outcome
-        self._terminal_reason = reason
+        with self._lock:
+            self._terminal_latched = True
+            self._terminal_outcome = outcome
+            self._terminal_reason = reason
         self._publish_identity()
+        if reason in (
+            "invalid_observation:source_stale",
+            "infrastructure:observation_c_producer_stall",
+        ):
+            self._record_stale_terminal_latch(
+                self._active_stale_snapshot_id or "missing_stale_candidate",
+                reason,
+            )
         self._event("EPISODE_" + outcome, reason=reason)
         with self._lock:
             state = self._actual_state_locked()
             positions = list(self._episode_positions)
             tracking_errors = list(self._episode_tracking_errors)
             actual_speeds = list(self._episode_actual_speeds)
+            forest_map_state = dict(self._forest_map_state)
         path_length = sum(
             _norm3(
                 positions[index][0] - positions[index - 1][0],
@@ -1249,6 +1754,8 @@ class TrainingEpisodeResetCoordinator:
             "wall_duration": time.monotonic() - start_wall,
             "trajectory_id": self._accepted_trajectory_id,
             "trajectory_start_time": self._accepted_trajectory_start,
+            "trajectory_start_time_secs": self._accepted_trajectory_start_secs,
+            "trajectory_start_time_nsecs": self._accepted_trajectory_start_nsecs,
             "action_request_id": self._binding.episode_id,
             "start_reset": dict(self._current_episode_start),
             "observation_c_total": self._episode_observation_total,
@@ -1264,6 +1771,12 @@ class TrainingEpisodeResetCoordinator:
             "actual_speed": _statistics(actual_speeds),
             "fixed_terminal_hold_used": self._fixed_terminal_hold_active,
             "reward_runtime_step_count": reward_runtime_steps,
+            "forest_seed": forest_map_state.get("logical_seed"),
+            "raw_seed": forest_map_state.get("raw_seed"),
+            "map_block_id": forest_map_state.get("map_block_id"),
+            "map_round_id": forest_map_state.get("map_round_id"),
+            "scheduler_order": forest_map_state.get("scheduler_order"),
+            "forest_layout_sha256": forest_map_state.get("layout_sha256"),
         }
         self._episodes.append(episode)
         return episode
@@ -1339,7 +1852,58 @@ class TrainingEpisodeResetCoordinator:
             state = self._actual_state_locked()
         return state is not None and _norm3(*state[1]) <= self._goal_speed_tolerance
 
-    def _reset_once(self, reset_index):
+    def _switch_forest_map(self, request):
+        if not self._require_forest_map_ready:
+            raise RuntimeError("Forest switch requested outside Forest profile")
+        request_id = str(request.get("request_id", ""))
+        if not request_id:
+            raise RuntimeError("Forest map request has no request_id")
+        with self._lock:
+            self._forest_map_state = {}
+        self._event("FOREST_MAP_SWITCH_BEGIN", forest_request=request)
+        self._forest_map_request_pub.publish(
+            String(data=json.dumps(request, sort_keys=True))
+        )
+
+        def matching_ready():
+            with self._lock:
+                state = dict(self._forest_map_state)
+            if state.get("request_id") != request_id:
+                return False
+            if state.get("status") == "failed":
+                raise RuntimeError(
+                    "Forest map manager failed: " + str(state.get("failure", ""))
+                )
+            return bool(
+                state.get("status") == "ready"
+                and state.get("map_ready", False)
+                and state.get("passed", False)
+                and int(state.get("loaded_obstacle_count", -1)) == 18
+                and int(state.get("residual_obstacle_count", -1)) == 0
+                and state.get("old_obstacles_absent_verified", False)
+            )
+
+        if not self._wait(
+            matching_ready, self._forest_map_switch_timeout,
+            "matching Forest map switch ready",
+        ):
+            raise RuntimeError("Forest map switch readiness timeout")
+        with self._lock:
+            state = dict(self._forest_map_state)
+        result = {
+            "request": dict(request),
+            "ready_state": state,
+        }
+        self._forest_map_switches.append(result)
+        self._event(
+            "FOREST_MAP_SWITCH_READY",
+            logical_seed=request["logical_seed"],
+            raw_seed=request["raw_seed"],
+            map_block_id=request["map_block_id"],
+        )
+        return result
+
+    def _reset_once(self, reset_index, forest_map_request=None):
         self._state = "RESETTING"
         self._publish_identity()
         wall_start = time.monotonic()
@@ -1401,6 +1965,27 @@ class TrainingEpisodeResetCoordinator:
                 raise RuntimeError("adapter hold failed: " + response.message)
             if not self._wait(self._low_speed, self._hold_timeout, "terminal hold low speed"):
                 raise RuntimeError("terminal hold did not settle")
+
+            if forest_map_request is not None:
+                result["forest_map_switch"] = self._switch_forest_map(
+                    forest_map_request
+                )
+
+            map_response = self._clear_environment_map()
+            if not map_response.success:
+                raise RuntimeError(
+                    "EGO environment map clear failed: " + map_response.message
+                )
+            result["ego_map_clear"] = map_response.message
+            if "forest_map_switch" in result:
+                result["forest_map_switch"]["ego_map_clear"] = (
+                    map_response.message
+                )
+            self._event(
+                "EGO_ENVIRONMENT_MAP_CLEARED",
+                index=reset_index,
+                response=map_response.message,
+            )
 
             c_response = self._clear_c()
             cloud_response = (
@@ -1465,6 +2050,8 @@ class TrainingEpisodeResetCoordinator:
             self._reset_barrier = v2_barrier
             self._accepted_trajectory_id = 0
             self._accepted_trajectory_start = 0.0
+            self._accepted_trajectory_start_secs = 0
+            self._accepted_trajectory_start_nsecs = 0
             self._binding = self._ledger.advance_after_reset(v2_generation)
             self._current_episode_start = next_episode_start
             self._terminal_latched = False
@@ -1536,6 +2123,130 @@ class TrainingEpisodeResetCoordinator:
             raise RuntimeError("reset {} failed: {}".format(reset_index, result["failure"]))
         return result
 
+    def _forest_preflight_requests(self):
+        config_path = Path(
+            str(rospy.get_param("~forest_config", "")).strip()
+        ).expanduser().resolve()
+        if not config_path.is_file():
+            raise RuntimeError(
+                "Forest preflight config does not exist: {}".format(config_path)
+            )
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        schedule = config["scheduler"]
+        mapping = {
+            int(item["logical_seed"]): int(item["raw_seed"])
+            for item in config["seed_pool"]
+        }
+        switch_count = int(
+            rospy.get_param("~forest_preflight_switch_count", 3)
+        )
+        block_size = int(
+            rospy.get_param(
+                "~forest_preflight_episodes_per_map_block", 10
+            )
+        )
+        if switch_count != 3:
+            raise RuntimeError(
+                "Forest map-switch preflight must cover exactly three maps"
+            )
+        scheduler = BalancedForestMapScheduler(
+            schedule["training_logical_seeds"],
+            schedule["evaluation_logical_seeds"],
+            mapping,
+            episodes_per_map_block=block_size,
+            rng_seed=int(
+                rospy.get_param(
+                    "~forest_scheduler_rng_seed", schedule["rng_seed"]
+                )
+            ),
+            smoke_test=True,
+        )
+        requests = []
+        for block_id in range(switch_count):
+            assignment = scheduler.training_assignment(block_id * block_size)
+            requests.append(
+                {
+                    "request_id": "forest_preflight:block:{}".format(block_id),
+                    "logical_seed": assignment.logical_seed,
+                    "raw_seed": assignment.raw_seed,
+                    "mode": assignment.mode,
+                    "map_block_id": assignment.map_block_id,
+                    "map_round_id": assignment.map_round_id,
+                    "scheduler_order": list(assignment.scheduler_order),
+                }
+            )
+        return requests
+
+    def _run_forest_map_switch_preflight(self):
+        previous_generation = self._binding.reset_generation
+        previous_trajectory_id = self._accepted_trajectory_id
+        for index, request in enumerate(self._forest_preflight_requests(), 1):
+            contamination_before = self._old_generation_valid_contamination
+            reset_result = self._reset_once(index, forest_map_request=request)
+            self._prepare_episode(reset_result=reset_result)
+            with self._lock:
+                forest_state = dict(self._forest_map_state)
+                observation = self._observation
+                v2 = self._v2
+                registered = dict(self._registered_cloud_state)
+            record = {
+                "index": index,
+                "request": dict(request),
+                "map_state": forest_state,
+                "old_generation": previous_generation,
+                "new_generation": self._binding.reset_generation,
+                "ego_map_clear": reset_result.get("ego_map_clear"),
+                "first_valid_v2_stamp": reset_result.get("first_valid_v2_stamp"),
+                "warmup_frames": reset_result.get("first_valid_v2_history_frames"),
+                "first_valid_observation_c_stamp": (
+                    None if observation is None
+                    else observation.header.stamp.to_sec()
+                ),
+                "first_valid_observation_c_generation": (
+                    None if observation is None
+                    else int(observation.temporal_generation)
+                ),
+                "first_fresh_trajectory_id": self._accepted_trajectory_id,
+                "first_fresh_trajectory_start": self._accepted_trajectory_start,
+                "registered_cloud_state": registered,
+                "old_generation_contamination_delta": (
+                    self._old_generation_valid_contamination
+                    - contamination_before
+                ),
+            }
+            failures = []
+            if self._binding.reset_generation != previous_generation + 1:
+                failures.append("generation_increment")
+            if record["old_generation_contamination_delta"] != 0:
+                failures.append("old_generation_contamination")
+            if observation is None or not observation.valid:
+                failures.append("fresh_observation_c")
+            elif int(observation.temporal_generation) != self._binding.reset_generation:
+                failures.append("observation_c_generation")
+            if v2 is None or int(v2.history_frames) < 5:
+                failures.append("five_frame_warmup")
+            if self._accepted_trajectory_id <= previous_trajectory_id:
+                failures.append("fresh_ego_trajectory")
+            if not forest_state.get("old_obstacles_absent_verified", False):
+                failures.append("old_obstacle_removal")
+            if int(forest_state.get("loaded_obstacle_count", -1)) != 18:
+                failures.append("loaded_obstacle_count")
+            record["failures"] = failures
+            record["passed"] = not failures
+            self._forest_preflight_records.append(record)
+            self._event("FOREST_PREFLIGHT_MAP_READY", **record)
+            if failures:
+                raise RuntimeError(
+                    "Forest preflight map {} failed: {}".format(
+                        index, failures
+                    )
+                )
+            previous_generation = self._binding.reset_generation
+            previous_trajectory_id = self._accepted_trajectory_id
+        self._cancel_pub.publish(EmptyMessage())
+        self._state = "FOREST_MAP_SWITCH_PREFLIGHT_COMPLETE"
+        self._publish_identity()
+
     def _write_json(self, name, payload):
         path = os.path.join(self._output_dir, name)
         with open(path, "w", encoding="utf-8") as handle:
@@ -1552,7 +2263,8 @@ class TrainingEpisodeResetCoordinator:
         sim_duration = max(0.0, rospy.Time.now().to_sec() - self._overall_sim_start)
         wall_duration = max(1.0e-9, time.monotonic() - self._overall_wall_start)
         acceptance_failures = []
-        if len(self._episodes) != self._episode_count:
+        preflight = self._runner_mode == "map_switch_preflight"
+        if not preflight and len(self._episodes) != self._episode_count:
             acceptance_failures.append("episode_count")
         if (
             self._action_owner == "fixed"
@@ -1560,6 +2272,9 @@ class TrainingEpisodeResetCoordinator:
         ):
             acceptance_failures.append("fixed_entry_episode_success")
         expected_resets = (
+            self._episode_count
+            if preflight
+            else
             max(0, len(self._episodes) - 1)
             if self._runner_mode == "training"
             else self._episode_count
@@ -1591,7 +2306,10 @@ class TrainingEpisodeResetCoordinator:
             and self._reward_runtime_step_count == 0
         ):
             acceptance_failures.append("reward_runtime_steps_missing")
-        if self._require_registered_ego_cloud:
+        if (
+            self._require_registered_ego_cloud
+            and route_acceptance_required(self._runner_mode)
+        ):
             if not self._registered_cloud_state.get("ready", False):
                 acceptance_failures.append("registered_ego_cloud_not_ready")
             if not self._registered_corridor_counts or max(self._registered_corridor_counts) <= 0:
@@ -1607,7 +2325,18 @@ class TrainingEpisodeResetCoordinator:
         if self._require_acceptance and self._episode_count < 20:
             acceptance_failures.append("less_than_20_episodes")
         passed = not acceptance_failures
+        if preflight and len(self._forest_preflight_records) != 3:
+            acceptance_failures.append("forest_preflight_map_count")
+        if preflight and any(
+            not item.get("passed", False)
+            for item in self._forest_preflight_records
+        ):
+            acceptance_failures.append("forest_preflight_map_failure")
+        passed = not acceptance_failures
         verdict = (
+            "FOREST MAP-SWITCH PREFLIGHT PASS"
+            if passed and preflight
+            else
             "GO FOR SAC TRAINING LOOP INTEGRATION"
             if passed and self._require_acceptance
             else (
@@ -1649,6 +2378,10 @@ class TrainingEpisodeResetCoordinator:
             },
             "action_owner": self._action_owner,
             "runner_mode": self._runner_mode,
+            "require_forest_map_ready": self._require_forest_map_ready,
+            "forest_map_switch_count": len(self._forest_map_switches),
+            "forest_map_switches": self._forest_map_switches,
+            "forest_map_switch_preflight_records": self._forest_preflight_records,
             "nominal_hover": list(self._nominal_hover),
             "random_start": {
                 "enabled": self._random_reset_config.enabled,
@@ -1672,7 +2405,9 @@ class TrainingEpisodeResetCoordinator:
             "episode_count": len(self._episodes),
             "configured_episode_count": self._episode_count,
             "completion_reason": (
-                "training_episode_count_reached"
+                "forest_map_switch_preflight_complete"
+                if preflight
+                else "training_episode_count_reached"
                 if self._runner_mode == "training"
                 else "episode_count_reached"
             ),
@@ -1697,6 +2432,10 @@ class TrainingEpisodeResetCoordinator:
             },
             "old_generation_valid_contamination_count": self._old_generation_valid_contamination,
             "stale_cloud_state_count": self._stale_cloud_state_count,
+            "stale_observation_snapshot_count": len(self._stale_snapshots),
+            "stale_observation_snapshot_file": os.path.join(
+                self._output_dir, "stale_observation_snapshots.jsonl"
+            ),
             "trajectory_generation_mismatch_count": self._trajectory_generation_mismatch,
             "controller_failure_count": self._controller_failure_count,
             "planner_failure_count": self._planner_failure_count,
@@ -1727,13 +2466,36 @@ class TrainingEpisodeResetCoordinator:
             self._wait_services()
             self._overall_wall_start = time.monotonic()
             self._overall_sim_start = rospy.Time.now().to_sec()
-            self._state = "WAIT_INITIAL_READY"
-            self._prepare_episode()
+            if self._runner_mode == "map_switch_preflight":
+                self._run_forest_map_switch_preflight()
+            else:
+                self._state = "WAIT_INITIAL_READY"
+                self._prepare_episode()
             index = 1
-            while not rospy.is_shutdown():
+            while (
+                self._runner_mode != "map_switch_preflight"
+                and not rospy.is_shutdown()
+            ):
                 self._activate_episode()
                 self._run_episode()
-                self._wait_for_sac_closure()
+                closure = self._wait_for_sac_closure()
+                if not sac_closure_reset_allowed(
+                    self._binding,
+                    closure,
+                    self._terminal_reason,
+                ):
+                    self._event(
+                        "SAC_INFRASTRUCTURE_FAIL_CLOSED",
+                        terminal_reason=self._terminal_reason,
+                        reset_forbidden=True,
+                        next_episode_forbidden=True,
+                    )
+                    raise RuntimeError(
+                        "infrastructure terminal closed; reset and next "
+                        "Episode are forbidden: {}".format(
+                            self._terminal_reason
+                        )
+                    )
                 stop_due = episode_count_stop_due(
                     index,
                     self._episode_count,
@@ -1743,7 +2505,13 @@ class TrainingEpisodeResetCoordinator:
                     self._state = "QUALIFICATION_COMPLETE_HOVER"
                     self._publish_identity()
                     break
-                reset_result = self._reset_once(index)
+                forest_map_request = (
+                    None if closure is None
+                    else closure.get("next_forest_map_request")
+                )
+                reset_result = self._reset_once(
+                    index, forest_map_request=forest_map_request
+                )
                 self._prepare_episode(reset_result=reset_result)
                 if stop_due:
                     self._cancel_pub.publish(EmptyMessage())
@@ -1762,9 +2530,15 @@ class TrainingEpisodeResetCoordinator:
         summary = self._summary(failure)
         self._write_json("episode_results.json", self._episodes)
         self._write_json("reset_results.json", self._resets)
+        if self._runner_mode == "map_switch_preflight":
+            self._write_json(
+                "map_switch_preflight_results.json",
+                self._forest_preflight_records,
+            )
         self._write_json("qualification_summary.json", summary)
         self._event("QUALIFICATION_COMPLETE", verdict=summary["verdict"])
         self._event_file.close()
+        self._stale_snapshot_file.close()
         if self._reward_step_file is not None:
             self._reward_step_file.close()
         rospy.logwarn("[TRAINING EPISODE] %s", summary["verdict"])

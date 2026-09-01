@@ -4,6 +4,7 @@ from .angular_partition import AngularPartition, AngularPartitionSpec
 from .frame_transform import Pose3D, PoseBuffer, sensor_to_body
 from .history_buffer import CloudFrame, CloudHistoryBuffer
 from .lidar_surrogate import LidarSurrogateBuilder, LidarSurrogateConfig
+from .pointcloud_decode import decode_xyz_points
 from .timestamp import preserve_source_stamp
 from .types import (
     BIN_SEMANTIC_NAMES,

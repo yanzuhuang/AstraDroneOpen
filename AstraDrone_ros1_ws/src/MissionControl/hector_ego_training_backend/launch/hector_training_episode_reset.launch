@@ -6,7 +6,8 @@
   <arg name="runner_mode" default="qualification"/>
   <arg name="fixed_v_max" default="0.30"/>
   <arg name="v_max_min" default="0.30"/>
-  <arg name="static_max_vel" default="$(arg fixed_v_max)"/>
+  <arg name="static_max_vel" default="4.00"/>
+  <arg name="static_max_acc" default="3.00"/>
   <arg name="action_owner" default="fixed"/>
   <arg name="output_dir" default=""/>
   <arg name="require_automated_acceptance" default="false"/>
@@ -28,6 +29,15 @@
   <arg name="reward_runtime_audit_enabled" default="false"/>
   <arg name="reward_config"
        default="$(find learning_speed_rl)/config/stage1_reward.yaml"/>
+  <arg name="map_size_x" default="20.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="4.0"/>
+  <arg name="require_forest_map_ready" default="false"/>
+  <arg name="forest_config" default=""/>
+  <arg name="forest_scheduler_rng_seed" default="20260824"/>
+  <arg name="forest_preflight_switch_count" default="3"/>
+  <arg name="forest_preflight_episodes_per_map_block" default="10"/>
+  <arg name="observation_trajectory_topic" default="planning/bspline"/>
 
   <include file="$(find hector_ego_training_backend)/launch/hector_training_observation_c.launch">
     <arg name="enable_control" value="true"/>
@@ -37,6 +47,7 @@
     <arg name="fixed_v_max" value="$(arg fixed_v_max)"/>
     <arg name="v_max_min" value="$(arg v_max_min)"/>
     <arg name="static_max_vel" value="$(arg static_max_vel)"/>
+    <arg name="static_max_acc" value="$(arg static_max_acc)"/>
     <arg name="speed_policy_mode" value="mock"/>
     <arg name="mock_request_driven" value="true"/>
     <arg name="coordinator_managed_goals" value="true"/>
@@ -50,6 +61,11 @@
     <arg name="start_truth_cloud_registration"
          value="$(arg use_truth_registered_ego_cloud)"/>
     <arg name="spawn_wall_delay" value="$(arg spawn_wall_delay)"/>
+    <arg name="map_size_x" value="$(arg map_size_x)"/>
+    <arg name="map_size_y" value="$(arg map_size_y)"/>
+    <arg name="map_size_z" value="$(arg map_size_z)"/>
+    <arg name="observation_trajectory_topic"
+         value="$(arg observation_trajectory_topic)"/>
   </include>
 
   <group ns="uav1">
@@ -80,6 +96,15 @@
              value="$(arg use_truth_registered_ego_cloud)"/>
       <param name="truth_cloud_clear_service"
              value="$(eval '/uav1/truth_cloud_registration_adapter/clear_temporal_history' if arg('use_truth_registered_ego_cloud') else '')"/>
+      <param name="require_forest_map_ready"
+             value="$(arg require_forest_map_ready)"/>
+      <param name="forest_config" value="$(arg forest_config)"/>
+      <param name="forest_scheduler_rng_seed"
+             value="$(arg forest_scheduler_rng_seed)"/>
+      <param name="forest_preflight_switch_count"
+             value="$(arg forest_preflight_switch_count)"/>
+      <param name="forest_preflight_episodes_per_map_block"
+             value="$(arg forest_preflight_episodes_per_map_block)"/>
     </node>
   </group>
 </launch>

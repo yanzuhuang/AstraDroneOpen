@@ -1,8 +1,15 @@
 
 #include <plan_manage/ego_replan_fsm.h>
+#include <bspline_opt/trajectory_collision_checker.h>
 
 namespace ego_planner
 {
+
+  EGOReplanFSM::~EGOReplanFSM()
+  {
+    if (speed_limit_channel_)
+      speed_limit_channel_->stop();
+  }
 
   void EGOReplanFSM::init(ros::NodeHandle &nh)
   {
@@ -71,14 +78,17 @@ namespace ego_planner
     nh.param<std::string>("dynamic_speed_limit/applied_stamped_topic",
                           applied_speed_limit_stamped_topic,
                           "learning_speed/applied_v_max_stamped");
-    dynamic_speed_limit_gate_ = DynamicSpeedLimitGate(
+    const DynamicSpeedLimitGate dynamic_speed_limit_gate(
         dynamic_speed_limit_minimum, dynamic_speed_limit_maximum);
-    current_speed_limit_ = planner_manager_->pp_.max_vel_;
+    std::shared_ptr<DynamicVmaxSnapshot> static_snapshot(
+        new DynamicVmaxSnapshot);
+    static_snapshot->v_max = planner_manager_->pp_.max_vel_;
+    static_speed_snapshot_ = static_snapshot;
 
     if (dynamic_speed_limit_enabled_ &&
-        (!dynamic_speed_limit_gate_.validConfiguration() ||
-         dynamic_speed_limit_gate_.maximum() > planner_manager_->pp_.max_vel_ + 1.0e-9 ||
-         !dynamic_speed_limit_gate_.accepts(current_speed_limit_) ||
+        (!dynamic_speed_limit_gate.validConfiguration() ||
+         dynamic_speed_limit_gate.maximum() > planner_manager_->pp_.max_vel_ + 1.0e-9 ||
+         !dynamic_speed_limit_gate.accepts(static_speed_snapshot_->v_max) ||
          dynamic_speed_limit_topic.empty() ||
          applied_speed_limit_topic.empty() ||
          applied_speed_limit_stamped_topic.empty()))
@@ -147,26 +157,29 @@ namespace ego_planner
     bspline_pub_ = nh.advertise<traj_utils::Bspline>("planning/bspline", 10);
     data_disp_pub_ = nh.advertise<traj_utils::DataDisp>("planning/data_display", 100);
     cancel_sub_ = public_nh.subscribe(cancel_topic_, 1, &EGOReplanFSM::cancelCallback, this);
+    environment_map_reset_service_ = public_nh.advertiseService(
+        "planning/clear_environment_map",
+        &EGOReplanFSM::environmentMapResetCallback, this);
     status_pub_ = public_nh.advertise<astra_custom_msgs::PlannerStatus>(
         status_topic_, 10, true);
     if (dynamic_speed_limit_enabled_)
     {
-      speed_limit_sub_ = public_nh.subscribe(
-          dynamic_speed_limit_topic, 100, &EGOReplanFSM::speedLimitCallback,
-          this, ros::TransportHints().tcpNoDelay());
-      applied_speed_limit_pub_ = public_nh.advertise<std_msgs::Float64>(
-          applied_speed_limit_topic, 1, true);
-      applied_speed_limit_stamped_pub_ =
-          public_nh.advertise<learning_speed_rl::SpeedAppliedStamped>(
-              applied_speed_limit_stamped_topic, 100, false);
-      std_msgs::Float64 initial_limit;
-      initial_limit.data = current_speed_limit_;
-      applied_speed_limit_pub_.publish(initial_limit);
+      speed_limit_channel_.reset(new DedicatedSpeedLimitChannel);
+      if (!speed_limit_channel_->start(
+              public_nh, dynamic_speed_limit_topic,
+              applied_speed_limit_topic, applied_speed_limit_stamped_topic,
+              dynamic_speed_limit_gate, static_speed_snapshot_->v_max, 100))
+      {
+        ROS_FATAL("[EGO FSM] failed to start dedicated speed callback queue.");
+        speed_limit_channel_.reset();
+        return;
+      }
       ROS_WARN("[EGO FSM] dynamic speed limit enabled: topic=%s range=[%.3f, %.3f]; "
-               "outer-loop force-replan delta outside [-0.300, +0.500] m/s",
+               "dedicated queue threads=1; outer-loop force-replan delta "
+               "outside [-0.300, +0.500] m/s",
                public_nh.resolveName(dynamic_speed_limit_topic).c_str(),
-               dynamic_speed_limit_gate_.minimum(),
-               dynamic_speed_limit_gate_.maximum());
+               dynamic_speed_limit_gate.minimum(),
+               dynamic_speed_limit_gate.maximum());
     }
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
@@ -198,102 +211,6 @@ namespace ego_planner
     }
     else
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
-  }
-
-  void EGOReplanFSM::publishAppliedSpeedLimit(
-      const learning_speed_rl::SpeedActionStamped &action)
-  {
-    std_msgs::Float64 scalar;
-    scalar.data = current_speed_limit_;
-    applied_speed_limit_pub_.publish(scalar);
-
-    learning_speed_rl::SpeedAppliedStamped stamped;
-    stamped.header = action.header;
-    const ros::Time minimum_apply_stamp =
-        action.header.stamp + ros::Duration(0, 1);
-    const ros::Time now = ros::Time::now();
-    stamped.header.stamp = now < minimum_apply_stamp
-                               ? minimum_apply_stamp
-                               : now;
-    stamped.version = "learning_speed_applied_v1.0";
-    stamped.episode_id = action.episode_id;
-    stamped.step_index = action.step_index;
-    stamped.request_id = action.request_id;
-    stamped.applied_v_max = current_speed_limit_;
-    applied_speed_limit_stamped_pub_.publish(stamped);
-  }
-
-  void EGOReplanFSM::speedLimitCallback(
-      const learning_speed_rl::SpeedActionStampedConstPtr &msg)
-  {
-    if (!dynamic_speed_limit_enabled_ || !msg)
-      return;
-
-    if (msg->version != "learning_speed_action_v1.1" ||
-        msg->episode_id.empty() || msg->request_id == 0 ||
-        msg->header.stamp.isZero() || !std::isfinite(msg->requested_v_max))
-    {
-      ROS_ERROR_THROTTLE(1.0,
-                         "[EGO FSM] rejected invalid stamped speed action.");
-      return;
-    }
-    const auto previous_id =
-        last_speed_request_id_by_episode_.find(msg->episode_id);
-    const auto previous_step =
-        last_speed_step_by_episode_.find(msg->episode_id);
-    if ((previous_id != last_speed_request_id_by_episode_.end() &&
-         msg->request_id <= previous_id->second) ||
-        (previous_step != last_speed_step_by_episode_.end() &&
-         msg->step_index <= previous_step->second))
-    {
-      ROS_ERROR("[EGO FSM] rejected duplicate/out-of-order speed identity "
-                "episode=%s step=%llu request_id=%llu.",
-                msg->episode_id.c_str(),
-                static_cast<unsigned long long>(msg->step_index),
-                static_cast<unsigned long long>(msg->request_id));
-      return;
-    }
-
-    const double requested = msg->filtered_v_max;
-    if (!dynamic_speed_limit_gate_.accepts(requested))
-    {
-      ROS_ERROR_THROTTLE(1.0,
-                         "[EGO FSM] rejected dynamic v_max %.6f; expected finite "
-                         "value in [%.3f, %.3f].",
-                         requested, dynamic_speed_limit_gate_.minimum(),
-                         dynamic_speed_limit_gate_.maximum());
-      return;
-    }
-    last_speed_request_id_by_episode_[msg->episode_id] = msg->request_id;
-    last_speed_step_by_episode_[msg->episode_id] = msg->step_index;
-
-    if (!dynamic_speed_limit_gate_.changed(current_speed_limit_, requested))
-    {
-      publishAppliedSpeedLimit(*msg);
-      return;
-    }
-
-    const double previous = current_speed_limit_;
-    if (!planner_manager_->setMaxVelocity(requested))
-    {
-      ROS_ERROR_THROTTLE(1.0,
-                         "[EGO FSM] failed to apply dynamic v_max %.6f.",
-                         requested);
-      return;
-    }
-
-    current_speed_limit_ = requested;
-    publishAppliedSpeedLimit(*msg);
-
-    if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ && have_target_ &&
-        dynamic_speed_limit_gate_.requiresForceReplan(previous, requested))
-    {
-      ROS_WARN("[EGO FSM] outer-loop v_max delta %.3f m/s (%.3f -> %.3f) is "
-               "outside [-0.300, +0.500]; forcing one replan from the current "
-               "trajectory state.",
-               requested - previous, previous, requested);
-      changeFSMExecState(REPLAN_TRAJ, "DYNAMIC_SPEED_LIMIT");
-    }
   }
 
   void EGOReplanFSM::readGivenWps()
@@ -365,7 +282,17 @@ namespace ego_planner
   void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp)
   {
     bool success = false;
-    success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), next_wp, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    const std::shared_ptr<const DynamicVmaxSnapshot> speed_snapshot =
+        latestSpeedSnapshot();
+    if (!speed_snapshot)
+    {
+      ROS_ERROR("[EGO SPEED SNAPSHOT] global planner admission has no snapshot.");
+      return;
+    }
+    success = planner_manager_->planGlobalTraj(
+        odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), next_wp,
+        Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+        speed_snapshot->v_max);
 
     // visualization_->displayGoalPoint(next_wp, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
 
@@ -451,9 +378,43 @@ namespace ego_planner
     have_new_target_ = false;
     have_trigger_ = false;
     planner_manager_->local_data_.start_time_ = ros::Time(0);
+    clearPendingForceReplanIntent();
     status_tracker_.setEventReason("CANCELLED");
     changeFSMExecState(WAIT_TARGET, "CANCEL");
     ROS_WARN("[EGO FSM] active target cancelled; waiting for a fresh stamped goal.");
+  }
+
+  bool EGOReplanFSM::environmentMapResetCallback(
+      std_srvs::Trigger::Request &,
+      std_srvs::Trigger::Response &response)
+  {
+    if (!planner_manager_ || !planner_manager_->grid_map_)
+    {
+      response.success = false;
+      response.message = "planner grid map is unavailable";
+      return true;
+    }
+
+    // This service is an Episode-boundary environment lifecycle hook.  Force
+    // the same target-cancelled state before clearing map memory so no active
+    // trajectory can survive a Forest replacement.
+    have_cancel_ = true;
+    cancel_time_ = ros::Time::now();
+    have_target_ = false;
+    have_new_target_ = false;
+    have_trigger_ = false;
+    planner_manager_->local_data_.start_time_ = ros::Time(0);
+    clearPendingForceReplanIntent();
+    changeFSMExecState(WAIT_TARGET, "ENVIRONMENT_MAP_RESET");
+    planner_manager_->grid_map_->clearForEnvironmentReset();
+    status_tracker_.setEventReason("ENVIRONMENT_MAP_RESET");
+    ++environment_map_reset_generation_;
+    response.success = true;
+    response.message = "generation=" +
+        std::to_string(environment_map_reset_generation_);
+    ROS_WARN("[EGO FSM] environment occupancy cleared at generation=%llu.",
+             static_cast<unsigned long long>(environment_map_reset_generation_));
+    return true;
   }
 
   void EGOReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
@@ -738,6 +699,10 @@ namespace ego_planner
   {
     exec_timer_.stop(); // To avoid blockage
 
+    // Main/default callback thread is the sole FSM owner.  The dedicated
+    // speed thread can only advance the immutable snapshot generation.
+    processForceReplanIntent();
+
     static int fsm_num = 0;
     fsm_num++;
     if (fsm_num == 100)
@@ -998,19 +963,24 @@ namespace ego_planner
     }
 
     /* ---------- check trajectory ---------- */
-    constexpr double time_step = 0.01;
     double t_cur = (ros::Time::now() - info->start_time_).toSec();
     Eigen::Vector3d p_cur = info->position_traj_.evaluateDeBoorT(t_cur);
     const double CLEARANCE = 2.0 * planner_manager_->getSwarmClearance();
     double t_cur_global = ros::Time::now().toSec();
-    double t_2_3 = info->duration_ * 2 / 3;
-    for (double t = t_cur; t < info->duration_; t += time_step)
+    const double two_thirds = info->duration_ * 2.0 / 3.0;
+    const double collision_check_end =
+        t_cur < two_thirds ? two_thirds : info->duration_;
+    TrajectoryCollisionResult static_collision;
+    const bool static_free = isUniformBsplineSweptCollisionFree(
+        info->position_traj_, *map, t_cur, collision_check_end,
+        &static_collision, 0.01);
+    const double first_static_collision_t =
+        static_free ? std::numeric_limits<double>::infinity()
+                    : static_collision.first_collision_parameter;
+    constexpr double time_step = 0.01;
+    for (double t = t_cur; t <= collision_check_end + 1.0e-9; t += time_step)
     {
-      if (t_cur < t_2_3 && t >= t_2_3) // If t_cur < t_2_3, only the first 2/3 partition of the trajectory is considered valid and will get checked.
-        break;
-
-      bool occ = false;
-      occ |= map->getInflateOccupancy(info->position_traj_.evaluateDeBoorT(t));
+      bool occ = t >= first_static_collision_t;
 
       for (size_t id = 0; id < planner_manager_->swarm_trajs_buf_.size(); id++)
       {
@@ -1061,15 +1031,26 @@ namespace ego_planner
   bool EGOReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
   {
 
-    getLocalTarget();
+    const std::shared_ptr<const DynamicVmaxSnapshot> speed_snapshot =
+        admitPlanningSnapshot();
+    if (!speed_snapshot)
+    {
+      ROS_ERROR("[EGO SPEED SNAPSHOT] planner admission has no valid snapshot.");
+      return false;
+    }
+    getLocalTarget(speed_snapshot->v_max);
 
     bool plan_and_refine_success =
-        planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_, (have_new_target_ || flag_use_poly_init), flag_randomPolyTraj);
+        planner_manager_->reboundReplan(
+            start_pt_, start_vel_, start_acc_, local_target_pt_,
+            local_target_vel_, (have_new_target_ || flag_use_poly_init),
+            flag_randomPolyTraj, *speed_snapshot);
     have_new_target_ = false;
 
     cout << "refine_success=" << plan_and_refine_success << endl;
-    recordPlanningResult(plan_and_refine_success,
-                         plan_and_refine_success ? "" : astra_custom_msgs::PlannerStatus::NO_FEASIBLE_TRAJECTORY);
+    const std::string planning_reason =
+        plan_and_refine_success ? "" : planningFailureReason();
+    recordPlanningResult(plan_and_refine_success, planning_reason);
 
     if (plan_and_refine_success)
     {
@@ -1163,7 +1144,11 @@ namespace ego_planner
   bool EGOReplanFSM::callEmergencyStop(Eigen::Vector3d stop_pos)
   {
 
-    planner_manager_->EmergencyStop(stop_pos);
+    if (!planner_manager_->EmergencyStop(stop_pos))
+    {
+      ROS_ERROR("[EGO FSM] unable to publish emergency-stop trajectory.");
+      return false;
+    }
 
     auto info = &planner_manager_->local_data_;
 
@@ -1198,11 +1183,77 @@ namespace ego_planner
     return true;
   }
 
-  void EGOReplanFSM::getLocalTarget()
+  std::shared_ptr<const DynamicVmaxSnapshot>
+  EGOReplanFSM::latestSpeedSnapshot() const
   {
+    if (dynamic_speed_limit_enabled_ && speed_limit_channel_)
+      return speed_limit_channel_->latestSnapshot();
+    return static_speed_snapshot_;
+  }
+
+  std::shared_ptr<const DynamicVmaxSnapshot>
+  EGOReplanFSM::admitPlanningSnapshot()
+  {
+    const std::shared_ptr<const DynamicVmaxSnapshot> snapshot =
+        latestSpeedSnapshot();
+    if (!snapshot || !std::isfinite(snapshot->v_max) || snapshot->v_max <= 0.0 ||
+        snapshot->version < last_admitted_speed_snapshot_version_)
+      return std::shared_ptr<const DynamicVmaxSnapshot>();
+
+    last_admitted_speed_snapshot_version_ = snapshot->version;
+    consumed_force_replan_generation_ = std::max(
+        consumed_force_replan_generation_,
+        snapshot->force_replan_generation);
+    return snapshot;
+  }
+
+  void EGOReplanFSM::processForceReplanIntent()
+  {
+    if (!dynamic_speed_limit_enabled_ || !speed_limit_channel_)
+      return;
+    const std::shared_ptr<const DynamicVmaxSnapshot> snapshot =
+        latestSpeedSnapshot();
+    if (!snapshot ||
+        snapshot->force_replan_generation <=
+            consumed_force_replan_generation_)
+      return;
+
+    if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ && have_target_)
+    {
+      ROS_WARN("[EGO SPEED SNAPSHOT] main FSM consuming force intent "
+               "generation=%llu via REPLAN_TRAJ; latest version=%llu "
+               "v_max=%.6f.",
+               static_cast<unsigned long long>(
+                   snapshot->force_replan_generation),
+               static_cast<unsigned long long>(snapshot->version),
+               snapshot->v_max);
+      changeFSMExecState(REPLAN_TRAJ, "DYNAMIC_SPEED_LIMIT_HANDOFF");
+    }
+  }
+
+  void EGOReplanFSM::clearPendingForceReplanIntent()
+  {
+    const std::shared_ptr<const DynamicVmaxSnapshot> snapshot =
+        latestSpeedSnapshot();
+    if (snapshot)
+      consumed_force_replan_generation_ = std::max(
+          consumed_force_replan_generation_,
+          snapshot->force_replan_generation);
+  }
+
+  void EGOReplanFSM::getLocalTarget(double max_velocity)
+  {
+    if (!std::isfinite(max_velocity) || max_velocity <= 0.0)
+    {
+      ROS_ERROR("[EGO SPEED SNAPSHOT] invalid local-target v_max %.6f.",
+                max_velocity);
+      local_target_pt_ = start_pt_;
+      local_target_vel_.setZero();
+      return;
+    }
     double t;
 
-    double t_step = planning_horizen_ / 20 / planner_manager_->pp_.max_vel_;
+    double t_step = planning_horizen_ / 20 / max_velocity;
     double dist_min = 9999, dist_min_t = 0.0;
     for (t = planner_manager_->global_data_.last_progress_time_; t < planner_manager_->global_data_.global_duration_; t += t_step)
     {
@@ -1245,7 +1296,9 @@ namespace ego_planner
       planner_manager_->global_data_.last_progress_time_ = planner_manager_->global_data_.global_duration_;
     }
 
-    if ((end_pt_ - local_target_pt_).norm() < (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / (2 * planner_manager_->pp_.max_acc_))
+    if ((end_pt_ - local_target_pt_).norm() <
+        (max_velocity * max_velocity) /
+            (2 * planner_manager_->pp_.max_acc_))
     {
       local_target_vel_ = Eigen::Vector3d::Zero();
     }
@@ -1288,7 +1341,7 @@ namespace ego_planner
     status.goal_in_collision = false;
     status.current_position_in_collision =
         planner_manager_->grid_map_ && have_odom_ &&
-        planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
+        planner_manager_->grid_map_->getPlanningOccupancy(odom_pos_);
     status.emergency_stop_active = exec_state_ == EMERGENCY_STOP;
     status.emergency_stop_duration =
         status.emergency_stop_active && !cancel_time_.isZero()

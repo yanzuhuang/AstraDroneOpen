@@ -9,6 +9,7 @@
 #include <ros/ros.h>
 #include "bspline_opt/lbfgs.hpp"
 #include <traj_utils/plan_container.hpp>
+#include <cstdint>
 
 // Gradient and elasitc band optimization
 
@@ -125,10 +126,18 @@ namespace ego_planner
 
     inline int getOrder(void) { return order_; }
     inline double getSwarmClearance(void) { return swarm_clearance_; }
-    bool setMaxVelocity(double max_velocity);
+    // Main-planner-thread only.  A planning invocation binds one immutable
+    // snapshot before any initialization/solve work begins.
+    bool bindMaxVelocityForInvocation(double max_velocity,
+                                      std::uint64_t snapshot_version);
     inline double getMaxVelocity(void) const { return max_vel_; }
+    inline std::uint64_t getMaxVelocitySnapshotVersion(void) const
+    {
+      return max_velocity_snapshot_version_;
+    }
 
   private:
+    friend class BsplineOptimizerTestAccess;
     GridMap::Ptr grid_map_;
     fast_planner::ObjPredictor::Ptr moving_objs_;
     SwarmTrajData *swarm_trajs_{NULL}; // Can not use shared_ptr and no need to free
@@ -165,7 +174,8 @@ namespace ego_planner
     int a;
     //
     double dist0_, swarm_clearance_; // safe distance
-    double max_vel_, max_acc_;       // dynamic limits
+    double max_vel_, max_acc_;       // invocation-bound dynamic limits
+    std::uint64_t max_velocity_snapshot_version_{0};
 
     int variable_num_;              // optimization variables
     int iter_num_;                  // iteration of the solver
@@ -178,6 +188,27 @@ namespace ego_planner
     double min_ellip_dist_;
 
     ControlPoints cps_;
+
+    // Read-only runtime provenance for collision/A*/rebound diagnosis.  The
+    // counters do not participate in planning decisions.
+    std::uint64_t diagnostic_replan_id_{0};
+    std::uint64_t diagnostic_init_call_id_{0};
+    std::uint64_t diagnostic_optimizer_call_id_{0};
+    bool diagnostic_have_replan_{false};
+
+    void diagnosticLogAStar(
+        const char *context, std::uint64_t call_id, std::size_t segment_id,
+        int in_id, int out_id, const Eigen::Vector3d &occupied_entry,
+        const Eigen::Vector3d &occupied_exit, const Eigen::Vector3d &start,
+        const Eigen::Vector3d &end,
+        const std::vector<Eigen::Vector3d> &path) const;
+    void diagnosticLogControlPoints(const char *phase,
+                                    std::uint64_t optimizer_call_id) const;
+    void diagnosticLogBaseDirections(const char *phase,
+                                     std::uint64_t call_id) const;
+    void diagnosticLogCollisionGradients(const char *phase,
+                                         std::uint64_t optimizer_call_id,
+                                         double collision_weight) const;
 
     /* cost function */
     /* calculate each part of cost function with control points q as input */

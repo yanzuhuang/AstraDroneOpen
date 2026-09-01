@@ -1,0 +1,38 @@
+<launch>
+  <!-- Startup-only runner contract: no Gazebo, Forest request, or Episode. -->
+  <arg name="output_dir"/>
+  <arg name="run_id" default="sac_runner_startup_contract"/>
+  <arg name="sac_action_min" default="0.30"/>
+  <arg name="sac_action_max" default="1.75"/>
+  <arg name="filter_capability_min" default="0.30"/>
+  <arg name="filter_capability_max" default="4.00"/>
+  <arg name="sac_config"
+       default="$(find learning_speed_rl)/config/sac_training_v1.yaml"/>
+  <arg name="reward_config"
+       default="$(find learning_speed_rl)/config/stage1_reward.yaml"/>
+
+  <include file="$(find learning_speed_rl)/launch/speed_adapter.launch">
+    <arg name="namespace" value="uav1"/>
+    <arg name="static_min_vel" value="$(arg filter_capability_min)"/>
+    <arg name="static_max_vel" value="$(arg filter_capability_max)"/>
+    <arg name="fixed_v_max" value="$(arg sac_action_min)"/>
+    <arg name="policy_mode" value="mock"/>
+    <arg name="mock_request_driven" value="true"/>
+  </include>
+
+  <group ns="uav1">
+    <node pkg="learning_speed_rl" type="sac_training_runner.py"
+          name="sac_training_runner" output="screen" required="true">
+      <rosparam command="load" file="$(arg sac_config)"/>
+      <rosparam command="load" file="$(arg reward_config)"/>
+      <param name="run_id" value="$(arg run_id)"/>
+      <param name="output_dir" value="$(arg output_dir)"/>
+      <param name="training/mode" value="qualification"/>
+      <param name="training/startup_contract_only" value="true"/>
+      <param name="environment/reset_randomization_enabled" value="false"/>
+      <param name="action/expected_v_max_min" value="$(arg sac_action_min)"/>
+      <param name="action/expected_v_max_max" value="$(arg sac_action_max)"/>
+      <param name="forest/enabled" value="false"/>
+    </node>
+  </group>
+</launch>

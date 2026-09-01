@@ -36,7 +36,7 @@
       <pose>0 0 0 0 0 0</pose>
       <visualize>false</visualize>
       <always_on>true</always_on>
-      <update_rate>10</update_rate>
+      <update_rate>15</update_rate>
       <plugin name="training_mid360_plugin"
               filename="liblivox_laser_simulation.so">
         <robotNamespace>/uav1/livox</robotNamespace>

@@ -6,6 +6,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 hector_overlay="${ASTRA_HECTOR_OVERLAY:-/tmp/astra_hector_training_overlay}"
+hector_overlay_preparer="$repo_root/scripts/run_sh/prepare_hector_training_overlay.sh"
 training_root="$repo_root/runtime_artifacts/rl_training"
 sac_config="$repo_root/AstraDrone_ros1_ws/src/learning_speed_rl/config/sac_training_v1.yaml"
 
@@ -40,6 +41,8 @@ if [[ ! "$run_id" =~ ^sac_training_10000ep_[0-9]{8}_[0-9]{6}$ ]]; then
   echo "RUN_ID must match sac_training_10000ep_YYYYMMDD_HHMMSS" >&2
   exit 2
 fi
+
+"$hector_overlay_preparer" --overlay "$hector_overlay"
 
 required_setup_files=(
   "/opt/ros/noetic/setup.bash"

@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   learning_speed_rl
   roscpp
   std_msgs
+  std_srvs
   geometry_msgs
   quadrotor_msgs
   plan_env
@@ -26,8 +27,8 @@ find_package(catkin REQUIRED COMPONENTS
 # catkin_package(CATKIN_DEPENDS message_runtime)
 catkin_package(
  INCLUDE_DIRS include
- LIBRARIES ego_planner
- CATKIN_DEPENDS astra_custom_msgs learning_speed_rl plan_env path_searching bspline_opt traj_utils
+ LIBRARIES ego_dynamic_vmax_snapshot
+ CATKIN_DEPENDS astra_custom_msgs learning_speed_rl plan_env path_searching bspline_opt traj_utils std_srvs
 #  DEPENDS system_lib
 )
 
@@ -40,12 +41,21 @@ include_directories(
 )
 
 
+add_library(ego_dynamic_vmax_snapshot
+  src/dynamic_vmax_snapshot.cpp
+  )
+target_link_libraries(ego_dynamic_vmax_snapshot
+  ${catkin_LIBRARIES}
+  )
+add_dependencies(ego_dynamic_vmax_snapshot ${catkin_EXPORTED_TARGETS})
+
 add_executable(ego_planner_node
   src/ego_planner_node.cpp 
   src/ego_replan_fsm.cpp
   src/planner_manager.cpp
   )
 target_link_libraries(ego_planner_node 
+  ego_dynamic_vmax_snapshot
   ${catkin_LIBRARIES}
   )
 add_dependencies(ego_planner_node ${catkin_EXPORTED_TARGETS})
@@ -55,6 +65,7 @@ target_link_libraries(traj_server ${catkin_LIBRARIES})
 add_dependencies(traj_server ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
   catkin_add_gtest(goal_height_test test/goal_height_test.cpp)
   if(TARGET goal_height_test)
     target_link_libraries(goal_height_test ${catkin_LIBRARIES})
@@ -78,5 +89,18 @@ if(CATKIN_ENABLE_TESTING)
     test/dynamic_speed_limit_test.cpp)
   if(TARGET dynamic_speed_limit_test)
     target_link_libraries(dynamic_speed_limit_test ${catkin_LIBRARIES})
+  endif()
+  catkin_add_gtest(dynamic_vmax_snapshot_test
+    test/dynamic_vmax_snapshot_test.cpp)
+  if(TARGET dynamic_vmax_snapshot_test)
+    target_link_libraries(dynamic_vmax_snapshot_test
+      ego_dynamic_vmax_snapshot ${catkin_LIBRARIES})
+  endif()
+  add_rostest_gtest(dynamic_vmax_snapshot_ros_stress_test
+    test/dynamic_vmax_snapshot_ros_stress.test
+    test/dynamic_vmax_snapshot_ros_stress_test.cpp)
+  if(TARGET dynamic_vmax_snapshot_ros_stress_test)
+    target_link_libraries(dynamic_vmax_snapshot_ros_stress_test
+      ego_dynamic_vmax_snapshot ${catkin_LIBRARIES})
   endif()
 endif()

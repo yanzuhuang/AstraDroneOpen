@@ -1,0 +1,1334 @@
+<?xml version ='1.0'?>
+<sdf version='1.7'>
+<world name='forest_randomization_v1'>
+  <gravity>0 0 -9.8</gravity>
+  <light name='sun' type='directional'>
+    <cast_shadows>1</cast_shadows>
+    <pose>30 0 20 0 -0 0</pose>
+    <diffuse>0.8 0.8 0.8 1</diffuse>
+    <specular>0.2 0.2 0.2 1</specular>
+    <direction>-0.5 0.5 -1</direction>
+    <attenuation>
+      <range>10</range>
+    </attenuation>
+    <spot>
+      <inner_angle>0</inner_angle>
+      <outer_angle>0</outer_angle>
+      <falloff>0</falloff>
+    </spot>
+  </light>
+  <model name='forest_ground_60x20'>
+    <static>1</static>
+    <pose>30 0 0 0 -0 0</pose>
+    <link name='link'>
+      <collision name='collision'>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>60 20</size>
+          </plane>
+        </geometry>
+        <max_contacts>10</max_contacts>
+        <surface>
+          <contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+      </collision>
+      <visual name='visual'>
+        <cast_shadows>0</cast_shadows>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>60 20</size>
+          </plane>
+        </geometry>
+        <material>
+          <ambient>0.45 0.45 0.45 1</ambient>
+          <diffuse>0.55 0.55 0.55 1</diffuse>
+        </material>
+      </visual>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+  </model>
+  <physics name='default_physics' type='ode'>
+    <max_step_size>0.001</max_step_size>
+    <real_time_update_rate>1000</real_time_update_rate>
+    <real_time_factor>1</real_time_factor>
+  </physics>
+  <scene>
+    <ambient>0.4 0.4 0.4 1</ambient>
+    <background>0.7 0.7 0.7 1</background>
+    <shadows>1</shadows>
+    <grid>1</grid>
+  </scene>
+  <gui fullscreen='0'>
+    <camera name='forest_overview'>
+      <pose>30 -48 42 0 0.58 1.57</pose>
+      <view_controller>orbit</view_controller>
+    </camera>
+  </gui>
+  <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+  <atmosphere type='adiabatic'/>
+  <wind/>
+  <spherical_coordinates>
+    <surface_model>EARTH_WGS84</surface_model>
+    <latitude_deg>0</latitude_deg>
+    <longitude_deg>0</longitude_deg>
+    <elevation>0</elevation>
+    <heading_deg>0</heading_deg>
+  </spherical_coordinates>
+  <state world_name='forest_randomization_v1'>
+    <sim_time>104 770000000</sim_time>
+    <real_time>107 119647542</real_time>
+    <wall_time>1787568989 667227497</wall_time>
+    <iterations>104770</iterations>
+    <model name='dense_10'>
+      <pose>51.9974 2.90492 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>51.9974 2.90492 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_11'>
+      <pose>48.5544 -6.95879 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>48.5544 -6.95879 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_12'>
+      <pose>44.5188 -1.68094 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>44.5188 -1.68094 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_13'>
+      <pose>45.9971 5.15946 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>45.9971 5.15946 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_14'>
+      <pose>42.2178 2.67459 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>42.2178 2.67459 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_15'>
+      <pose>51.9599 -7.99154 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>51.9599 -7.99154 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_16'>
+      <pose>42.8084 -5.24505 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>42.8084 -5.24505 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_17'>
+      <pose>52.8141 -1.25446 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>52.8141 -1.25446 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='dense_9'>
+      <pose>46.4457 1.43331 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>46.4457 1.43331 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='forest_ground_60x20'>
+      <pose>30 0 0 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>30 0 0 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='medium_3'>
+      <pose>28.1274 2.97955 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>28.1274 2.97955 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='medium_4'>
+      <pose>30.9674 -6.40288 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>30.9674 -6.40288 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='medium_5'>
+      <pose>37.2236 1.88884 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>37.2236 1.88884 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='medium_6'>
+      <pose>25.5932 -1.17175 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>25.5932 -1.17175 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='medium_7'>
+      <pose>39.1422 6.14452 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>39.1422 6.14452 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='medium_8'>
+      <pose>29.8709 -7.99867 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>29.8709 -7.99867 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='sparse_0'>
+      <pose>23.6341 2.70555 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>23.6341 2.70555 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='sparse_1'>
+      <pose>21.5062 4.24736 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>21.5062 4.24736 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <model name='sparse_2'>
+      <pose>13.5733 1.18253 2.5 0 -0 0</pose>
+      <scale>1 1 1</scale>
+      <link name='link'>
+        <pose>13.5733 1.18253 2.5 0 -0 0</pose>
+        <velocity>0 0 0 0 -0 0</velocity>
+        <acceleration>0 0 0 0 -0 0</acceleration>
+        <wrench>0 0 0 0 -0 0</wrench>
+      </link>
+    </model>
+    <light name='sun'>
+      <pose>30 0 20 0 -0 0</pose>
+    </light>
+  </state>
+  <model name='sparse_0'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.37017</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.37017</iyy>
+          <iyz>0</iyz>
+          <izz>0.40701</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.637973</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.637973</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>23.6341 2.70555 2.5 0 -0 0</pose>
+  </model>
+  <model name='sparse_1'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.24223</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.24223</iyy>
+          <iyz>0</iyz>
+          <izz>0.15112</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.388741</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.388741</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>21.5062 4.24736 2.5 0 -0 0</pose>
+  </model>
+  <model name='sparse_2'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.27329</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.27329</iyy>
+          <iyz>0</iyz>
+          <izz>0.213256</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.461797</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.461797</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>13.5733 1.18253 2.5 0 -0 0</pose>
+  </model>
+  <model name='medium_3'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.3357</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.3357</iyy>
+          <iyz>0</iyz>
+          <izz>0.338067</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.581435</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.581435</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>28.1274 2.97955 2.5 0 -0 0</pose>
+  </model>
+  <model name='medium_4'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.23711</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.23711</iyy>
+          <iyz>0</iyz>
+          <izz>0.140891</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.375354</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.375354</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>30.9674 -6.40288 2.5 0 -0 0</pose>
+  </model>
+  <model name='medium_5'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.25267</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.25267</iyy>
+          <iyz>0</iyz>
+          <izz>0.172009</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.414739</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.414739</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>37.2236 1.88884 2.5 0 -0 0</pose>
+  </model>
+  <model name='medium_6'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.32288</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.32288</iyy>
+          <iyz>0</iyz>
+          <izz>0.312422</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.558948</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.558948</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>25.5932 -1.17175 2.5 0 -0 0</pose>
+  </model>
+  <model name='medium_7'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.49954</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.49954</iyy>
+          <iyz>0</iyz>
+          <izz>0.665741</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.81593</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.81593</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>39.1422 6.14452 2.5 0 -0 0</pose>
+  </model>
+  <model name='medium_8'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.5841</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.5841</iyy>
+          <iyz>0</iyz>
+          <izz>0.834867</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.913711</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.913711</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>29.8709 -7.99867 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_9'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.6488</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.6488</iyy>
+          <iyz>0</iyz>
+          <izz>0.964257</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.981966</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.981966</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>46.4457 1.43331 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_10'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.65062</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.65062</iyy>
+          <iyz>0</iyz>
+          <izz>0.967902</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.98382</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.98382</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>51.9974 2.90492 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_11'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.49835</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.49835</iyy>
+          <iyz>0</iyz>
+          <izz>0.663365</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.814472</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.814472</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>48.5544 -6.95879 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_12'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.27761</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.27761</iyy>
+          <iyz>0</iyz>
+          <izz>0.221896</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.471058</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.471058</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>44.5188 -1.68094 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_13'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.35252</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.35252</iyy>
+          <iyz>0</iyz>
+          <izz>0.37171</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.60968</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.60968</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>45.9971 5.15946 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_14'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.42561</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.42561</iyy>
+          <iyz>0</iyz>
+          <izz>0.517878</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.719637</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.719637</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>42.2178 2.67459 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_15'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.50049</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.50049</iyy>
+          <iyz>0</iyz>
+          <izz>0.667645</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.817095</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.817095</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>51.9599 -7.99154 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_16'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.62423</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.62423</iyy>
+          <iyz>0</iyz>
+          <izz>0.915131</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.956625</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.956625</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>42.8084 -5.24505 2.5 0 -0 0</pose>
+  </model>
+  <model name='dense_17'>
+    <static>0</static>
+    <link name='link'>
+      <inertial>
+        <mass>2</mass>
+        <inertia>
+          <ixx>4.25035</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>4.25035</iyy>
+          <iyz>0</iyz>
+          <izz>0.167375</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.409115</radius>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>1</collide_without_contact>
+            <ode/>
+          </contact>
+          <bounce/>
+          <friction>
+            <torsional>
+              <ode/>
+            </torsional>
+            <ode/>
+          </friction>
+        </surface>
+        <max_contacts>10</max_contacts>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <cylinder>
+            <length>5</length>
+            <radius>0.409115</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Blue</name>
+          </script>
+        </material>
+      </visual>
+      <gravity>0</gravity>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+    </link>
+    <pose>52.8141 -1.25446 2.5 0 -0 0</pose>
+  </model>
+</world>
+</sdf>

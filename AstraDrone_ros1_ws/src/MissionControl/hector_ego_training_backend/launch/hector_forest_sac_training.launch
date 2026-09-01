@@ -1,0 +1,122 @@
+<launch>
+  <!-- Qualified Forest training/evaluation; no PX4/MAVROS/FAST-LIO. -->
+  <arg name="output_dir"/>
+  <arg name="gui" default="false"/>
+  <arg name="runner_mode" default="training"/>
+  <arg name="total_training_episodes" default="10000"/>
+  <arg name="evaluation_episodes" default="100"/>
+  <arg name="evaluation_forest_seed" default="8"/>
+  <arg name="evaluation_checkpoint_path" default=""/>
+  <arg name="evaluation_checkpoint_episode" default="0"/>
+  <arg name="smoke_test" default="false"/>
+  <arg name="timing_qualification" default="false"/>
+  <arg name="early_learning_observation" default="false"/>
+  <arg name="startup_contract_only" default="false"/>
+  <arg name="episodes_per_map_block" default="100"/>
+  <arg name="scheduler_rng_seed" default="20260824"/>
+  <arg name="v_max_min" default="0.30"/>
+  <arg name="v_max_max" default="1.75"/>
+  <arg name="max_episode_time" default="55.0"/>
+  <arg name="run_id" default="forest_sac_training_10000ep"/>
+  <arg name="sac_config"
+       default="$(find learning_speed_rl)/config/sac_training_v1.yaml"/>
+  <arg name="reward_config"
+       default="$(find learning_speed_rl)/config/stage1_reward.yaml"/>
+  <arg name="forest_dir"
+       default="$(find hector_ego_training_backend)/../../../../simulation/forest"/>
+  <arg name="forest_config"
+       default="$(arg forest_dir)/forest_pool_v1.json"/>
+  <arg name="coordinator_episode_count"
+       default="$(eval 3 if arg('runner_mode') == 'map_switch_preflight' else (int(arg('total_training_episodes')) if arg('runner_mode') == 'training' else int(arg('evaluation_episodes'))))"/>
+  <arg name="random_start_enabled"
+       default="$(eval arg('runner_mode') == 'training')"/>
+  <!-- Qualification-only policy-side trajectory source.  EGO/traj_server
+       continue to use planning/bspline; the production default is unchanged. -->
+  <arg name="policy_trajectory_topic" default="planning/bspline"/>
+
+  <include file="$(find hector_ego_training_backend)/launch/hector_training_episode_reset.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="episode_count" value="$(arg coordinator_episode_count)"/>
+    <arg name="runner_mode" value="$(arg runner_mode)"/>
+    <arg name="fixed_v_max" value="$(arg v_max_max)"/>
+    <arg name="v_max_min" value="$(arg v_max_min)"/>
+    <arg name="static_max_vel" value="4.00"/>
+    <arg name="static_max_acc" value="3.00"/>
+    <arg name="action_owner" value="sac"/>
+    <arg name="output_dir" value="$(arg output_dir)"/>
+    <arg name="require_automated_acceptance" value="false"/>
+    <arg name="coordinator_required"
+         value="$(eval arg('runner_mode') == 'map_switch_preflight')"/>
+    <arg name="max_episode_time" value="$(arg max_episode_time)"/>
+    <arg name="spawn_wall_delay" value="0.0"/>
+    <arg name="reset_profile_overlay"
+         value="$(find hector_ego_training_backend)/config/forest_training_reset.yaml"/>
+    <arg name="random_start_enabled" value="$(arg random_start_enabled)"/>
+    <arg name="reward_runtime_audit_enabled" value="false"/>
+    <arg name="reward_config" value="$(arg reward_config)"/>
+    <arg name="world_name" value="$(arg forest_dir)/learning_speed_forest_v1_base.world"/>
+    <arg name="hover_x" value="5.0"/>
+    <arg name="hover_y" value="0.0"/>
+    <arg name="hover_z" value="3.0"/>
+    <arg name="hover_yaw" value="0.0"/>
+    <arg name="entry_x" value="57.5"/>
+    <arg name="entry_y" value="0.0"/>
+    <arg name="entry_z" value="3.0"/>
+    <arg name="use_truth_registered_ego_cloud" value="true"/>
+    <!-- GridMap is centered at world x=0.  A 120 m X extent is the minimum
+         unchanged-origin representation covering the frozen X=[0,60] map. -->
+    <arg name="map_size_x" value="120.0"/>
+    <arg name="map_size_y" value="20.0"/>
+    <arg name="map_size_z" value="4.0"/>
+    <arg name="require_forest_map_ready" value="true"/>
+    <arg name="forest_config" value="$(arg forest_config)"/>
+    <arg name="forest_scheduler_rng_seed" value="$(arg scheduler_rng_seed)"/>
+    <arg name="forest_preflight_switch_count" value="3"/>
+    <arg name="forest_preflight_episodes_per_map_block"
+         value="$(arg episodes_per_map_block)"/>
+    <arg name="observation_trajectory_topic"
+         value="$(arg policy_trajectory_topic)"/>
+  </include>
+
+  <node pkg="hector_ego_training_backend" type="forest_map_manager.py"
+        name="forest_map_manager" output="screen" required="true">
+    <param name="forest_config" value="$(arg forest_config)"/>
+    <param name="world_dir" value="$(arg forest_dir)"/>
+    <param name="switch_timeout_wall" value="45.0"/>
+    <param name="pose_tolerance_m" value="0.0001"/>
+  </node>
+
+  <group ns="uav1">
+    <node pkg="learning_speed_rl" type="sac_training_runner.py"
+          name="sac_training_runner" output="screen" required="true"
+          unless="$(eval arg('runner_mode') == 'map_switch_preflight')">
+      <rosparam command="load" file="$(arg sac_config)"/>
+      <rosparam command="load" file="$(arg reward_config)"/>
+      <param name="namespace" value="uav1"/>
+      <param name="run_id" value="$(arg run_id)"/>
+      <param name="output_dir" value="$(arg output_dir)"/>
+      <param name="training/mode" value="$(arg runner_mode)"/>
+      <param name="training/total_training_episodes" value="$(arg total_training_episodes)"/>
+      <param name="training/smoke_test" value="$(arg smoke_test)"/>
+      <param name="training/timing_qualification"
+             value="$(arg timing_qualification)"/>
+      <param name="training/early_learning_observation"
+             value="$(arg early_learning_observation)"/>
+      <param name="training/startup_contract_only"
+             value="$(arg startup_contract_only)"/>
+      <param name="environment/reset_randomization_enabled" value="$(arg random_start_enabled)"/>
+      <param name="evaluation/checkpoint_path" value="$(arg evaluation_checkpoint_path)"/>
+      <param name="evaluation/checkpoint_episode" value="$(arg evaluation_checkpoint_episode)"/>
+      <param name="evaluation/episode_count" value="$(arg evaluation_episodes)"/>
+      <param name="action/expected_v_max_max" value="$(arg v_max_max)"/>
+      <param name="action/expected_v_max_min" value="$(arg v_max_min)"/>
+      <param name="forest/enabled" value="true"/>
+      <param name="forest/config_path" value="$(arg forest_config)"/>
+      <param name="forest/scheduler_rng_seed" value="$(arg scheduler_rng_seed)"/>
+      <param name="forest/episodes_per_map_block" value="$(arg episodes_per_map_block)"/>
+      <param name="forest/evaluation_logical_seed" value="$(arg evaluation_forest_seed)"/>
+      <param name="forest/switch_timeout_wall" value="45.0"/>
+      <remap from="planning/bspline" to="$(arg policy_trajectory_topic)"/>
+    </node>
+  </group>
+</launch>

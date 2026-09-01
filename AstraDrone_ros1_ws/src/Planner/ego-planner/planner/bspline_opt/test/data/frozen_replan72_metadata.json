@@ -1,0 +1,163 @@
+{
+  "astar_goal": [
+    29.898084,
+    -0.803345,
+    2.793707
+  ],
+  "astar_start": [
+    29.566398,
+    -0.929099,
+    2.728702
+  ],
+  "astar_step": 0.1,
+  "bag": "runtime_artifacts/learning_speed/forest_seed6_raw36_shared_mapper_v075_20260825_r01/runtime_chain.bag",
+  "bag_sha256": "c921ff9fc43b57288bd916a272cb2dd20aec1a7fb80ca0c86296a4560d8b1b64",
+  "control_points": [
+    [
+      28.761292,
+      -1.135844,
+      2.537161
+    ],
+    [
+      29.156949,
+      -1.067315,
+      2.634937
+    ],
+    [
+      29.566398,
+      -0.929099,
+      2.728702
+    ],
+    [
+      29.898084,
+      -0.803345,
+      2.793707
+    ],
+    [
+      30.281439,
+      -0.64864,
+      2.856534
+    ],
+    [
+      30.643644,
+      -0.503026,
+      2.903575
+    ],
+    [
+      31.020887,
+      -0.367523,
+      2.941399
+    ],
+    [
+      31.402068,
+      -0.251819,
+      2.967528
+    ],
+    [
+      31.791228,
+      -0.156051,
+      2.985375
+    ],
+    [
+      32.182006,
+      -0.082228,
+      2.996577
+    ],
+    [
+      32.587019,
+      -0.036448,
+      3.002199
+    ],
+    [
+      32.964875,
+      -0.012396,
+      3.004366
+    ],
+    [
+      33.42271,
+      -0.002459,
+      3.004892
+    ],
+    [
+      33.690041,
+      -0.000162,
+      3.005059
+    ],
+    [
+      34.273577,
+      -0.000104,
+      3.00493
+    ],
+    [
+      34.859909,
+      -5.6e-05,
+      3.004797
+    ]
+  ],
+  "csv_sha256": "274e84e2854e8716605789a0921df2e578cc71693669910b16e4c9449c3c4dfc",
+  "map_origin": [
+    -60.0,
+    -10.0,
+    0.0
+  ],
+  "map_resolution": 0.1,
+  "map_size": [
+    120.0,
+    20.0,
+    4.0
+  ],
+  "obstacles_inflation": 0.3,
+  "old_astar_path": [
+    [
+      29.432241,
+      -0.966222,
+      2.761205
+    ],
+    [
+      29.532241,
+      -0.966222,
+      2.761205
+    ],
+    [
+      29.632241,
+      -0.966222,
+      2.761205
+    ],
+    [
+      29.732241,
+      -0.866222,
+      2.761205
+    ],
+    [
+      29.832241,
+      -0.766222,
+      2.761205
+    ],
+    [
+      29.932241,
+      -0.766222,
+      2.761205
+    ]
+  ],
+  "optimizer": {
+    "dist0": 0.5,
+    "lambda_collision": 0.5,
+    "lambda_feasibility": 0.1,
+    "lambda_fitness": 1.0,
+    "lambda_smooth": 1.0,
+    "max_acc": 0.8,
+    "max_vel": 0.75,
+    "order": 3,
+    "swarm_clearance": 1.5,
+    "ts": 0.8
+  },
+  "point_count": 17637,
+  "replan_time": 207.031,
+  "schema": "ego_frozen_replan72_occupancy_v1",
+  "selection": "latest published occupancy receipt <= replan time",
+  "snapshot_receipt_time": 206.932,
+  "snapshot_source_stamp": 206.841,
+  "source_run": "forest_seed6_raw36_shared_mapper_v075_20260825_r01",
+  "topic": "/uav1/drone_0_ego_planner_node/grid_map/occupancy_inflate",
+  "unknown_planning_policy": "traversable"
+}

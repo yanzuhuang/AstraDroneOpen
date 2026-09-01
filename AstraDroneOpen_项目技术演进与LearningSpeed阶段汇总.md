@@ -1,589 +1,782 @@
 # AstraDroneOpen 项目技术演进与 Learning Speed 阶段汇总
 
-> 更新日期：2026-08-24
+> 文档角色：AstraDroneOpen Learning Speed / SAC 阶段唯一技术演进总索引
 >
-> 当前边界：10000-Episode/500-checkpoint/100-evaluation 与 `v_max=[0.30,1.75]` 已完成代码/config/静态验证；fixed terminal-convergence bug 已最小修复，lightweight fixed-v_max 六档最终 PASS；Reward v2 的 4 档×5 Episode runtime qualification 保留为 NO-GO；Reward v3 已完成代码/unit/frozen replay/真实状态离线 landscape，获准进入新的 bounded Reward-only runtime qualification，但尚无 v3 runtime PASS；正式 training、evaluation 均未启动
+> 本次整理日期：2026-09-02（Asia/Shanghai）
 >
-> 证据原则：当前源码/配置/launch 优先于旧报告；历史 FAIL/NO-GO 不改写为 PASS；training-only 结论不外推到 PX4/FAST-LIO full-stack 或真机
+> 当前仓库：`scene01-3uav-circuit-mission`，HEAD `ad857b9816a431a4c64ae46960e18b35ef76b8a3`，工作区 dirty
+>
+> 本轮增量来源：清点时 `runtime_artifacts/**/*.md` 65 份 + 用户指定旧汇总 3 份，共 68 份；其中原第 21 节已覆盖 41 份 runtime 报告，本轮新增审计 24 份 runtime 报告和 3 份根目录汇总
+> 操作边界：只整理、审计和清理 Markdown；没有修改代码、配置或参数，没有 commit，没有启动 ROS、Gazebo、PX4、SAC、training、evaluation 或测试；完整吸收后按用户授权删除 68 份源 Markdown，非 Markdown 原始工件全部保留
 
-本文把 `runtime_artifacts/` 下全部 34 个 Markdown、根目录
-`stage1_progress_transition_validation.md`，以及本文件旧版已整理的系统主线，重构为
-唯一技术演进入口。CSV、JSON、JSONL、NPZ、PT、bag、ULog、日志、图像、视频和
-runtime 目录继续作为原始证据保留。
+第 1～21 节是 2026-08-29 的历史基线索引；第 22～29 节是本轮结合当前源码、8 月 30 日全项目/Reward 审计与 9 月 1 日最新 runtime 的增量裁决。发生冲突时，以第 22～29 节及其引用的当前源码/最新工件为准。工作区仍包含大量未提交用户修改；历史 runtime 的真实 FAIL/NO-GO、基础设施无效尝试和 qualification-only PASS 均原样保留，不因后续修复或新 run 被抹去。
 
-## 1. 项目总体目标与系统架构
+标记约定：`[论文明确要求]`、`[项目原始设计]`、`[AstraDroneOpen实现选择]`、`[为了修复runtime问题后来加入]`、`[qualification-only]`、`[已被替代]`、`[已废弃]`、`[当前仍生效]`、`[状态待审计]`。代码索引另用 `CORE`、`CORRECTNESS_REQUIRED`、`PAPER_ALIGNED`、`ASTRA_IMPLEMENTATION`、`RUNTIME_PATCH`、`QUALIFICATION_ONLY`、`LEGACY_CANDIDATE`、`DELETION_CANDIDATE`、`UNKNOWN`。
 
-AstraDroneOpen 是 ROS1 Noetic + Gazebo Classic + PX4 SITL + MAVROS + Livox
-Mid-360 + FAST-LIO + EGO-Swarm 的自主巡检研究工程。任务层负责八扇区、候选、
-ENTRY/EXIT、重试、返航和终态；EGO-Swarm 负责局部 B 样条、避障、重规划和队友
-时空轨迹避碰；bridge 是唯一 MAVROS raw-local 控制出口。
+## 1. 项目与研究目标
 
-Learning Speed 的动作严格限于 EGO 动态 `v_max`。policy 不选择 waypoint、不生成
-轨迹、不直接控制 Hector/PX4，也不拥有 clearance、碰撞检查或任务终态。
+AstraDroneOpen 的飞行基线是 ROS1 Noetic、Gazebo Classic、PX4 SITL、MAVROS、Livox Mid-360、FAST-LIO 与 EGO-Swarm。任务层决定 waypoint、ENTRY/EXIT、八扇区、重试、返航和终态；EGO 负责局部轨迹、碰撞检查与重规划；bridge/traj_server/controller 负责执行。
+
+Learning Speed 的研究动作只有 EGO 动态最大速度约束 `v_max`：
 
 ```text
-full-stack：Mid360 -> FAST-LIO -> EGO -> traj_server
-            -> EgoMavrosBridge -> MAVROS/PX4 -> Gazebo
-
-training-only：Gazebo truth odom + Mid360 PointCloud2
-               -> Observation C -> SAC v_max -> EGO -> traj_server
-               -> Hector Pose/Twist controllers -> Gazebo
+Observation C -> SAC normalized action
+ -> SpeedRequestStamped -> SpeedAdapter / SpeedSafetyFilter
+ -> SpeedActionStamped -> EGO dynamic v_max
+ -> SpeedAppliedStamped -> causal transition / Replay
 ```
 
-Training 不启动 PX4、MAVROS、FAST-LIO 或 EgoMavrosBridge；full-stack 不启动 Hector
-execution/truth adapter。两条 `/uav1/Odometry` 路径通过 launch、进程和 publisher
-exclusivity 互斥，禁止依赖 last-publisher-wins。
+`[论文明确要求]` 外层 learned policy 给 planner 速度约束，不输出 waypoint、轨迹或底层控制；论文明确的频率是 depth 15 Hz、outer policy 10 Hz、position controller 50 Hz，感知与 action 异步、仿真时钟持续推进。`[AstraDroneOpen实现选择]` Hector training-only backend、Observation C 的精确 3267 维、stamped identity、one-open-transition、fixed absolute grid、Forest scheduler、Replay/terminal handshake 均是本项目实现，不应写成论文原始要求。
 
-## 2. PX4 / FAST-LIO / EGO-Swarm 基础系统
+## 2. 原始飞行系统基线
 
-三机 full-stack 已形成真实 SITL 闭环：Gazebo 传感器进入各机 FAST-LIO，frame
-adapter 与 teammate/self/ground filter 形成 `/uavN/Odometry` 和规划点云，本机
-EGO-Swarm 输出 B 样条，经 traj_server 和 bridge 交给 PX4 OFFBOARD。公共 `world`
-用于轨迹共享与协调，本机 `uavN/camera_init` 用于规划。
-
-worksite 早期 Mid360 启动阻塞定位为 ODE heightfield collision 与 20,000-ray
-MultiRay 求交的病态性能，而非 PX4、FAST-LIO 或 namespace。collision mesh 替换后
-1/2/3 UAV 感知链均可启动；三机 RTF 约 0.23 仍是算力风险，不能写成飞行验收。
-EGO 核心是受控 vendor-derived 区域，不为单次实验改 core、关闭安全检查或改 world。
-
-## 3. 单机与三机绕塔基线
-
-单机已具备八扇区、候选换点、ENTRY/EXIT、有限重试、HOLD、逆进场路径返航和受控
-降落。三机 worksite 最终闭环 PASS：UAV3/UAV2/UAV1 依次放行，目标相邻相位
-67.5°，三机分别完成 360°、8 扇区、EXIT、HOME、落地和解除武装；最小机间距离
-高于 3.0 m 门限。
-
-历史输入/时效、地图边界、候选、许可和返航失败保留，修复没有降低安全门。
-outdoor_village 只通过三机 initialization-only 与 UAV1 Learning Speed 飞行，不等于
-三机 outdoor 任务闭环；YOLO 三路接口通过也不等于视觉业务闭环。
-
-## 4. 障碍物膨胀、clearance 与真实距离历史问题
-
-历史问题是把 inflated voxel center distance 当成 raw/真实障碍距离，并在任务层重复
-套用 raw clearance。PRE_ENTRY 的 0.967 m 拒绝由此产生；对应 filtered raw point
-约 1.62 m，来自真实松树回波。
-
-| 表示 | 当前语义 |
-|---|---|
-| raw/filtered cloud、粗几何 | `minimum_clearance=1.0 m`，只应用一次 |
-| EGO inflated occupancy | `map_additional_clearance=0.5 m` |
-| EGO collision/A*/B-spline | 使用 inflated occupancy |
-| Observation complexity | 从 filtered returns/surrogate 计算，与 planner clearance 分开 |
-
-回归确认没有同一 occupancy buffer 的 double inflation；hard inflated boundary、方向性
-optimizer `dist0` 与任务层 0.5 m operational margin 同时存在，但不能机械相加成一个
-“真实安全半径”。
-
-## 5. EGO 高速飞行与轨迹跟踪问题
-
-旧 2.0 m/s 探索出现 tracking FAIL。根因是 EGO 已产生约 1.5 m/s 参考，而 bridge
-仍按三维范数限到 velocity 0.5 m/s、acceleration 1.0 m/s²；PX4 水平参数不是首要
-瓶颈。该旧失败不能代表修复后平台绝对上限。
-
-Environment B 的另一条真实风险是 `CURRENT_POSITION_IN_OCCUPANCY`：确定性初始化
-失败后 random polynomial fallback 生成下潜轨迹，靠近真实树和 inflated voxel 后触发
-collision。证据支持“random fallback + 中段高度合同不足”机制，但缺失败当次完整
-A* base point/direction/gradient，不能宣称唯一 planner-core 单点根因。
-
-## 6. 高速参数链 / dynamic v_max 前置工作
-
-高速独立代际使用 EGO `max_vel=4.0 m/s`、`max_acc=3.0 m/s²`、
-`feasibility_tolerance=0.0`、`planning_horizon=7.5 m`，bridge norm envelope 覆盖 EGO
-逐轴盒。Environment B progressive：1.75 PASS、2.0 PASS、2.5 FAIL；3.0/3.5 按真实
-failure 即停未运行。2.5 虽最终 mission success/落地，过程中锁存 collision/dangerous
-proxy，qualification 仍 FAIL。bridge raw 到 PX4 input 最大差低于 `1.2e-7 m/s`，
-三档 velocity saturation 为 0：`HIDDEN VELOCITY LIMIT: NO`。最高稳定 qualification
-是 2.0 m/s。
-
-dynamic `v_max` 后续按 paper-guided 语义清理：合法 action 不再 slew、low-pass、
-hysteresis 或 maximum-step shaping；相邻 delta 超出 `[-0.3,+0.5] m/s` 才额外强制
-重规划，其余保留 EGO native replanning。正常语义为 `requested=filtered=applied`；
-scalar topic 只是镜像，stamped identity 才是正式链。
-
-## 7. Observation v2 / C 与 3200 点云 surrogate
-
-Observation v2 用 80×40=3200 球面 bin 表达 obstacle/free/unknown，5 帧点云按各自
-source stamp 的 pose 对齐到当前 body。worksite 塔旁 inward、CW/CCW tangent、
-tower-behind unknown、continuous yaw/history 均 PASS；它仍是 surrogate，不是稠密
-3D occupancy。
-
-Observation C 冻结为 3267 维：`lidar_surrogate[3200]`、
-`future_positions_body[20][3]`、`actual_velocity_body[3]`、
-`tracking_error_body[3]`、`previous_applied_v_max`。mission/planner/clearance、lidar masks
-和 diagnostics 不进入 policy input。
-
-早期 A/B valid ratio 偏低的根因是 replan 后未按 source stamp 选 causal trajectory，
-以及大 sim time 下 `sec/nsec -> float -> sec/nsec` 丢 1 ns。修复保留 0.05 s 门限，
-没有放宽时间窗。Training 用 Mid360 PointCloud2 type 2、`mid360_link` 和 truth-pose
-causal history；full-stack 保留 CustomMsg type 3 + FAST-LIO。metadata 必须真实写
-`gazebo_truth_training`。
-
-`N=NA,D=0` 表示 unknown-majority/no-known-obstacle，不得自动解释为 open/Low。
-
-## 8. Learning Speed Adapter 与 action identity 链
-
-最早 causal step v0.1 只有 headerless/value/timestamp 配对，0.5 s 与 1.0 s runtime
-均 NO-GO；0.1 s 异步 causal step 删除了 state/action 间 native replan rejection gate，
-通过 48/48 live steps。
-
-Episode v0.1 初版虽接近 10 Hz，重叠 request 仍只能按 Float64/value 配对，正式 NO-GO。
-最终新增 `SpeedRequestStamped -> SpeedActionStamped -> SpeedAppliedStamped`，以
-`(episode_id, step_index, request_id)` 贯通，formal rule 为 request_id equality。
-100 Hz burst 为 100/100 exact FIFO；UAV1 live Episode 为 100 request/action/applied/
-transition、10.0 Hz、0 mismatch/timeout/drop，正确以 max steps truncated。Episode 后的
-final-home planner failure 保留，不能写成 full-mission PASS。
-
-## 9. Stage 1 Reward 设计与人工标定
-
-首轮 A/B 0.30–1.50 m/s 共 12 run 均 terminal/mission PASS；post-fix 另有 A/B
-0.30–1.75 共 14 条，A 全 PASS、B/1.75 保留 failure；current generation 有 16 个
-selected cell、13 PASS/3 FAIL。不同 ceiling、acceleration、planner/bridge generation
-不得混池。B 1.25–1.50 风险可重复但非确定性；时序敏感性有证据，唯一 planner-core
-cause 没有。
-
-历史 Stage 1 `astradrone_stage1_reward_v1.0` 使用 Candidate C 连续 `phi_1/phi_2`，Unknown
-固定 1.25/0.5；项目 λ 为 0.65/0.35、speed 分支 1.00/0.80/0.25、smoothing 0.10、
-danger 2.00。2026-08-24 Reward v2 审计确认 v1 错把 applied `v_max` 用作 Eq. (10)
-速度且缺 Eq. (8)，已由第 24.1 节的新统一实现替代。所有 `phi`/λ 仍是
-AstraDroneOpen-specific，不是论文原参数。
-
-## 10. Stage 1 Reward / transition validation
-
-Recorder 只对 valid、同 episode、非 truncated candidate 调用唯一
-`LearningSpeedReward.evaluate()`；invalid/truncated 不变成 training-ready，历史 frozen
-calibration 不回写。v2 online/offline equality 与 frozen replay validation PASS，分项增加
-`reward_error`；progress 仍不进 Reward。
-
-根目录 progress 报告的 `progress_ctx_A_v125_r01` 已吸收：progress 0→1、无下降，
-waypoint 8→1 不 reset；452 条 transition 的 receipt、run/episode provenance、
-`P_t/P_t+1/Delta_P` 因果检查通过，负 Delta_P 为 0；EXIT/return/landing 保持 1。
-它证明 reward context 可记录，但 progress 不进 policy input，也未加入 Reward。
-
-## 11. Gazebo 轻量 RL 训练架构决策
-
-只读审计比较直接 teleport、受控飞回、full-stack relaunch 和事务式 airborne reset。
-对 PX4/FAST-LIO full-stack，单独 set_model_state 无法清 estimator、map、controller、
-trajectory 和 identity，不安全。训练主线因此选择独立 Hector backend。
-
-Hector 方案中，直接 `/cmd_vel` 因 frame 与 position/yaw feedback 不完整被废弃；当前
-不存在可确认的直接 trajectory interface；正式采用 `PositionCommand -> Hector
-Pose/Twist controllers` 薄 adapter，保留 EGO/traj_server，不自写 PID/B-spline。
-
-## 12. Hector + EGO execution backend
-
-qualification03 为权威 runtime PASS：hover、straight、turning/in-flight re-goal、
-continuous replan、cancel/hold、20/20 controller stop/teleport/start/engage reset 与
-post-reset fresh EGO tracking 均通过，RTF 约 0.9883。planned-vs-actual error 非零；
-一次 0.569 m/s overshoot 保留，没有调 PID。qualification01 的错误 hold 目标造成
-1.83 m spike，qualification02 有 teardown 异常；二者是历史失败。
-
-## 13. Gazebo truth odometry
-
-`/ground_truth/state -> gazebo_truth_odometry_adapter.py -> /uav1/Odometry` 只规范 frame
-并做 zero/future/stale/non-finite/quaternion/frame/order/publisher checks。9067 个
-raw/adapted exact-stamp pair 的 position/velocity/yaw 最大差为 0，relay p95 约 0.001 s。
-metadata 为 `gazebo_truth_training`、`fast_lio_provenance=false`。
-
-## 14. simulated Mid360 + Observation C training backend
-
-Training 复用 Livox Gazebo plugin、20000 rays/scan、10 Hz PointCloud2。五帧 raw cloud
-用 `t_pose <= t_cloud` truth pose 对齐后进入冻结 3200 surrogate，再与 EGO B-spline、
-速度、tracking 和 applied v_max 组成 3267。generation barrier、type 2 datatype、frame
-与 publisher exclusivity 已通过 qualification；type 3 只属于 full-stack。
-
-## 15. Episode / teleport reset
-
-正式 reset：terminal + SAC closure → candidate validation → adapter target ack → cancel/
-hold → clear Observation C/v2/truth-cloud history → stop controllers → pause → teleport +
-zero twist → unpause → restart/engage → generation barrier → five-frame warm-up → fresh
-trajectory → next Episode。reset generation 与 identity 一次一增；旧 generation、旧
-trajectory、重复 request 均 fail closed。Random sampler 不改变 ledger identity。
-
-## 16. worksite.world 正式 training environment
-
-nominal Hover `(0,0,3)`，ENTRY_GATE `(-4.3148485145,5.8522070123,3)`。Episode 1
-用 nominal spawn；training 后续以 seed 1001 在 X/Y offset `[-1,+1] m` 安全矩形采样，
-z=3、yaw=0 固定，最多 32 次。最不利角点静态审计仍约有 1.33 m 余量。
-这是 code/config/static-test ready；新 random reset 正式 10000-Episode 尚无 runtime PASS。
-Evaluation 关闭随机化，固定 nominal Hover。
-
-## 17. SAC training-loop integration
-
-已有 Gaussian Actor、twin Q/target Q、automatic entropy、Replay、异步 learner、
-checkpoint 与 qualification/training/evaluation runner。该轮集成时一维 action 使用旧
-`[0.05,0.40] m/s`；当前正式候选已由第 20–22 节替换为 `[0.30,1.75]`。Replay 始终只收
-完整 causal identity transition。
-
-短程 qualification 覆盖 2500 transitions、1500 stochastic steps、5 Episodes，通过
-identity、10 Hz、Replay、loss/Q/gradient、checkpoint、reset 与 planner/collision 门。
-该 PASS 只放行从空 Replay 开始的新训练，不表示收敛或长期稳定。
-
-## 18. 旧 10k pilot NO-GO
-
-旧 pilot 在 4207 valid transitions fail closed，出现真实 `NO_FEASIBLE_TRAJECTORY`；
-同时 stochastic action 从上界频繁跨到下界，引发大负 delta force-replan。Action
-exploration instability 与 environment/planner failure 共同构成 blocker。结论严格为
-NO-GO，旧 checkpoint/replay 禁止 resume，也不能被后续 qualification 回写成成功。
-
-## 19. SAC action exploration instability 根因与修复
-
-旧 `log_std=[-5,2]`、Actor LR 3e-4 在真实 3267-D replay 上出现 Actor/entropy 激烈
-变化，alpha 由约 0.2 累积到约 1.6，action 触及双边界。修复不动 Reward、Observation、
-EGO、Hector PID、SafetyFilter 和 v_max，只把 Actor LR 改为 `1e-5`、log-std 改为
-`[-3,-1]`，并先做 100 个 critic-only updates。短程结论为
-`SAC ACTION EXPLORATION STABILITY PASS`；不等于 10k 完成或多 seed 收敛。
-
-## 20. 正式 10000-Episode 配置与停止条件
-
-当前正式候选以 completed Episode 数作为唯一正常停止单位：
+历史 Git 证据把原始工程追溯到 2026-07-08 的初版，2026-07-30 迁入 official EGO-Swarm core，随后完成三机安全与动态限速接口。当前资料确认两条运行链必须互斥：
 
 ```text
-PRIMARY STOP: completed_episode_count == total_training_episodes == 10000
-checkpoint: every 500 completed Episodes, 500 ... 10000 (20 total)
-1 valid environment step = 1 transition = 1 Replay experience
+full-stack:
+Mid360 -> FAST-LIO -> /uavN/Odometry + registered cloud
+ -> EGO -> traj_server -> EgoMavrosBridge -> MAVROS/PX4 -> Gazebo
+
+training-only:
+Gazebo truth odometry + Mid360 PointCloud2
+ -> Observation C -> SAC v_max -> EGO -> traj_server
+ -> Hector Pose/Twist controller -> Gazebo
 ```
 
-每 Episode 保持 `max_steps=500` 和 `max_episode_time=55 s`。Episode 9999 不能正常结束
-training；Episode 10000 的 terminal transition、Replay boundary 和 closure 完成后才正常
-结束，保存 final checkpoint，且 coordinator 不 reset、不启动 Episode 10001。success、
-collision、planner terminal、max-steps/max-time truncated 等真实 terminal 均保留并在正式
-closure 后计为一个 completed Episode；基础设施、identity、causality、Observation、
-controller、Replay 或 checkpoint 异常仍 fail closed。
+`[项目原始设计][当前仍生效]` EGO 的规划、traj_server 的执行、控制器与传感器异步连续运行；D435/YOLO 不进入 Learning Speed 主链。Forest 报告进一步确认 EGO 3D A*、rebound optimizer、FSM periodic/safety replan 仍是局部避障 owner；Mission 2D A* 只用于特定 ENTRY corridor，不接管 Forest。
 
-`learning_starts=1000` 的单位保持 transition：前 1000 条 experience 进入 Replay，达到
-第 1000 条才启用 learner，不是等待 1000 Episodes。Replay capacity 100000、batch 64、
-100 critic-only startup updates 保持。Training 分支没有 evaluation 调用；evaluation 只能
-独立运行 100 Episodes，固定 nominal Hover、deterministic Actor、无 learner/network
-update、无 training Replay。
+## 3. Learning Speed 方案形成
 
-## 21. 当前正式候选配置
+早期阶段先验证 dynamic-speed interface 与 fixed speed，再形成以下职责边界：
 
-| 项目 | 当前值 |
-|---|---|
-| normal stop / Replay | 10000 completed Episodes / capacity 100000 |
-| Episode ceiling | 500 steps；`max_episode_time=55 s`；不是正常 stop owner |
-| learning starts / batch | 1000 transitions / 64 |
-| startup | 100 critic-only updates |
-| Actor/Critic/alpha LR | `1e-5 / 1e-3 / 1e-3` |
-| gamma / tau | `0.99 / 0.005` |
-| entropy / log-std | target `-1` / `[-3,-1]` |
-| normalized action / v_max | `[-1,1]` / `[0.30,1.75] m/s` |
-| mapping | `v_max = 1.025 + 0.725 * action` |
-| checkpoint | 每 500 completed Episodes；500…10000，共 20 个；10000 为 final |
-| evaluation during training | 无调用路径 |
-| independent evaluation | 100 Episodes、deterministic、fixed Hover、no update、no Replay |
-| training/evaluation root | `runtime_artifacts/rl_training/<RUN_ID>/` / `runtime_artifacts/rl_evaluation/<EVAL_ID>/` |
+- `[论文明确要求][PAPER_ALIGNED]` policy 输出 speed constraint，EGO 仍输出轨迹。
+- `[AstraDroneOpen实现选择][当前仍生效]` 合法范围内 `requested_v_max == filtered_v_max == applied_v_max`；SafetyFilter 仅 finite/check/clamp，不做 slew、low-pass、hysteresis 或 maximum-step shaping。
+- `[AstraDroneOpen实现选择][当前仍生效]` 相邻 action delta 超出 `[-0.3,+0.5] m/s` 时额外 force-replan；范围内保留 EGO native replan。
+- `[为了修复runtime问题后来加入][当前仍生效]` request/action/applied 使用 `(episode_id, step_index, request_id)`，scalar topic 只是状态镜像。
+- `[已被替代]` 旧 action `[0.05,0.40] m/s`、transition-count normal stop、training 内 evaluation、value/timestamp 猜配和多 pending transition。
 
-最新命令已同步到 `studynote.md`。正式 training 操作者入口仍是：
+正式候选动作范围后来固定为 `[0.30,1.75] m/s`，映射 `v_max=1.025+0.725*action`。下游 capability 与 policy range 被明确分开：SAC 最大 1.75，而 SpeedSafetyFilter/EGO capability 可为 4.0；r01 因错误要求二者相等而在 Episode 0 前失败，r02 修正为“policy interval 被 capability interval 包含”。
 
-```bash
-/home/yanzu/AstraDroneOpen/scripts/run_sh/learning_speed_sac_training.sh
+## 4. Observation V2 / C / 3200 探针演进
+
+### 4.1 从 V1 到 V2
+
+Observation V1 预留地图 tensor 与低维量，但 EGO 导出无法完整表达 FREE/UNKNOWN，轨迹通道也不足，因而没有成为训练 ready 的正式输入。Observation V2 改成 80×40=3200 个固定球面方向 bin，以五帧 Mid360 点云和各帧 causal pose 构建：
+
+```text
+0 = UNKNOWN
+1 = observed FREE
+2 = known OCCUPIED
 ```
 
-命令只是准备完成；本轮没有执行正式 training。Final checkpoint 命名为
-`sac_checkpoint_episode_10000.pt`；其他 checkpoint 例如 Episode 500 为
-`sac_checkpoint_episode_0500.pt`。独立 evaluation 只读引用选定 training checkpoint，
-自身写入 `runtime_artifacts/rl_evaluation/<EVAL_ID>/`。
+`[AstraDroneOpen实现选择][当前仍生效]` 这是固定方向 surrogate，不是 EGO inflated map，也不是物体数量或体素体积分数。五帧、FoV、occlusion margin、bin 顺序和 UNKNOWN 编码属于冻结数值合同。
 
-## 22. 新 v_max 链与 lightweight fixed-v_max qualification
+### 4.2 Observation C
 
-正式展开检查确认 Actor → `SpeedRequestStamped` → `SpeedActionStamped` →
-SpeedSafetyFilter → `SpeedAppliedStamped` → EGO dynamic `v_max` 的 active bounds 均为
-`[0.30,1.75]`；EGO `manager/max_vel`、optimization/bspline ceiling 与 dynamic maximum
-展开为 1.75，dynamic minimum 与 SpeedSafetyFilter minimum 展开为 0.30。旧 0.05/0.40
-没有作为正式 active clamp。源码仍有 generic fallback、传感器时间门、feasibility
-tolerance 和 `minimum_active_speed_mps=0.05` 等同值 literal；它们不是正式 action bound，
-且正式 launch 的 action bounds 已显式覆盖。未加入 slew、low-pass、hysteresis、cooldown
-或 action shaping，force-replan delta 语义未改。
+Observation C 把 V2 与 EGO 正式轨迹和运动状态融合，冻结 policy input 为 3267 维：
 
-2026-08-24 首轮复用现有 worksite Episode/reset coordinator 做六档、每档 2 Episodes 的短程
-qualification；Episode 1 nominal Hover，Episode 2 使用 seed 1001 random Hover。只把 EGO
-静态 ceiling 设为新正式上限 1.75，其余 EGO 参数、Hector PID、Reward、Observation C、
-random Hover 范围和安全门均未改。
+1. `lidar_surrogate[3200]`；
+2. `future_positions_body[20][3]`；
+3. `actual_velocity_body[3]`；
+4. `tracking_error_body[3]`；
+5. `previous_applied_v_max`。
 
-| fixed v_max | 结果 | Episode | Obs C valid | tracking p95/max m | actual p95/max m/s | accepted replans | reset |
-|---:|---|---:|---:|---:|---:|---:|---:|
-| 0.30 | PASS | 2/2 success | 1.000 | 0.0178 / 0.0675 | 0.2099 / 0.3023 | 76 | 2/2 |
-| 0.75 | PASS | 2/2 success | 1.000 | 0.0568 / 0.1051 | 0.5315 / 0.5538 | 30 | 2/2 |
-| 1.00 | NO-GO | 0/2；continuous invalid | 0.9828 | 0.0896 / 0.1304 | 0.7372 / 0.7891 | 21 | 2/2 |
-| 1.25 | NO-GO | 0/2；continuous invalid | 0.9826 | 0.1146 / 0.1482 | 0.9690 / 1.0212 | 17 | 2/2 |
-| 1.50 | NO-GO | 0/2；continuous invalid | 0.9810 | 0.1442 / 0.1816 | 1.2168 / 1.3622 | 15 | 2/2 |
-| 1.75 | NO-GO | 0/2；continuous invalid | 0.9789 | 0.1699 / 0.2041 | 1.5630 / 1.6972 | 13 | 2/2 |
+`[当前仍生效]` mission/planner state、clearance、complexity labels、lidar masks、diagnostics、run/episode provenance 不进入 policy input。每个字段必须有真实 frame/stamp/source；缺失、未来数据、generation mismatch、无正式 trajectory 或无法构造未来段时 fail closed。
 
-六档 planner failure、`NO_FEASIBLE_TRAJECTORY`、collision、controller/reset failure 均为
-0；12/12 reset 成功。1.00–1.75 的每个 Episode 都在 terminal convergence 对齐到
-`trajectory_unavailable`，超过冻结的 invalid grace 后以
-`invalid_observation:continuous` fail-closed；真实失败不重跑、不降门限。0.75 首次 q01
-在 0 Episode 因 gzserver exit 139/physical readiness timeout 属基础设施无效，保留原工件，
-只以新 ID q02 重试一次并得到上述有效结果。
+### 4.3 时戳与 trajectory 选择
 
-首轮结论为最高稳定通过速度 0.75 m/s，完整 `[0.30,1.75]` 动作范围 NO-GO。现有固定速度
-Reward 标定数据覆盖 0.30–1.75 m/s，Stage 1 配置的 speed anchors 为
-0.75/1.25/1.75，公式接受正速度，未发现明显速度域缺口；本轮 Reward 文件和实现均未改。
-这只支持单独讨论是否保持 Reward，不覆盖 runtime qualification。
+早期 valid-ratio 问题来自两项根因：replan 后按“当前最新轨迹”而非 V2 source stamp 选轨迹；以及 ROS `sec/nsec -> float -> sec/nsec` 在大 sim time 下丢 1 ns。修复后保留原 0.05 s kinematic interpolation gate，使用 bounded causal trajectory history，并保留原始 sec/nsec。
 
-随后用外部 rosbag 对 0.75 PASS 与 1.00 NO-GO 各建立最后 100 个 Observation step
-时间线。1.00 的 B-spline 在 sim 11952.795 正常结束；第一帧
-`trajectory_unavailable` 为 11952.825，此时 UAV 距 ENTRY 0.0771 m、速度 0.2447 m/s，
-尚未满足 success 速度门。UAV 到 11952.985 才进入原 0.25 m/0.20 m/s 包络，pre-fix
-11953.106 failure latch 时只保持约 0.121 s，未达到原 0.30 s sustain。因此不存在
-“success 已满足却先检查 invalid”的简单 ordering bug，也没有 EGO/traj_server 过早停止：
-traj_server 始终以相同 trajectory ID、READY flag 持续发布终点零速 PositionCommand。
+2026-08-27 又出现不同的 1 ns 问题：同一个 official trajectory 经 Bspline 与 Observation C 序列化后 start stamp 低 1 ns，scheduler 对 `(start_time_float,id)` 精确排序产生 false negative。后续只对同一 monotonic ID 允许 5 ns 容差；低 ID、未来 trajectory 和不单调 start 仍拒绝。两次 1 ns 问题对象不同，不能合并成一个历史事件。
 
-确认的 bug 是 fixed Episode coordinator 缺少 post-B-spline terminal convergence 语义：
-Observation C 正确拒绝无 future trajectory 的样本，但 coordinator 把“正式轨迹已结束、
-PositionCommand 健康持有 ENTRY、Hector 正在消除 tracking lag”的预期终端阶段当作正常
-飞行轨迹丢失。最小修复只在 `action_owner=fixed` 增加严格 terminal-hold guard：必须是
-fresh 且唯一 reason 为 `trajectory_unavailable`、lookup=`no_active_trajectory_at_stamp`、
-source stamp 晚于正式 trajectory end、Observation/B-spline/PositionCommand ID 一致、
-fresh READY PositionCommand 在原 ENTRY/速度容差内、实际位置已在原 ENTRY 容差内，且
-planner/collision/controller 门已先通过。Observation C 仍保持 invalid；原 0.5 s invalid
-grace、0.25 m/0.20 m/s/0.30 s success、EGO/Hector/Reward/random Hover/SAC/v_max/replan
-均未改。SAC action-owner 不启用该 fixed-only guard。
+### 4.4 stale、mailbox 与性能
 
-修复后严格按 1.00→1.25→1.50→1.75 顺序各跑 2 Episodes（nominal + random）：四档均
-2/2 PASS、合计 8/8 reset，planner/collision/controller failure 全为 0。terminal hold 使用
-次数为 2/2、2/2、2/2、1/2；1.75 nominal 未使用 guard 即正常 success，证明不是无条件
-放行。结合此前 0.30/0.75 各 2/2 PASS，当前 lightweight fixed-v_max 六档
-`[0.30,1.75]` 最终 **PASS**。fixed path 没有 AstraDroneEnv transition/Replay/SAC closure，
-所以该结论不外推为正式 SAC training runtime PASS。完整诊断见
-`trajectory_terminal_timing_diagnosis_report.md`。
+R04 的两次 `invalid_observation:stale` 最初只能确认 coordinator 用 0.35 s wall receipt-age 将 callback gap 升级为环境终态；后续 telemetry 定位为 `PRODUCER_COMPUTE_STALL`，且存在 stale candidate 被新 callback 超越的 TOCTOU。
 
-## 23. RL Legacy Code Cleanup 与废弃边界
+修复链为：
 
-当前只维护 `sac_training_v1.yaml`、`sac_training_runner.py` 和正式 Episode/reset owner。
-旧 transition-count normal stop、transition checkpoint、100-Episode/20间隔配置、旧 pilot
-resume、training 内 evaluation、headerless/value/timestamp pairing、合法 action shaping、
-伪 FAST-LIO provenance 与第二套 B-spline/PID 均废弃。Checkpoint 只由显式 20 个 Episode
-allowlist 在 closure 后触发；独立 evaluation mode 才加载 checkpoint，并硬编码为
-deterministic、无 training Replay、无 learner/network update。
+```text
+receipt-only stale terminal
+ -> source-aware raw/V2/C classification + latch 前加锁重读
+ -> C subscriber callback 改为 O(1) single-slot latest mailbox
+ -> worker coalesces obsolete input，reset 清 mailbox/barrier
+ -> V2 NumPy decode、缓存 occlusion table、跳过已覆盖 ray
+ -> C trajectory sampler 从整条剩余 B-spline 改为固定 5 m policy prefix
+```
 
-## 24. 当前边界与下一阶段
+`[为了修复runtime问题后来加入][当前仍生效]` mailbox/coalescing 保护的是“只算最新样本”；它不是 Reward 或 policy input。V2 优化保持 bitwise-equivalent 3200 值。5 m prefix 来自 `20*0.25 m`：旧逻辑对约 53 m 全尾部递归采样，isolated benchmark 281.0 ms；固定 prefix 19.443 ms，14.45×；5-Episode runtime worker max 69.263 ms，未改 0.35 s gate。
 
-- 正式 10000-Episode training：**未启动**；fixed-v_max blocker 已清除，但本轮没有启动或
-  runtime 验证 SAC action-owner/transition closure；Reward v2 fixed runtime 已完成但因 Low
-  覆盖为 0、实际 Medium blend 与整体状态分布低速偏置而 NO-GO，不构成正式 training 授权；
-- 正式 100-Episode evaluation：**未启动，且没有正式 checkpoint 可评估**；
-- random Hover fixed-v_max reset 与完整新动作范围六档均已通过；
-- fixed-only terminal hold 不改变 Observation C valid 规则，也未验证 SAC pending transition
-  在同类终端阶段的 closure；若后续获准正式 training，仍须以全新 RUN_ID、空 Replay、
-  fail-closed 监控开始，不能 resume 旧 pilot；
-- training 完成并产生正式 checkpoint 后，才可独立执行 100-Episode evaluation。
+## 5. Reward 设计演进
 
-## 24.1 Reward v2 论文对齐与离线 landscape
+### 5.1 Stage 1 / Reward v1
 
-Reward v2 代际把唯一 owner 统一为 `LearningSpeedReward.evaluate()`，version 为
-`astradrone_paper_guided_reward_v2.0`。Stage 1/2 只在同一实现内切换 `r_speed`；该代际配置
-选择 `stage_1`，没有启动 Stage 2 training。v3 的当前事实见 24.4。带符号总式为：
+旧 `astradrone_stage1_reward_v1.0` 使用项目自定义 `phi_1/phi_2` 与三个 speed branch，并以 applied `v_max` 计算 speed term，缺论文 Eq. (8) tracking-error term。它是 `[AstraDroneOpen实现选择][已被替代]`，不是论文精确复现。
+
+### 5.2 Reward v2
+
+Reward v2 收敛到唯一 owner `training/reward.py::LearningSpeedReward.evaluate()`：
 
 ```text
 r = r_speed + r_smoothing + r_error + r_danger
 ```
 
-`r_speed` 与 `r_danger` 使用 `state_t` actual velocity 范数；`r_smoothing` 使用相邻 stamped
-identity canonical applied EGO speed constraint；`r_error` 复用 Observation C 已有
-`tracking_error_body` 范数，按 `-lambda_error*min(||e||,e_max)^2` 计算。progress、success、
-clearance 和 planner shaping 仍不进入 Reward。Stage 2 候选只使用
-`r_speed=lambda_speed_3*actual_speed`；当前网络不是论文相同 CNN 架构，未机械冻结 CNN。
+- `[论文明确要求]` 四分项结构；`r_speed/r_danger` 用 actual speed，`r_smoothing` 用相邻 applied constraint，`r_error` 用 tracking error。
+- `[AstraDroneOpen实现选择]` `lambda_error=2.0,e_max=0.40`、其它 lambda、phi 计算及 surrogate 特征。
+- `[当前仍生效]` progress、success bonus、clearance、planner shaping 不进 Reward；invalid/truncated 不伪造成 training-ready。
 
-current-generation 正式范围 active-valid 33,180 行 tracking error 为 mean/median/p95/p99/max
-`0.12536/0.10663/0.26766/0.39746/0.79465 m`。离线候选
-`lambda_error=2.0,e_max=0.40 m` 约在 p99 clip，仅 0.964% 行被裁剪；error penalty
-median/p95/cap 为 `-0.0227/-0.1433/-0.3200`。该值不是论文公开参数，也未获准正式训练。
+v2 unit/offline/online 复算一致，但 4档×5 Episode fixed runtime 的 4161 step 中 Low=0，85.65% 状态反事实偏低速，结论为 `REWARD V2 RUNTIME QUALIFICATION NO-GO`。后续诊断把根因先分类为 route coverage：Hover→ENTRY 本身是 clutter corridor；并非已有证据证明真实 open 状态被错误映射。
 
-受控 landscape 表明 Low 明确偏高速、High 明确偏低速；代表性 Medium 的 Eq. (10)
-middle branch 仍从 0.30 到 1.75 单调增大，没有内部中速峰值。历史 10,000-transition
-NO-GO 状态中，80.99% 的 `r_speed(1.75)-r_speed(0.30)` 为负，后 1,000 action mean 已降至
-旧域的 `0.0728 m/s`；actual-speed 修正与新增 tracking term没有消除该分布级低速偏置。
-因此结论为代码/unit/offline replay PASS，但 **REWARD AUDIT NO-GO for formal training**。
-完整公式、21-cell landscape、旧新重算、danger scale 和参数分类见根目录
-`LearningSpeed_reward_v2_paper_alignment_report.md`。
+### 5.3 Reward v3 与 v3.1
 
-## 24.2 Reward v2 fixed-speed runtime qualification
-
-2026-08-24 复用现有 worksite lightweight fixed coordinator，在不启动 SAC/Replay、也不改
-Reward、phi、EGO、Hector PID、Observation C、random Hover、动作范围或 SAC 参数的边界内，
-完成 `0.30/0.75/1.25/1.75 m/s` 各 5 Episode。fixed path 没有 formal SAC transition owner；
-原 coordinator 只增加默认关闭的 Reward-only audit，以每个 active-valid Observation C 为
-runtime step 并直接调用唯一 `LearningSpeedReward.evaluate()`。
-
-有效结果为 20/20 success、20/20 reset，planner/collision/controller failure 均为 0；
-4161 个 Reward step 全部 finite，online/offline 逐行复算最大差 0，Observation C 全窗口
-4161/4238 valid。`|r_error|` mean/p95/max 为 `0.00243/0.01358/0.08454`，而
-`|r_speed|` 为 `0.46862/0.79160/0.92361`；只有 0.529% step 在 speed term 近零时出现
-`|r_error|>|r_speed|`，故 `lambda_error=2.0,e_max=0.40 m` 未压倒 speed term。20 个终态
-全为 success，`r_danger` 4161/4161 为 0、无误触发；本轮没有故意制造 dangerous terminal。
-
-最终 blocker 是访问分布：Low/Medium/High/Unknown 为 `0/2032/2129/0`，即
-`0%/48.83%/51.17%/0%`；按连续 Eq. (10) 最大 branch weight，dangerous 主导
-3443/4161（82.74%）。High 2129/2129 明确偏低速；实际 Medium 只有 29.38% 偏高速，
-70.62% 因 blend 权重偏低速。全体 3564/4161（85.65%）状态满足
-`r_speed(1.75)-r_speed(0.30)<0`，没有 runtime Low/open 证据，且比历史 80.99% 低速偏向
-更强。因此最终为 **REWARD V2 RUNTIME QUALIFICATION NO-GO**，不允许进入 100-Episode
-SAC Stage 1 qualification，更不允许正式 10000-Episode training/evaluation。详细 20-Episode、
-分项、branch 与 A--H 结论见根目录
-`LearningSpeed_reward_v2_runtime_qualification_report.md`；原始非 Markdown 工件位于
-`runtime_artifacts/reward_v2_runtime_qualification/`。
-
-## 24.3 phi / branch 分布与 ENTRY route 根因
-
-对上述 4161 个 fixed Reward runtime step 做纯离线诊断后，完整链为：五帧 causal Mid360
-点云进入 80×40 球面 bins；`K=count(semantic==KNOWN_OBSTACLE)`、`D=K/3200`、
-`N=min(known-obstacle bin range)`；`q_N=clip((6-N)/3.5)`、
-`q_D=clip((D-0.040)/0.040)`、`phi2=max(q_N,q_D)`、`phi1=1.75-phi2`。
-K 是 angular-bin count，不是 object count；D 不是 volume fraction，Reward 也没有 obstacle
-volume 输入。
-
-实际 N/D/K 范围为 `1.4366–4.6899 m`、`0.040625–0.0721875`、`130–231 bins`。
-0 step 达到 `N>=6`，0 step 达到 `D<=0.040`（等价 occupied bins<=128），故 Low
-在当前 route 上结构性不可达。`q_N>q_D` 为 4161/4161，最小领先仍 0.10687；
-phi2 完全由 nearest owner。2129 个 High 全由 `N<=2.5` 触发 q_N=1，density 从未达到
-0.080 或赢得 max。phi2/phi1 的 min/p05/median/p95/max 分别为
-`0.3743/0.4574/1/1/1` 与 `0.75/0.75/0.75/1.2926/1.3757`。
-
-按实际 speed 积分的 route-progress proxy（不是实测 odometry）分段后，start/middle/ENTRY
-的 phi2 median 为 `0.507/0.975/1.000`，低速偏好率为 `36.29%/97.09%/100%`；phi2 与
-route progress Spearman 为 0.9025。静态同 mesh 松树代理显示五个 reset start 到 ENTRY
-近直线的最小松树表面净空仅约 1.04–1.36 m，ENTRY 附近约 1.30 m，支持当前路线本身是
-clutter corridor。
-
-为避免 label 自证，另取 N>=runtime p90 且 D<=runtime p10 的 72 个局部相对开阔样本：
-phi2 仅 `0.3766–0.4885`、dangerous weight=0，`r_speed(1.75)-r_speed(0.30)` 全为正；
-它们没有被错误压到 dangerous side。但其未来 5 m 松树净空代理仍只有 1.09–1.36 m，
-严格 open corridor count 仍为 0。同一 worksite 的历史 Environment B 完整任务 6 个
-current-generation run 提供不混池的对照：14,784 个 active-valid numeric row 中有
-2102（14.22%）Low，均在 NAVIGATING，证明 world/mapping 在其他路线片段可以产生 Low。
-
-Medium 之所以 70.62% 偏低速，是 label 覆盖整个 `0<phi2<1`，而 continuous weight 在
-phi2>=0.65 已 100% dangerous。实际 Medium phi2 median/p95 为 0.6895/0.9849；
-1109/2032（54.58%）已 full-dangerous，另 310 位于 0.55–0.65 dangerous-side blend。
-速度斜率在 phi2≈0.5431 变负。smoothstep 实现没有异常；问题是路线访问状态集中在
-Medium 名称的 dangerous 侧，加上 label 与 continuous weight 的解释口径不一致。
-
-最终分类为 **ROUTE COVERAGE ISSUE**，不是当前证据支持的 PHI MAPPING ISSUE；现在不改
-phi/normalization/threshold。下一轮应先用同一 fixed Reward-only framework 组合明确 open、
-Medium、当前 ENTRY High 三段并记录真实 odometry/forward probes，再讨论是否允许
-100-Episode SAC Stage 1 qualification。完整公式、分层、图表与建议见根目录
-`LearningSpeed_phi_branch_distribution_diagnosis_report.md`，派生非 Markdown 证据位于
-`runtime_artifacts/reward_v2_phi_branch_diagnosis/20260824_d01/`。
-
-## 24.4 Reward v3 complexity fusion 与连续 speed slope
-
-2026-08-24 在不启动 Gazebo、SAC training、100-Episode qualification 或 evaluation 的边界内，
-使用三类互补真实证据重新标定 Stage 1：Environment B 六个正式完整任务的 14784 个
-active-valid state（含 2102 个真实 Low/open）、Reward v2 Hover→ENTRY 四档 runtime 的
-4161 state（2032 Medium、2129 High），以及历史
-`sac_training_10k_20260823_194751` 的 10000 state。v2 的 Eq. (6)、actual-speed、
-tracking-error、smoothing 与 dangerous-terminal 结构均冻结不动。
-
-`q_N/q_D` normalization 继续为 `[6.0,2.5] m` 与 `[0.040,0.080]`；替代 normalization
-虽有部分 label-target MSE 更低，但会重映射已有 Open anchor，或对最终 fusion 不优于原范围，
-故不采用。v2 `phi_2=max(q_N,q_D)` 在 Hover→ENTRY 4161/4161 由 nearest 独占，已被
-唯一 continuous fusion 替换：
+v3 保留 normalization 与四分项，只把 `phi_2=max(q_N,q_D)` 改为：
 
 ```text
 phi_2 = 1 - (1-q_N)^0.46 * (1-q_D)^0.54
 phi_1 = 1.75 - phi_2
 ```
 
-`0.46/0.54` 是 Open 2102、Medium 9199、High 2129 三 strata 等权 MSE 的 0.01 网格最优，
-不是经验 0.5/0.5。它保留 `phi_2=0/0.5/1 -> phi_1=1.75/1.25/0.75 m/s` 和任一风险
-端点到 High anchor；Unknown 仍为 `0.5/1.25`。Low/Medium/High 只作诊断 label，不再控制
-Reward branch。
+三个 branch 改为 quadratic Bernstein 连续权重。`[AstraDroneOpen实现选择]` 0.46/0.54 来自项目真实 strata 的 class-balanced offline fit。v3 获得 unit/frozen replay/landscape PASS，但当时只授权 bounded Reward-only runtime，未授权 SAC training。
 
-Stage 1 三个 Eq. (10) branch 改用 quadratic Bernstein 权重
-`(1-p)^2,2p(1-p),p^2`。因此 actual-speed slope 为
-`0.80-1.10p-0.70p^2`，从正到负连续单调变化，在 `p=0.5410125` 穿过 0；删除 v2
-`0.35/0.50/0.65` branch threshold。`lambda_speed_1/2/3=1.00/0.80/0.25`、
-`lambda_smoothing=0.10`、`lambda_error=2.00`、`e_max=0.40 m`、
-`lambda_danger=2.00` 均不变；progress/success/clearance/planner shaping 仍不进入 Reward。
+Scheme C cleanup 进一步形成 v3.1：`[当前仍生效] UNKNOWN influences POLICY INPUT, not REWARD TARGET`。UNKNOWN 保留在 V2/C；Reward 不读取 `unknown_majority`，也没有 UNKNOWN-specific anchor/penalty。历史 Candidate B/FASTER runtime branch 与 UNKNOWN Reward target 被删除/替代，但相关报告仍作为架构试验史保留。
 
-历史 10k 的 `Delta r_speed=r_speed(1.75)-r_speed(0.30)` 按 `±0.01` near-zero 带由 v2
-`1897/9/8094`（偏高/近中性/偏低）变为 v3 `5566/129/4305`；严格低速偏好由
-80.99% 降至 43.76%。current pooled Open 2102/2102 偏高速、High 7644/7644 偏低速；
-Medium v3 为 6474/63/2662。Hover→ENTRY 仍有 2906/4161 偏低速，因为该真实 route
-有 2129 High；没有为消除偏置而把 clutter 改写成偏高速。
+## 6. dynamic v_max 与 EGO 执行链
 
-验证为 Reward 定向 unit 21/21；`learning_speed_rl` 包 119 tests、0 error、0 failure、
-3 个既有条件 skip；12209 条 frozen replay 全部 finite/PASS；28945 个真实状态乘 7 档
-speed 的 202615 次唯一 owner/独立公式对比最大差 `4.44e-16`。详细候选、landscape、
-分 strata 反事实和文件清单见根目录 `LearningSpeed_reward_v3_optimization_report.md`；派生
-非 Markdown JSON 位于 `runtime_artifacts/reward_v3_offline_optimization/` 和原 calibration
-目录。最终为 **REWARD V3 OFFLINE PASS**，只允许新的 bounded Reward-only runtime
-qualification；100-Episode SAC qualification、正式 10000-Episode training/evaluation
-继续 NO-GO。
-
-## 25. Source Manifest 与章节映射
-
-删除前共有 35 个源 Markdown：34 个 `runtime_artifacts/**/*.md`，另 1 个根目录 progress
-报告。下表固定 path/size/SHA256/title-role/merged-section。依赖包内 torchgen README
-也按“全部 Markdown”纳入，但不构成项目技术结论。
-
-| Source path | bytes | SHA256 | title/role | section |
-|---|---:|---|---|---|
-| `runtime_artifacts/AstraDroneOpen_强化学习训练环境与SAC交接汇总.md` | 25847 | `75ee58c28e0f080ddf2f7fd2ba69899bdef5454398ccd6c67967cef0a031b4ec` | RL/Hector/SAC 交接 | 11–24 |
-| `runtime_artifacts/astra_drone_action_identity_episode_revalidation_report.md` | 11129 | `2240dd1d24441eee0cfbcb045865bc087b8a6b13e28ede1e69483645565fc7d5` | identity runtime PASS | 8,15 |
-| `runtime_artifacts/astra_drone_env_paper_aligned_causality_report.md` | 14987 | `b251b4b85e12789ce391fe4348e7128178002e426e643d564671b5cade4286aa` | async causality | 8 |
-| `runtime_artifacts/astra_drone_env_runtime_step_timing_report.md` | 11808 | `625eccc20f4a5d3cd2fe2b9c1702bbdbb055fa4b4b98db0b8906c06a6b502861` | 0.5/1.0 s NO-GO | 8,22 |
-| `runtime_artifacts/astra_drone_env_step_v01_report.md` | 7779 | `31ac28bf3bfa73f06b0c20221c8b5e4c2c67685d553dcf9f906413e7c65ac4cd` | first causal step | 8 |
-| `runtime_artifacts/astra_drone_episode_v01_report.md` | 10121 | `7d12bd6880bb067d4b8e2797b67537ee9681af8fffd3a323419c77a60ba175f0` | headerless Episode NO-GO | 8,22 |
-| `runtime_artifacts/astra_drone_training_reset_reference_audit.md` | 36526 | `e807ebae11a6af8d5d91bf30ea418bcd82ea3878e782487c71d66dbe2f6caab4` | reset risk audit | 11,15 |
-| `runtime_artifacts/astra_gazebo_rl_environment_readonly_audit.md` | 50637 | `3d844fc35f7e19aac4857b1c23c84921504075001692f8dda76a21b0d7383170` | Gazebo-RL comparison | 11,22 |
-| `runtime_artifacts/high_speed_exploration/high_speed_exploration_report.md` | 6733 | `75a8106ee102311840fa5a80b246e51f249643d404754d33873cffe4e42a19f9` | old high-speed FAIL | 5 |
-| `runtime_artifacts/learning_speed/calibration/manual_calibration_report.md` | 4539 | `f0e1115969fd665f921352029947341d72ccb9b87b45f109d76e2f987af000ea` | first A/B matrix | 9 |
-| `runtime_artifacts/learning_speed/calibration/observation_c_environment_a_postfix_validation.md` | 3680 | `05329a2ea0041466e567b7a8c9d85941609538ba592a26e0048f34c84c0f13db` | post-fix A runtime | 7 |
-| `runtime_artifacts/learning_speed/calibration/observation_c_final_data_quality_report.md` | 8596 | `bcad23252eaeaf6c7713ddd654bd18a8385c0a349f62c94f9b9511dc9d166fdc` | timestamp closure | 7 |
-| `runtime_artifacts/learning_speed/calibration/observation_c_invalid_audit_report.md` | 6992 | `a42a87bf81a6571e4867131ebb7d16bb5401ce79f651bdce57335aeb5c974a2d` | invalid audit | 7 |
-| `runtime_artifacts/learning_speed/calibration/postfix_stage1_20260818/manual_calibration_report.md` | 2571 | `5c08f5dfeadf5e221fb216126518265b1931499ad483b5a1fa531c4a9724a993` | template/missing-row artifact | 9,25 |
-| `runtime_artifacts/learning_speed/calibration/stage1_reward_calibration_postfix_report.md` | 39554 | `6eebcc1ff0886d1dd86b057805f9b5bb3cabac9562e3083dc43c5fdf59eaa455` | 14-run post-fix | 7,9 |
-| `runtime_artifacts/learning_speed/evaluation/20260813_gazebo_dynamic_speed_test.md` | 3823 | `c63cc7799b28f9fe4eedaa64bb8e03aab3f4f307ae63a27014b7bff39e0dbaed` | dynamic-speed interface | 6 |
-| `runtime_artifacts/learning_speed/evaluation/20260813_mock_interface_test.md` | 1936 | `975f8169f5f48007e67f19f0ef1e9407fa98706476feb6dde7c6ca5c9763c66f` | mock interface | 6 |
-| `runtime_artifacts/learning_speed/high_speed_progressive_qualification_20260820/manual_calibration_report.md` | 3023 | `f0e667d0fe4100a1ec9cdb4ede5e11c0e3b7447c5f3be681cfdd27a09d094f12` | progressive qualification | 5,6 |
-| `runtime_artifacts/learning_speed/observation_v2/evaluation/evidence_manifest.md` | 628 | `56e99d2379f0ac5d6ff45a3ec6ec36fb860fd06667eefc464c46af1f90879099` | v2 evidence index | 7 |
-| `runtime_artifacts/learning_speed/progress_transition_validation_20260821/manual_calibration_report.md` | 2854 | `ea4e5f4b7ab9240c35864c8c40c28e5e942283267be919973004f1caca663d6c` | progress run summary | 10 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/manual_calibration_report.md` | 5288 | `b9bde9dec07ae19e9ffd86898aae434e7b4da87b785e58f4751d644dedd73c94` | current 16-cell summary | 9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_B_enhanced_planner_diagnostic_report.md` | 16596 | `36c9b8e968db033c4005949462f72820d5fe90de409cac2c44689ab871557129` | enhanced planner diagnostics | 5,9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_B_mid_speed_failure_root_cause_analysis.md` | 18248 | `e6dd9e6931d5798faa21db31676cc2183d503e6349c6f6a1a448e79c28e04128` | failure cause bounds | 5,9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_B_mid_speed_repeat_analysis.md` | 9859 | `b00065a7ea61efd331c0f5610b4cac2a668d1b7044fd35e29d41183493fd59b3` | repeatability | 9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_effective_flight_speed_analysis.md` | 14501 | `ed244d672422f509862e415a32b14afed95c0de7073e2e9ad28130bdad0b9ec8` | actual speed | 5,6,9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_na_zero_obstacle_free_unknown_analysis.md` | 9268 | `1c1b86a0860486ec79982eb9fb4475299bf20d7da9d3aa9995ef0ce212a11cd4` | unknown semantics | 7,9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_nearest_density_complexity_analysis.md` | 19921 | `6fa9731c8c1ddfce2c83c09756aca390c301c4970d3f5bb48eb42317e8292346` | complexity | 9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_progress_signal_audit.md` | 20335 | `da67639af3f4bc48889dceeaed99001690569e8cb450b9ba15945badb6f28744` | progress semantics | 10 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_reward_calibration_current_generation_report.md` | 14530 | `acf2223b87ebfb9a4b5eb4f17d2671ef5406d2a9aea3f8fa27caada0f61723fa` | current generation | 9 |
-| `runtime_artifacts/learning_speed/stage1_reward_calibration_current_generation_20260820_231428/stage1_reward_v1_report.md` | 16703 | `b55e88176814fc344648e3801fb0304433feb4059cfbf10456a2eea8ea707a3f` | Reward offline PASS | 9,10 |
-| `runtime_artifacts/learning_speed_replan_paper_alignment_report.md` | 9747 | `8030072424814745a2d9fc1b10357893b7b0d0cd88ff9bedc17008159a1e7466` | replan semantics | 6,8,22 |
-| `runtime_artifacts/observation_v2_worksite_tower_validation_20260815/OBSERVATION_V2_WORKSITE_TOWER_VALIDATION_REPORT.md` | 10224 | `0a3bc9ee16aa0e1f243444ab19f5b1305e4c2aa17e4929f9359a5ead92c76257` | v2 tower PASS | 7 |
-| `runtime_artifacts/sac_python_packages/torchgen/packaged/autograd/README.md` | 147 | `846894cc1682b34c33061117077be45945d4e0b8a66bacb9ff03ca8c0a0a43e4` | dependency build note | 17,25 |
-| `runtime_artifacts/stage3_online_reward_transition_integration_report.md` | 7322 | `97e7dc05054df13e3d0025829550a665a424aa03049481703225ae7d055efa7c` | online Reward integration | 10 |
-| `stage1_progress_transition_validation.md` | 6304 | `4c4e16ea46bbdf7b6903a0ad27e2e4f83ac6f845fa494b216162e3783ae22513` | 452-transition progress | 10 |
-
-## Source Cleanup Audit
+当前历史合同为：
 
 ```text
-MERGED_SOURCE_MD_COUNT = 35
-SOURCE_MD_COUNT = 35
-DELETED_RUNTIME_MD_COUNT = 34
-DELETED_ROOT_MD_COUNT = 1
-PRESERVED_NON_MD_RUNTIME_EVIDENCE_COUNT = 27284
-NON_MD_MANIFEST_SHA256 = 6fe756204c10bc63b3cd1fd9a1b60c77ab87f81c83709c7fbd7646eac0eef8ca
-cleanup_status = PASS
+Actor normalized action
+ -> ActionMapping [0.30,1.75]
+ -> SpeedRequestStamped
+ -> SpeedAdapter / SpeedSafetyFilter
+ -> SpeedActionStamped
+ -> EGO dynamic v_max
+ -> SpeedAppliedStamped
 ```
 
-### MERGED_SOURCE_MD_FILES / DELETED_RUNTIME_MD_FILES
+`[CORRECTNESS_REQUIRED][当前仍生效]` request/action/applied identity 必须完全一致，正式 pairing 不按值或时间猜测。`[已被替代]` r01 把 filter capability 当 policy domain；修复后 runner 从 SAC config 构建 mapping，只验证 policy interval 位于 downstream capability 内。
 
-Source Manifest 前 34 个 `runtime_artifacts/...` 路径即完整 merged/deleted allowlist；
-删除后 `find runtime_artifacts -type f -name '*.md'` 为 0。
+Fixed-v_max 六档最初只有 0.30/0.75 PASS，1.00–1.75 因 trajectory end 后 `trajectory_unavailable` NO-GO。诊断证明 traj_server 仍发布终点 zero-speed command，Observation C 正确拒绝无未来 B-spline；缺失的是 fixed qualification terminal-convergence 语义。`[qualification-only]` 加入严格 hold guard 后 1.00–1.75 顺序重测 8/8 PASS，连同早期 0.30/0.75 形成六档 fixed backend PASS；此补丁不能直接套到 SAC action-owner terminal closure。
 
-### DELETED_ROOT_MD_FILES
+## 7. Gazebo RL / Hector / Forest 接入
 
-- `/home/yanzu/AstraDroneOpen/stage1_progress_transition_validation.md`
+Hector backend 是 `[AstraDroneOpen实现选择]`：保留 EGO/traj_server，用 Gazebo truth odometry 替代 training FAST-LIO，用薄 adapter 将 PositionCommand 转给 Hector Pose/Twist controller。Reset 顺序包括 terminal closure、candidate validation、controller stop、pause/teleport zero twist、temporal clear、generation barrier、五帧 warm-up、fresh trajectory。
 
-### PRESERVED_LONG_TERM_DOCS
+Forest 引入十张冻结 world、logical/raw seed 映射、training seed0–7、evaluation seed8–9、每图 100 completed Episodes、每轮 800 Episodes 的 balanced shuffled schedule。31-Episode smoke 只用 qualification override 每图 10 Episode，正式 default 不变。Map switch 必须删除旧模型、校验 18/18 新模型、0 residual、old absent、清 EGO environment、重建 generation barrier，同时保持 Actor/Critic/optimizer/Replay 连续。
 
-- `/home/yanzu/AstraDroneOpen/AGENTS.md`
-- `/home/yanzu/AstraDroneOpen/studynote.md`
-- 源码/package 内长期 README（不在本轮删除范围）
+## 8. SAC 训练架构
 
-35/35 来源均已映射；旧 pilot/step/Episode NO-GO、真实 planner/high-speed failure、
-后续 qualification PASS 与当前 10k stop-condition 修复均保留。非 Markdown path+size
-manifest 删除前后完全一致，故只删除精确 allowlist 中的 35 个源 Markdown。
+`[当前仍生效]` 训练组件包括 Gaussian Actor、twin Q/target Q、automatic entropy、Replay、异步 learner、checkpoint、training/evaluation runner。正式候选为：10000 completed Episodes、每 500 Episodes checkpoint、Replay 100000、learning starts 1000 transitions、batch 64、Actor/Critic/alpha LR `1e-5/1e-3/1e-3`、100 critic-only startup updates、log-std `[-3,-1]`、seed 1。
+
+旧 10k pilot 在 4207 valid transitions 因真实 `NO_FEASIBLE_TRAJECTORY` 与 action exploration instability fail closed，禁止 resume。后续短程 2500-transition qualification 只证明数值/identity/checkpoint 的 bounded PASS，不是收敛或长期安全。
+
+`[已被替代]` 2026-08-23 legacy cleanup 当时仍以 10000 transitions 为 stop；随后迁移到 10000 completed Episodes。因此旧报告中的 5000/10000 transition checkpoint 只是历史快照。
+
+## 9. Replay / Actor / transition 状态机演进
+
+### 9.1 multiple-in-flight 的失败
+
+旧 scheduler 把每个 0.1 s tick 当成无条件 publication cadence，允许多个 `PendingCausalStep` 同时等待 ACK、trajectory 和 post-hold Observation。r02 在 terminal cancellation 时产生 `276 missing -> 277 present -> 278 missing -> 279 present`，Replay audit `episode_step_sequence` FAIL。
+
+### 9.2 one-open-transition
+
+`[为了修复runtime问题后来加入][当前仍生效]` 环境一次最多一个 open transition；只有 transition consumer 完成 Replay commit 后，下一 step 才可分配。Replay 二次检查 contiguous `step_index`、generation、唯一 terminal 与 post-terminal 禁止。缺 Observation 的 tick 不分配 step/request。
+
+### 9.3 Actor ownership race
+
+r03 中 runner 在 environment acceptance 前把推理结果记为 open Actor action；terminal lock 随后拒绝 `_begin_pending_step()`，形成 ghost Actor。修复后 Actor inference 只是 candidate，唯一 ownership transfer linearization point 是 environment 在 terminal lock 内真正接受并发布 request。`None` 表示 candidate 被丢弃，不是 open action。
+
+R04 31/31 证明 r02 hole 与 r03 ghost race 未复现：5581 transitions、31 ordered closures、max open=1、holes/post-terminal=0、每 Episode 恰一 terminal；但这不覆盖 R04 的 stale NO-GO。
+
+## 10. 异步 Hz 与 fixed 10 Hz timing 演进
+
+### 10.1 早期异步设计
+
+`[论文明确要求]` 15 Hz perception、10 Hz policy、50 Hz controller，并非全局同步 barrier。Astra 最早 causal step 以 `step.duration=0.1 s` 实现：action/applied/provenance → hold 0.1 s → 再等待 post-hold C → commit → next action。它保证因果但把 0.1 s 变成串行内部下界，R04 effective rate 约 4 Hz。
+
+### 10.2 fixed absolute grid
+
+只读 timing audit 建议、后续实现：
+
+```text
+T[k] = T0 + k*0.1 s
+at tick:
+  latest causal-valid snapshot
+  -> close/commit transition[k-1]
+  -> terminal recheck
+  -> Actor
+  -> environment accept/publish action[k]
+```
+
+`[为了修复runtime问题后来加入][当前仍生效]` `policy_tick_index` 与 Replay `step_index/request_id` 分离；tick miss 保持旧 action、不新建 ID、不 catch-up、只到下一个绝对 tick 重试。fixed grid 不是 multiple-in-flight。
+
+10-Episode timing q02：pre-learning 9.167 Hz，learner/stochastic 2.925 Hz，总体 4.161 Hz；70% miss 来自 `trajectory_snapshot_provenance`，所以结论仍 NO-GO。后续 provenance 修复后 7-Episode q02 总体 6.016 Hz、learner-dominant 4.916 Hz，明显改善但仍不等于稳定 nominal 10 Hz。
+
+## 11. trajectory provenance 演进
+
+演进顺序：
+
+1. Forest 首 action failure：`begin_external_episode()` 清空 coordinator 已验收的 trajectory history；修复为 generation-aware 保留/重新 readiness。
+2. force-replan：需首个 post-action official trajectory；不能用 action 前旧轨迹冒充。
+3. Observation C 同时记录 `selected_trajectory`（V2 source stamp 当时 active，供 policy）与 `latest_trajectory_at_lookup`（C 已消费的最新 official trajectory，供 provenance proof）。
+4. 旧 scheduler 强制“new trajectory 必须成为 source-time selected trajectory”，把过去的 causal state错误要求成使用未来轨迹；后续允许 latest-at-lookup 证明 C 已消费新轨迹，同时 policy future positions 仍来自 source-time active trajectory。
+5. 同 ID start stamp 1 ns round-trip false negative 采用窄 5 ns identity tolerance。
+6. near-lifetime gate：action acceptance 前两次检查 selected official trajectory 是否覆盖 request time + 0.1 s + 1 µs；不足则 tick miss，无 request、无 ID、无 fake row。
+
+`[当前仍生效]` future trajectory substitution 仍禁止；force-replan official trajectory receipt、source stamp strictly post-action、C consumption proof与 one-open/Replay ordering均保留。
+
+## 12. Observation stale / producer / 性能演进
+
+完整链条是：R04 receipt-only stale → telemetry 判定 false environment terminal → producer V2/C backlog → mailbox/V2 optimization → q02 stale=0但 provenance 成主瓶颈 → 31 retry r01 在长 53 m trajectory 上再次 producer stall → 5 m prefix修复 → bounded 5 Episode max worker 69.263 ms → 31 retry v2 producer不再失败。
+
+这说明“mailbox已加”不等于所有 producer compute 已有界：single-slot 只能防 FIFO backlog，不能阻止 worker 对单个最新但很长的 B-spline 做整尾计算。该链是后续反向审计的重要补丁链。
+
+## 13. terminal 与 Episode lifecycle 演进
+
+- `terminated`：真实 collision/planner/tracking/environment terminal；`truncated`：max steps/time 等合法外部截断。普通终态必须保留并在 exactly-once terminal row 后继续 reset。
+- `infrastructure:*`：先闭合真实 final transition、验证 Replay/Actor/open=0，再在 closure v1.1 中携带 exact fail-closed reason；coordinator ACK 后禁止 reset/map switch/next Episode。
+- fixed-only trajectory-end：严格 terminal convergence guard 仅服务 fixed qualification。
+- external `max_episode_time` closure：可使用 terminal latch 前已收到且真实 causal 的最新 C，不要求一帧 post-latch C；仍保留 normal provenance，不伪造 Observation。
+- true environment terminal：历史修复后仍要求真实 post-latch terminal state；不能把 pre-terminal C 标成终态。
+- near-lifetime action prevention：用于避免在 trajectory 将耗尽时再接受一个无法获得合法 `state_t+1` 的 action。
+- terminal identity handshake：latest near-end targeted run 中 environment/Replay 已 CLOSED，但 runner 等不到 coordinator 对应 terminal identity，仍判 NO-GO。
+
+## 14. 历次 runtime qualification / 31-Episode / retry 时间线
+
+| 时间 / RUN_ID | 阶段 | 结果与失败原因 | 后续 |
+|---|---|---|---|
+| 2026-08-23 `sac_training_10k_20260823_194751` | 旧 pilot | 4207 valid transition 后真实 planner failure + exploration instability，NO-GO | 禁止 resume；SAC稳定性与正式 stop合同后改 |
+| 2026-08-24 fixed-vmax 首轮 | 六档资格 | 0.30/0.75 PASS；1.00–1.75 `trajectory_unavailable` NO-GO | terminal-convergence诊断后重测 8/8 PASS；仅 fixed-only |
+| 2026-08-24 `forest_map_switch_smoke_220ep_...` | Forest scheduler | 首试 path错误；retry Episode 1 首 action无 official provenance，0 completed | 保留失败，先修 provenance |
+| 2026-08-24 `forest_provenance_31ep_20260824_r01` | 31 smoke | Episode 1 collision，NO-GO | fixed seed6 根因检查 |
+| 2026-08-24/25 seed6 diagnostics | EGO/mapper | EGO真实重规划并执行，但路径沿中心线穿 medium_4；发现 surface-only current-frame map 假 Z corridor | 三态 raycast/log-odds mapper |
+| 2026-08-25 `forest_seed6_raw36_shared_mapper_v075_...` | shared mapper | 假 Z corridor消除，出现 lateral A*；near-start guidance/edge sampling仍失败 | swept supercover + short-segment guidance |
+| 2026-08-25 swept-guidance run | planner fix | accepted paths snapshot-swept free、tracking/reset PASS，但 UNKNOWN中仍有解析实体 penetration，NO-GO | Candidate B/SUPER/FASTER审计 |
+| 2026-08-25 Candidate B/SUPER | frozen A/B | KNOWN_FREE-only 0/4；endpoint/coverage deadlock，NO-GO | 不进入 production |
+| 2026-08-25 FASTER-inspired commit run | candidate/committed | retained committed status可工作，但 safe-stop后无 replan、trajectory耗尽，NO-GO | Scheme C随后删除此 production branch |
+| 2026-08-26 Scheme C seed6 | native EGO | mission success、final B-spline/UAV安全；初判因 A* analytic penetration FAIL，后重分类为 guidance warning | worksite regression PASS，准许31 smoke |
+| 2026-08-26 `forest_31episode_smoke_..._r01` | 31 smoke | Episode 0 bounds equality startup bug | runner containment修复 |
+| 2026-08-26 r02 | 31 smoke | 3/31 closed；Episode4 Replay holes / terminal cancellation mismatch | one-open-transition |
+| 2026-08-26 r03 | 31 smoke | 6/31 closed；Episode7 ghost Actor ownership | acceptance linearization fix |
+| 2026-08-26/27 r04 | 31 smoke | 31/31闭合、3/3 map switch、Replay/Actor/learner PASS；Episodes23/30 stale，最终 NO-GO | stale/producer/timing专项 |
+| 2026-08-27 `forest_r04_targeted...t01` | telemetry-only | 定位 producer compute stall + stale TOCTOU；约4 Hz | timing refactor |
+| 2026-08-27 `forest_rl_timing_fix...q02` | 10-Episode timing | stale/backlog/V2/fixed-grid局部 PASS；总体4.161 Hz，70% provenance miss；NO-GO | provenance minimal fix |
+| 2026-08-27 `forest_trajectory_provenance_fix...q02` | 7-Episode | 2306 rows；r02/r03与truncation语义 PASS；总体6.016 Hz；GO仅针对下一31 qualification | 运行31 timing qualification |
+| 2026-08-27 `forest_31episode_timing_qualification...r01` | 31 qualification | 19 closed；Episode20外部 truncation 后 open transition 等不到 post-latch C，closure timeout | external truncation closure fix |
+| 2026-08-27 `forest_terminal_closure_fix...q03` | 3-Episode | cached real causal C闭合 external truncation，1233 rows contiguous，GO for retry | 31 retry r01 |
+| 2026-08-27 `forest_31episode_retry...r01` | 31 retry | 12 closed；Episode12 producer stall；runner又启动Episode13，operator STOP | 5m prefix + infrastructure no-next-Episode |
+| 2026-08-27 `forest_producer_stall_failclosed_bounded5...q01` | 5-Episode | 5/5，producer max69.263ms，infrastructure fail-closed合同通过 | 31 retry v2 |
+| 2026-08-27 `forest_31episode_retry_v2...r02` | 31 retry | 18 closed；Episode19 trajectory ended，request321 open，true terminal需post-latch valid C而死锁 | near-lifetime acceptance gate |
+| 2026-08-27 `trajectory_end_terminal_fix...r01` | 5-Episode | 5/5普通终态闭合，但未覆盖 near-end branch，NO-GO | qualification relay |
+| 2026-08-27 `trajectory_end_near_lifetime...r04` | targeted near-end | 4 tick正确skip并恢复；后续tracking terminal environment已CLOSED，但coordinator terminal identity超时 | 最终仍NO-GO，31未再运行 |
+
+当前时间线终点：**没有一轮后续 31-Episode PASS；没有 100-Episode endurance；没有正式 10000-Episode training；没有 evaluation。**
+
+## 15. legacy cleanup 与已废弃设计
+
+明确已废弃/替代：
+
+- 旧 `sac_training_smoke.yaml`、旧 pilot summarizer、training-internal evaluation 开关；
+- 10000-transition normal stop 与 transition checkpoint；
+- headerless/value/timestamp pairing；
+- multiple pending transitions、runner Actor dictionary、out-of-order ready commit；
+- legal action slew/low-pass/hysteresis/cooldown shaping；
+- direct Hector `/cmd_vel`、自写第二套 B-spline/PID；
+- Candidate B KNOWN_FREE-only production 目标；
+- FASTER-inspired H/R/safe-stop/CommittedTrajectoryStore 临时 production branch；
+- global `unknown_planning_policy` compatibility branch与 UNKNOWN-specific Reward target；
+- fixed-only terminal hold 对 SAC owner 的直接复用。
+
+`[qualification-only]` near-lifetime relay、special launch/topic seam 只用于制造真实 near-end条件，不能进入 production。`DELETION_CANDIDATE` 仅表示后续应审计引用与隔离，本文没有删除任何文件。
+
+## 16. 当前 production contract 快照
+
+依据最新来源、待源码复核的当前快照：
+
+- `[当前仍生效]` Scheme C：EGO native binary planning；UNKNOWN 属于 Observation C policy input，不属于 Reward target。
+- `[当前仍生效]` Observation C 五项 3267 维、真实 provenance、future/frame/stamp fail closed。
+- `[当前仍生效]` Reward v3.1 唯一 owner；progress 不进 Reward；v3 参数是 Astra implementation。
+- `[当前仍生效]` SAC action `[0.30,1.75]` 与 downstream capability 分离；stamped identity唯一配对。
+- `[当前仍生效]` fixed absolute 10 Hz grid、no catch-up、独立 `policy_tick_index`、最多一个 open transition。
+- `[当前仍生效]` force-replan trajectory receipt + source-time selected/latest-at-lookup双语义 + 窄ns identity容差。
+- `[当前仍生效]` latest-sample mailbox、source-aware stale/TOCTOU、V2数值等价优化、5m C trajectory prefix。
+- `[当前仍生效]` Replay contiguous、terminal exactly once、Actor ownership after environment acceptance、reset only after closure ACK。
+- `[状态待审计]` true terminal near-end与coordinator terminal identity handshake 尚无端到端通过证据。
+- `[状态待审计]` 10 Hz在 learner/stochastic窗口仍明显低于 nominal。
+
+## 17. 当前未解决问题
+
+1. near-lifetime targeted run 后 coordinator/runner terminal identity handshake timeout；这是当前最晚的硬阻塞。
+2. 31-Episode retry 没有在上述修复后重跑，更没有 PASS。
+3. fixed grid 在 pre-learning 可接近9 Hz，learner/stochastic约4.9 Hz；是否满足最终算法时序目标未解决。
+4. genuine post-action official trajectory unavailable 仍贡献大量 tick miss；不能靠放宽 provenance掩盖。
+5. Forest 普通 planner/collision terminals数量高；它们是环境结果而非基础设施 hard-stop，但意味着没有成功轨迹/训练质量保证。
+6. Scheme C 对 UNKNOWN可搜索的安全边界仍依赖 EGO final trajectory与runtime checks；analytic A* guidance warning的长期意义值得源码审计。
+7. Reward v3.1 尚无新的正式 SAC runtime qualification；更无长期训练/收敛/evaluation证据。
+8. 大量改动处于 dirty workspace，报告所称“当前”需要以现源码逐项反查。
+
+## 18. 技术演进时间轴
+
+| 时间证据 | 阶段 | 原始问题 | 修改 / 涉及源码 | runtime结果 | 替代关系 / 当前状态 |
+|---|---|---|---|---|---|
+| 2026-07-08 | 初版 | 原始工程基线 | EGO/mission/full-stack | Git历史 | `[项目原始设计]` |
+| 2026-07-30 | EGO-Swarm迁入 | 单机核心迁移/三机能力 | `grid_map.cpp`,`ego_replan_fsm.cpp`等 | Git历史；非本轮runtime | `[当前仍生效]` vendor-derived core |
+| 2026-08-13 | dynamic v_max | policy到EGO接口 | FSM动态限速、adapter | interface tests | 后续stamped identity强化 |
+| 2026-08-15–17 | V2/C | FREE/UNKNOWN/OCCUPIED与trajectory融合 | V2 3200、C 3267、causal history、1ns stamp fix | worksite/postfix validation | `[当前仍生效]`，后续性能重构不改数值 |
+| 2026-08-20–23 | calibration/Hector/SAC | training backend、reset、SAC闭环 | truth odom、Hector adapter、Replay/learner | fixed matrix、2500短程；旧pilot NO-GO | 正式training仍未授权 |
+| 2026-08-24 | stop/vmax/reward/Forest | 10000 Episode合同、Reward偏置、Forest首次失败 | schedule、v2/v3、Forest assets/provenance | fixed六档最终PASS；Reward v2 NO-GO；Forest NO-GO | v3/v3.1替代v1/v2 production |
+| 2026-08-25 | mapper/planner/UNKNOWN探索 | medium_4假通道与near-start失败 | three-state mapper、swept edge、guidance；Candidate B/FASTER trials | 多个seed6 NO-GO | Scheme C删除临时branch |
+| 2026-08-26 | Scheme C + r01–r04 | production职责收敛、Replay/Actor races | EGO-native cleanup、one-open、Actor ownership | R04 31/31但stale NO-GO | correctness合同保留 |
+| 2026-08-27 上午 | stale/timing | false stale、约4Hz | telemetry、mailbox、V2优化、fixed grid | 10ep NO-GO，provenance瓶颈 | producer局部PASS，timing未完成 |
+| 2026-08-27 下午 | provenance/terminal | 1ns与selected gate、external truncation closure | `astra_drone_env.py` provenance与terminal分类 | 7ep/3ep bounded PASS | 允许retry，不等于31 PASS |
+| 2026-08-27 晚 | retry/producer/near-end | producer long-trajectory stall、Episode19 deadlock | 5m prefix、closure v1.1、lifetime gate | retry 12/31、18/31；near-end identity timeout | 最新状态NO-GO |
+
+除文档明确 Date/RUN_ID 外，时间排序也参考报告之间的前序/后续引用。所有来源 birth time 均不可得，统一标记 `TIME_UNCERTAIN`；mtime只作辅助，绝不等同于代码首次加入时间。
+
+## 19. 代码历史追溯索引
+
+以下“报告次数”是 51 份来源中按文件名出现的文档数，只用于判断历史讨论密度，不等同于 Git commit 次数。
+
+### 19.1 高频核心文件
+
+| 源码 | 报告次数 | 演进与关键逻辑 | 当前标记 / 后续审计 |
+|---|---:|---|---|
+| `learning_speed_rl/training/astra_drone_env.py` | 7 | causal step、multiple-in-flight→one-open、fixed grid、policy_tick、provenance selected/latest、1ns tolerance、terminal closure、lifetime gate | `CORE CORRECTNESS_REQUIRED RUNTIME_PATCH`；最高优先级 |
+| `hector_ego_training_backend/scripts/training_episode_reset_coordinator.py` | 8 | Episode identity、terminal/reset、stale 0.35s、TOCTOU、infrastructure fail-closed、map switch | `CORE CORRECTNESS_REQUIRED RUNTIME_PATCH` |
+| `learning_speed_rl/config/sac_training_v1.yaml` | 8 | action范围、10000 Episodes、checkpoint、Forest/timing qualification gate | `CORE ASTRA_IMPLEMENTATION`；检查qualification字段是否隔离 |
+| `learning_speed_rl/scripts/sac_training_runner.py` | 5 | Actor ownership、bounds containment、Replay/learner、closure ACK、Forest schedule | `CORE CORRECTNESS_REQUIRED RUNTIME_PATCH` |
+| `Planner/.../plan_env/src/grid_map.cpp` | 5 | upstream surface-only→三态raycast/log-odds/XYZ inflation、environment clear | `CORE RUNTIME_PATCH`；与full-stack共享语义需审计 |
+| `Planner/.../path_searching/src/dyn_a_star.cpp` | 5 | 26-neighbor A*、swept supercover、UNKNOWN policy历史 | `CORE CORRECTNESS_REQUIRED` |
+| `learning_speed_rl/training/reward.py` | 4 | Reward v1→v2→v3/v3.1唯一owner、UNKNOWN removal | `CORE PAPER_ALIGNED ASTRA_IMPLEMENTATION` |
+| `Planner/.../bspline_opt/src/bspline_optimizer.cpp` | 4 | rebound guidance、near-start short segment、统一collision verdict；临时commit branch历史 | `CORE RUNTIME_PATCH` |
+| `Planner/.../plan_manage/src/planner_manager.cpp` | 4 | dynamic v_max、candidate/committed临时链、final publication checks | `CORE RUNTIME_PATCH LEGACY_CANDIDATE` |
+| `Planner/.../plan_manage/src/ego_replan_fsm.cpp` | 3 | dynamic v_max、force-replan、PlannerStatus/retained committed历史 | `CORE CORRECTNESS_REQUIRED LEGACY_CANDIDATE` |
+
+Git 已提交历史显示：`astra_drone_env.py` 在 2026-08-23～24 的 `37260cb/5a69412/b1e1614/5ec45c6/ad857b9` 演进；`observation_c_node.py`/`observation_v2_node.py` 可追到 2026-08-16/17 的 `214de22/1164b3d`；`ego_replan_fsm.cpp` 的 dynamic v_max 可追到 2026-08-13 `e7e1798`。2026-08-25～27 的大量修复仍在 dirty workspace，不能伪造 commit 对应关系。
+
+### 19.2 其它关键文件与符号
+
+| 文件 / 符号 | 历史责任 | 标签 | 审计问题 |
+|---|---|---|---|
+| `observation_c_node.py::_lidar_callback/_process_lidar` | C mailbox、worker、provenance lookup、publish telemetry | `CORE RUNTIME_PATCH` | mailbox、barrier与shutdown是否有竞态 |
+| `ObservationCBuilder` / `TrajectorySampler._adaptive_polyline` | 20×0.25m future path；整尾→5m prefix | `CORRECTNESS_REQUIRED RUNTIME_PATCH` | prefix exact-equivalence与极端曲率 |
+| `observation_v2_node.py`、`v2/unknown_estimator.py`、`pointcloud_decode.py` | 3200 bins、五帧、decode/occlusion优化 | `CORE ASTRA_IMPLEMENTATION` | bitwise合同、CPU余量 |
+| `ObservationC.msg` | 五项值+source/queue/fusion诊断 | `CORE CORRECTNESS_REQUIRED` | 诊断字段不得进入policy/reward |
+| `training/sac_replay.py::SacReplayBuffer.add` | contiguous step、generation、terminal/post-terminal门 | `CORE CORRECTNESS_REQUIRED` | 与runner closure双owner边界 |
+| `training/actor_action_ownership.py` | inferred candidate到accepted action线性化 | `CORRECTNESS_REQUIRED RUNTIME_PATCH` | terminal并发 |
+| `training/formal_training_contract.py` | 10000 Episode、checkpoint allowlist、evaluation isolation | `CORE ASTRA_IMPLEMENTATION` | 旧transition stop残留 |
+| `training/forest_schedule.py::BalancedForestMapScheduler` | seed0–7、100/block、800/round、snapshot/restore | `CORE ASTRA_IMPLEMENTATION` | 与checkpoint/resume；resume当前未实现 |
+| `forest_map_manager.py` / `forest_map_contract.py` | hot-swap、18/18、old absent、map_ready | `CORE CORRECTNESS_REQUIRED` | shutdown与partial switch |
+| `episode_reset_contract.py` | source-aware stale、reset generation、infrastructure分类 | `CORE RUNTIME_PATCH` | receipt/source/TOCTOU |
+| `speed_adapter` / `SpeedSafetyFilter` | finite+clamp、stamped action、capability范围 | `CORE PAPER_ALIGNED` | scalar mirror不得重新成为pair owner |
+| `planner_manager.cpp::reboundReplan` | EGO candidate、publication；临时commit逻辑曾在此 | `CORE LEGACY_CANDIDATE` | Scheme C后是否完全清除FASTER残留 |
+| `grid_map.h/.cpp::isSweptSegmentFree/isSweptPolylineFree` | same-snapshot swept supercover | `CORRECTNESS_REQUIRED RUNTIME_PATCH` | planner/optimizer/safety是否同一snapshot |
+| `short_segment_guidance.h` | CP2→CP3 near-start guidance | `RUNTIME_PATCH LEGACY_CANDIDATE` | 是否属于结构修复还是局部补丁 |
+| `trajectory_collision_checker.h` | optimizer/publication/safety verdict统一 | `CORRECTNESS_REQUIRED RUNTIME_PATCH` | 重复collision owner风险 |
+| `trajectory_lifetime_qualification_relay.py` | 延迟policy-side真实Bspline制造near-end | `QUALIFICATION_ONLY DELETION_CANDIDATE` | production launch不可引用 |
+| `trajectory_end_near_lifetime_forest_qualification.launch` | targeted harness | `QUALIFICATION_ONLY DELETION_CANDIDATE` | 完成审计后是否保留测试资产 |
+| `RL_legacy` 删除的 smoke YAML / pilot summarizer | 旧训练入口 | `DELETION_CANDIDATE`（历史已删除） | 只检查无引用，不恢复 |
+
+### 19.3 ROS topic / message / state machine 索引
+
+- topics：`/uav1/learning_speed/{speed_request_stamped,speed_action_stamped,speed_applied_stamped,observation_c}`、`/uav1/planning/bspline`、`/uav1/planner/status`、`/uav1/Odometry`、`/uav1/training/episode_identity`、Forest `map_ready`/assignment topics。
+- messages/fields：`episode_id,step_index,request_id`；C 的 selected/latest trajectory id/start/end、source/receipt/generation、queue/fusion diagnostics；closure v1.1 的 `fail_closed_after_closure/fail_closed_reason`。
+- state machines：Environment `IDLE/ACTIVE/TERMINATING/CLOSED`；EGO `GEN_NEW_TRAJ/REPLAN_TRAJ/EXEC_TRAJ/WAIT_TARGET/EMERGENCY_STOP`；coordinator terminal→closure ACK→reset/map switch。
+- config：`policy_period_sec=0.1`；旧 `step.duration_sec=0.1` hold 已删除；stale threshold 0.35 s未放宽；lifetime floor 0.100001 s；Forest smoke block 10仅qualification override。
+
+## 20. 后续架构反向审计入口
+
+只建议审计，不在本文下架构结论：
+
+1. **Observation C—trajectory—Replay—fixed grid—terminal耦合链**：source-time selected、latest-at-lookup、post-action official、lifetime、terminal snapshot分别由谁拥有；是否能减少重复gate而不弱化因果。
+2. **补丁链 A：multiple-in-flight → one-open → fixed grid → provenance mode → lifetime gate**。核对每个补丁是否仍解决独立不变量，是否有已失去前提的条件。
+3. **补丁链 B：receipt stale → TOCTOU → mailbox → V2优化 → 5m prefix → infrastructure closure v1.1**。区分 freshness、compute budget、terminal classification与schedule stop四种责任。
+4. **补丁链 C：surface-only map → three-state mapper → swept edge → short-segment guidance → Candidate B/FASTER → Scheme C cleanup**。确认临时 candidate/committed/UNKNOWN参数与status残留是否彻底退出 production。
+5. **terminal identity双owner**：environment已CLOSED而coordinator不发matching closure ACK的最新失败；审计 terminal source、identity、超时与shutdown顺序。
+
+建议顺序：先做静态 call graph/launch expansion与dirty diff attribution；再做历史补丁 dead-code/duplicate-owner candidate清单；只有显式授权后才做最小代码调整和 bounded runtime。不要用参数调优、fallback、seed skip或放宽因果门制造 PASS。
+
+## 21. 原始文档来源清单
+
+统计：`runtime_artifacts` 发现 41；指定文件找到 10/10；去重后纳入 51；`NOT_FOUND=0`。以下绝对路径均成功纳入。文档 Date 优先于 mtime；`RUN_ID=无显式主RUN` 表示报告未声明自身主运行，不代表正文没有引用历史 run。birth time 全部不可得，统一为 `TIME_UNCERTAIN`。
+
+| 完整路径 | 文件名 | Date / 主 RUN_ID | mtime / birth | SHA-256 | 技术阶段 | 纳入 |
+|---|---|---|---|---|---|---|
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/astar_ego_obstacle_avoidance_audit.md` | `astar_ego_obstacle_avoidance_audit.md` | 2026-08-24 / `forest_provenance_31ep_20260824_r01` | 2026-08-24 22:18:08 / TIME_UNCERTAIN | `4207a4b7131bf8764fe0ff42c4f17e7046e347a14f9462c7b359709a02062a41` | A*/EGO只读审计 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/candidate_b_final_31ep_readiness_report.md` | `candidate_b_final_31ep_readiness_report.md` | 2026-08-25 / frozen `forest_seed6_raw36_swept_guidance_v075_20260825_r02` | 2026-08-25 21:00:19 / TIME_UNCERTAIN | `7ae7f735df3ce62b6ddc61921e81a21c281779e488520ee5764daa1f10329e13` | Candidate B NO_PATH | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/ego_faster_committed_safe_stop_and_speed_chain_31ep_gate.md` | `ego_faster_committed_safe_stop_and_speed_chain_31ep_gate.md` | 2026-08-25 / `forest_seed6_raw36_faster_commit_v075_20260825_r01` | 2026-08-26 00:00:28 / TIME_UNCERTAIN | `8ea7483e35390e140ab7ab93f127857abe9014837e41842aa53177206c63e678` | 临时FASTER-style | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/ego_gridmap_directcloud_raycast_upstream_comparison_audit.md` | `ego_gridmap_directcloud_raycast_upstream_comparison_audit.md` | 2026-08-25 / 无显式主RUN | 2026-08-25 01:13:29 / TIME_UNCERTAIN | `a78fb72d6a7041c8ff1de7e5885727d23f93e29600bd3f41c72a994538897192` | mapper历史审计 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/ego_nearstart_swept_collision_fix_report.md` | `ego_nearstart_swept_collision_fix_report.md` | 2026-08-25 / `forest_seed6_raw36_swept_guidance_v075_20260825_r01` | 2026-08-25 17:26:27 / TIME_UNCERTAIN | `b8514f88b668e53e8a08712d786aaf10415efb19473a9a8594c5d8c214827619` | swept/guidance修复 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/ego_shared_mid360_robust_pointcloud_mapping_report.md` | `ego_shared_mid360_robust_pointcloud_mapping_report.md` | 2026-08-25 / `forest_seed6_raw36_shared_mapper_v075_20260825_r01` | 2026-08-25 12:24:18 / TIME_UNCERTAIN | `315fdfaba5530609ced3e383dc6c47b11de963bfece783991b54024f35f358b0` | 三态共享mapper | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/ego_swept_guidance_seed6_runtime_qualification_report.md` | `ego_swept_guidance_seed6_runtime_qualification_report.md` | 2026-08-25 / `forest_seed6_raw36_swept_guidance_v075_20260825_r02` | 2026-08-25 18:45:23 / TIME_UNCERTAIN | `699e59ee7ad713cf872a89570d58d7ee2eb73308881d44c3499fd5bd52eb4408` | seed6 runtime | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_retry_report.md` | `forest_31episode_retry_report.md` | 2026-08-27 / `forest_31episode_retry_20260827_r01` | 2026-08-27 18:07:35 / TIME_UNCERTAIN | `d44b70aa3998eccb2f7ec6f90de6f46a6a4f796e350ef5662de7e0cdcbf7530d` | 31 retry producer fail | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_retry_v2_failure_summary.md` | `forest_31episode_retry_v2_failure_summary.md` | 2026-08-27 / `forest_31episode_retry_v2_20260827_r02` | 2026-08-27 19:35:51 / TIME_UNCERTAIN | `19ae4f5685df83b426089c1d4344101ed4cb960b1e714688206b5b02cd2dac12` | retry v2摘要 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_retry_v2_report.md` | `forest_31episode_retry_v2_report.md` | 2026-08-27 / `forest_31episode_retry_v2_20260827_r02` | 2026-08-27 19:33:50 / TIME_UNCERTAIN | `5c7353f98067d9315fcf2cc7ee83da216f8fe48250b2552bea6653ccd1dbc046` | retry v2 lifecycle fail | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_smoke_r02_report.md` | `forest_31episode_smoke_r02_report.md` | 2026-08-26 / `forest_31episode_smoke_20260826_r02` | 2026-08-26 21:35:52 / TIME_UNCERTAIN | `8ad3cbd23647988b6e69f5d36aff8a2e52edfb36072c6158985ebe7252ddaf07` | Replay holes | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_smoke_r03_report.md` | `forest_31episode_smoke_r03_report.md` | 2026-08-26 / `forest_31episode_smoke_20260826_r03` | 2026-08-26 22:50:03 / TIME_UNCERTAIN | `e060966df18ad6a88cade14d7e2d7c8d0e05ac9406e904f2365dde76b07769e2` | Actor race | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_smoke_r04_analysis_handoff.md` | `forest_31episode_smoke_r04_analysis_handoff.md` | 2026-08-26–27 / `forest_31episode_smoke_20260826_r04` | 2026-08-27 00:05:19 / TIME_UNCERTAIN | `8cfb3cfd15f8c4ab3ccf8b0b8b508f56746f9687e1dfde5332724978efdfc1a9` | R04 handoff | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_smoke_r04_report.md` | `forest_31episode_smoke_r04_report.md` | 2026-08-26–27 / `forest_31episode_smoke_20260826_r04` | 2026-08-27 00:05:19 / TIME_UNCERTAIN | `2391f2acd72a3fbfe7175c1ff16c77a75c80a9f2fdf1b2aacbec55e3f13974bb` | 31/31 stale NO-GO | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_smoke_report.md` | `forest_31episode_smoke_report.md` | 2026-08-26 / `forest_31episode_smoke_20260826_r01` | 2026-08-26 21:09:19 / TIME_UNCERTAIN | `d1f4b2bee99f64ea550be9eac8b3ac4668c6577dc2d770eaa4447dcc8c75a4e9` | bounds startup fail | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_timing_qualification_fail_summary.md` | `forest_31episode_timing_qualification_fail_summary.md` | 2026-08-27 / `forest_31episode_timing_qualification_20260827_r01` | 2026-08-27 15:52:02 / TIME_UNCERTAIN | `2cf65281a8a4c6a872384c84805a151c3ca358cb1a1ecf26cd65129ea8f000a6` | closure fail摘要 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_timing_qualification_handoff.md` | `forest_31episode_timing_qualification_handoff.md` | 2026-08-27 / `forest_31episode_timing_qualification_20260827_r01` | 2026-08-27 13:51:53 / TIME_UNCERTAIN | `4f60cba6f76af104dc1285eeded3ecea5f5a4fbc3dbcf3694dd433cd76cd4c54` | closure handoff | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_31episode_timing_qualification_report.md` | `forest_31episode_timing_qualification_report.md` | 2026-08-27 / `forest_31episode_timing_qualification_20260827_r01` | 2026-08-27 13:52:34 / TIME_UNCERTAIN | `b2dafce42a753f49fcfecfa456c27366f505ec5839b5d30a934c1f75b1dd9f3c` | external truncation closure | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_ego_previous_vs_current_avoidance_rootcause_report.md` | `forest_ego_previous_vs_current_avoidance_rootcause_report.md` | 2026-08-24 / `forest_astar_rebound_internal_seed6_raw36_v075_20260824_retry03` | 2026-08-24 23:38:29 / TIME_UNCERTAIN | `d0cf0e966564fdf0e16579d0f08dc57856f4b9871efd01a80be5ecd4b844a9aa` | old/current EGO对比 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_ego_replan_execution_chain_audit.md` | `forest_ego_replan_execution_chain_audit.md` | 2026-08-24 / `forest_ego_replan_execution_chain_seed6_raw36_v075_20260824_r01` | 2026-08-24 23:14:54 / TIME_UNCERTAIN | `3dc04c50c8ad50cacecb069ba0a35184d9558887ce43af8690ee1b9c3122b813` | execution chain | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_medium4_false_vertical_free_corridor_rootcause.md` | `forest_medium4_false_vertical_free_corridor_rootcause.md` | 2026-08-25 / 无显式主RUN | 2026-08-25 00:14:53 / TIME_UNCERTAIN | `066e522618bc2a783ac2438c9462c523a2304e0c474811967a40ea599509e826` | 假Z通道 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_newmapper_lateral_rebound_optimizer_rootcause.md` | `forest_newmapper_lateral_rebound_optimizer_rootcause.md` | 2026-08-25 / `forest_seed6_raw36_shared_mapper_v075_20260825_r01` | 2026-08-25 16:48:31 / TIME_UNCERTAIN | `82950a02cfc0ec82163daff81500bd5b36c39d50771700af68ec20112c7e7775` | rebound根因 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_random_map_scheduler_preflight_report.md` | `forest_random_map_scheduler_preflight_report.md` | 2026-08-26 / `forest_31ep_preflight_20260826_r02` | 2026-08-26 21:07:27 / TIME_UNCERTAIN | `001989d5c772e79311c273656e79213f539f8f287e4b786b7d3a4cddd2ed2b9e` | scheduler preflight | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/forest_randomization_training_integration_v2_report.md` | `forest_randomization_training_integration_v2_report.md` | TIME_UNCERTAIN / `forest_map_switch_smoke_220ep_retry01_20260824_190500` | 2026-08-24 19:24:11 / TIME_UNCERTAIN | `6195f362804728a3f86314ba9f949a4da046793e05dbffcd81fb94b92e65d63f` | Forest集成 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/learning_speed_scheme_c_ego_native_unknown_observation_cleanup_report.md` | `learning_speed_scheme_c_ego_native_unknown_observation_cleanup_report.md` | 2026-08-26 / 无显式主RUN | 2026-08-26 01:55:49 / TIME_UNCERTAIN | `cdead18d415cf37a02a6b42d4f1f036e0aee951a84ff8f29819ba0a9af526ca4` | Scheme C cleanup | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/producer_stall_failclosed_fix_report.md` | `producer_stall_failclosed_fix_report.md` | 2026-08-27 / `forest_producer_stall_failclosed_bounded5_20260827_q01` | 2026-08-27 18:35:53 / TIME_UNCERTAIN | `e7b3c67c6f111937960a1df4e23387f725620e5351559dc64fb6cad3c93b8119` | 5m prefix/infra closure | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/r04_stale_and_policy_rate_final_rootcause_report.md` | `r04_stale_and_policy_rate_final_rootcause_report.md` | 2026-08-27 / `forest_r04_targeted_logical4_raw23_20260827_t01` | 2026-08-27 01:26:42 / TIME_UNCERTAIN | `fefe0a82f4e0f35b2c9e1e3aac0af37d3e16f4081cc0502891ecb5864d4058e1` | stale最终根因 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/r04_stale_observation_policy_rate_rootcause_report.md` | `r04_stale_observation_policy_rate_rootcause_report.md` | 2026-08-27 / `forest_31episode_smoke_20260826_r04` | 2026-08-27 00:50:41 / TIME_UNCERTAIN | `71718bf5dee7a40c8861cfeb6874f4561115ab510777a323e44fe43cf04ae18c` | stale只读诊断 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/retained_committed_safe_stop_seed6_requalification_report.md` | `retained_committed_safe_stop_seed6_requalification_report.md` | 2026-08-26 / `forest_seed6_raw36_retained_commit_v075_20260826_r02` | 2026-08-26 00:47:06 / TIME_UNCERTAIN | `b0df7e6ea5ea763dc6a165dd7fbbef23a561db14c4b65f8522977014fe87773c` | safe-stop requal | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/rl_timing_architecture_reference_audit.md` | `rl_timing_architecture_reference_audit.md` | 2026-08-27 / 无显式主RUN | 2026-08-27 11:44:03 / TIME_UNCERTAIN | `a3602539d27468207ad548f8d378058b0fa82330a0a202a0900e7f1dccb44c38` | timing参考审计 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/rl_timing_targeted_fix_qualification_report.md` | `rl_timing_targeted_fix_qualification_report.md` | 2026-08-27 / `forest_rl_timing_fix_logical4_raw23_20260827_q02` | 2026-08-27 12:42:33 / TIME_UNCERTAIN | `e89e8a5903eb9e766d2f2b0fec03b5e9e1a67cbca2f8f61f1c28c4f0a67d2303` | fixed grid q02 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/rogmap_super_unknown_planning_reference_audit.md` | `rogmap_super_unknown_planning_reference_audit.md` | 2026-08-25 / frozen seed6 r02 | 2026-08-25 19:44:43 / TIME_UNCERTAIN | `1db429233d89617b9d8722c65a85ff384b9a73cd504405af9da0750a07a23d23` | ROG/SUPER审计 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/sac_actor_action_acceptance_race_fix_report.md` | `sac_actor_action_acceptance_race_fix_report.md` | 2026-08-26 / 无runtime | 2026-08-26 23:19:41 / TIME_UNCERTAIN | `1e4bd5d2e5a2ae4fdb9be8631c1b5abb35a927ea06c828cf639766d4947f839a` | Actor race修复 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/sac_sequential_transition_scheduler_fix_report.md` | `sac_sequential_transition_scheduler_fix_report.md` | 2026-08-26 / 无runtime | 2026-08-26 22:15:35 / TIME_UNCERTAIN | `2c109e39f0a31c9bf1ec7b5e30a35c01415e3cf6bc5216fb1280fbce34f1b307` | one-open修复 | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/scheme_c_seed6_reclassification_worksite_31ep_gate_report.md` | `scheme_c_seed6_reclassification_worksite_31ep_gate_report.md` | 2026-08-26 / seed6 r01 + worksite r01 | 2026-08-26 20:36:05 / TIME_UNCERTAIN | `3ec425b5d75ecc009d9639baf34ac353174f1d47b44eb973b77a85a66fa46a9c` | Scheme C gate | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/scheme_c_seed6_worksite_runtime_qualification_report.md` | `scheme_c_seed6_worksite_runtime_qualification_report.md` | 2026-08-26 / `scheme_c_seed6_raw36_v075_20260826_r01` | 2026-08-26 19:58:28 / TIME_UNCERTAIN | `c59d4fd0ca52b7ec7ca075e9cbae13c68cb0eab1be559385ea0393844a2e98b5` | Scheme C runtime | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/super_end_to_end_unknown_endpoint_reference_and_31ep_gate.md` | `super_end_to_end_unknown_endpoint_reference_and_31ep_gate.md` | 2026-08-25 / frozen seed6 r02 | 2026-08-25 21:33:07 / TIME_UNCERTAIN | `4f0432355d7ef1ced298301ce6cbcc830745ee1c7c7e2b78e774d5e745680216` | SUPER shadow | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/terminal_transition_closure_fix_report.md` | `terminal_transition_closure_fix_report.md` | 2026-08-27 / `forest_terminal_closure_fix_logical1_raw10_20260827_q03` | 2026-08-27 17:35:59 / TIME_UNCERTAIN | `a352dcbb1b1b05e9c90d7a288fcda7ed00cdac3d2b6ee795ba2cfa554757bedb` | terminal closure | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/trajectory_end_near_lifetime_runtime_qualification.md` | `trajectory_end_near_lifetime_runtime_qualification.md` | 2026-08-27 / `trajectory_end_near_lifetime_q_1ep_20260827_r04` | 2026-08-27 20:55:52 / TIME_UNCERTAIN | `7db774b861c81bbb9ac9e3078b192e1cb2c970d2f445c41e038e958dd0440fde` | near-end runtime | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/trajectory_end_terminal_lifecycle_fix_report.md` | `trajectory_end_terminal_lifecycle_fix_report.md` | 2026-08-27 / `trajectory_end_terminal_fix_bounded_5ep_20260827_r01` | 2026-08-27 20:36:47 / TIME_UNCERTAIN | `4eaf0ef5d2aef7699bdc61c2bdc00d8e368ba1344f86794d946fafe725e9e5f7` | lifetime gate | YES |
+| `/home/yanzu/AstraDroneOpen/runtime_artifacts/learning_speed/trajectory_provenance_timing_fix_report.md` | `trajectory_provenance_timing_fix_report.md` | 2026-08-27 / `forest_trajectory_provenance_fix_logical4_raw23_20260827_q02` | 2026-08-27 13:18:59 / TIME_UNCERTAIN | `eb977c09cae7576059a5033610c149518f95902c86b5ec9637f25ee5c1d5eaa3` | provenance timing | YES |
+| `/home/yanzu/AstraDroneOpen/LearningSpeed_phi_branch_distribution_diagnosis_report.md` | `LearningSpeed_phi_branch_distribution_diagnosis_report.md` | 2026-08-24 / offline | 2026-08-24 13:06:10 / TIME_UNCERTAIN | `4d79c72a3bc35fe4acd5a0471345ff61fa8c016b27c27fc6e4f23c154cb4c6c3` | phi route诊断 | YES |
+| `/home/yanzu/AstraDroneOpen/LearningSpeed_reward_v2_paper_alignment_report.md` | `LearningSpeed_reward_v2_paper_alignment_report.md` | 2026-08-24 / offline，引用旧10k | 2026-08-24 02:31:59 / TIME_UNCERTAIN | `8a6f5ba726e287c87aa0c9b9f101edf64a2324070ce0f950e0c2512de85eaf5e` | Reward v2 | YES |
+| `/home/yanzu/AstraDroneOpen/LearningSpeed_reward_v2_runtime_qualification_report.md` | `LearningSpeed_reward_v2_runtime_qualification_report.md` | 2026-08-24 / q03–q06多RUN | 2026-08-24 12:40:51 / TIME_UNCERTAIN | `e67d0c054057bb677f08d393916ea6021f463ae6460eb60b3375207643c97e7d` | Reward v2 runtime | YES |
+| `/home/yanzu/AstraDroneOpen/LearningSpeed_reward_v3_optimization_report.md` | `LearningSpeed_reward_v3_optimization_report.md` | 2026-08-24 / offline | 2026-08-24 14:18:59 / TIME_UNCERTAIN | `02eb43e5460198b762b0ad5ebf96c2522d86f05f6a96975a301e87d08f5b9297` | Reward v3 | YES |
+| `/home/yanzu/AstraDroneOpen/ego_faster_unknown_planning_execution_contract_audit.md` | `ego_faster_unknown_planning_execution_contract_audit.md` | 2026-08-25 / 只读 | 2026-08-25 22:41:36 / TIME_UNCERTAIN | `54ad26e2afe5e5aeb8dd947a6c95b367e972b75179152311dedb40453f2b3a70` | EGO/FASTER审计 | YES |
+| `/home/yanzu/AstraDroneOpen/Forest_Episode1_collision专项根因检查报告.md` | `Forest_Episode1_collision专项根因检查报告.md` | 2026-08-24 / `forest_provenance_31ep_20260824_r01` | 2026-08-24 21:58:02 / TIME_UNCERTAIN | `ba79c963052351737a4e1adb222169b72254a1906d998bcda2c06b4d3bc69f0c` | Episode1 collision | YES |
+| `/home/yanzu/AstraDroneOpen/Forest_SAC_runtime阻塞修复与31Episode_smoke总结.md` | `Forest_SAC_runtime阻塞修复与31Episode_smoke总结.md` | 2026-08-24 / `forest_provenance_31ep_20260824_r01` | 2026-08-24 21:22:13 / TIME_UNCERTAIN | `536dd62d9dfa4345554a968d110411e93a0f8ea727e94426e9b7920693bdb58b` | provenance/31 smoke | YES |
+| `/home/yanzu/AstraDroneOpen/RL_legacy_code_cleanup_report.md` | `RL_legacy_code_cleanup_report.md` | 2026-08-23 / 无runtime | 2026-08-23 23:28:19 / TIME_UNCERTAIN | `2cf5256433e7df4134c5be4ed48e94f3b641b6e8575847d392fa6cddd24bce0a` | legacy cleanup | YES |
+| `/home/yanzu/AstraDroneOpen/SAC_training_parameter_and_vmax_qualification_report.md` | `SAC_training_parameter_and_vmax_qualification_report.md` | 2026-08-24 / fixed多RUN | 2026-08-24 01:57:58 / TIME_UNCERTAIN | `b1ec258f5e823d4160b6ddfb3b7db5acfacc8e261ef7eee6e9291c913a90accc` | stop/vmax资格 | YES |
+| `/home/yanzu/AstraDroneOpen/trajectory_terminal_timing_diagnosis_report.md` | `trajectory_terminal_timing_diagnosis_report.md` | 2026-08-24 / fixed诊断与重测 | 2026-08-24 01:57:19 / TIME_UNCERTAIN | `54e91ddda99909864154a5b4cdb605286010310cd18c72ce79a06cccb15ca7dd` | fixed terminal timing | YES |
+
+### 完整性结论
+
+```text
+runtime_artifacts MD discovered = 41
+specified exact files found     = 10 / 10
+unique sources included         = 51
+NOT_FOUND                       = 0
+source MD deleted               = 0
+code/config/parameter changes   = 0
+commit                          = 0
+Gazebo/SAC/training/evaluation  = NOT RUN
+```
+
+## 22. 2026-09-02 全项目事实边界
+
+### 22.1 AstraDroneOpen 主系统与 Learning Speed 的关系
+
+当前可成立的 AstraDroneOpen 主体成果仍是 ROS1 Noetic + Gazebo Classic + 三套 PX4 SITL/MAVROS + Mid-360/FAST-LIO + 项目适配 EGO-Swarm 的三机 3 m 同高度低空绕塔系统。任务层负责动态 PRE_ENTRY/ENTRY_GATE/ORBIT_STAGING、8 个固定扇区、独立 EXIT_GATE、有限重试、返航和终态；EGO-Swarm 负责本机局部 B-spline、静态障碍规避与公共 `world` 中的带时间轨迹交换；manager/safety 负责 UAV3→UAV2→UAV1 放行、相位/HOLD、预测安全和落地许可。历史完整闭环证据包含三机各自 360°、8 扇区、EXIT、逆真实进场路线返航、HOME、接地和解除武装。
+
+以下边界仍必须保留：
+
+- 历史三机 `2/3/4 m` 分层方案因相邻仅 1 m、违反 EGO-Swarm 同 XY 椭球约束而在起飞前 NO-GO；不能写成已完成模式。已验证的分层能力是双机 `34→30 m` 与 `28→24 m`，并行层差 6 m、每机换层 4 m。
+- 当前三机目标相邻相位是 `67.5°`，实际放行窗口为 `65°～70°`，不是恒定刚性编队。理论 RGB 方位并集约 `204.39°/56.78%`，不是 YOLO 实测覆盖率。
+- D435/YOLO 是独立只读感知链，不参与 Mid360→FAST-LIO→EGO 规划，也不控制任务或飞行；三机绕塔中的非空业务识别闭环仍未验收。
+- 三机 full-stack 与 Learning Speed training-only 是不同证据层。前者为 PX4/FAST-LIO/MAVROS 执行链；后者为单机 Forest/Hector/Gazebo truth 链。二者不得同时发布 `/uav1/Odometry` 或执行控制，也不能把 training-only 结果外推为三机/full-stack PASS。
+
+### 22.2 两条当前运行链
+
+```text
+full-stack:
+Mid360 + IMU -> FAST-LIO -> registered cloud / odometry
+ -> EGO-Swarm -> traj_server -> EgoMavrosBridge -> MAVROS/PX4 -> Gazebo
+
+training-only:
+Gazebo truth odometry + Mid360 15 Hz
+ -> truth registration + persistent EGO GridMap
+ -> Observation V2/C -> SAC dynamic v_max
+ -> EGO -> traj_server -> Hector controller -> Gazebo
+```
+
+当前 EGO PointCloud2 路径已由 Astra 的 ray HIT/MISS、log-odds、FREE/UNKNOWN/OCCUPIED、局部窗口累计与引用计数 inflation 扩展为跨帧 occupancy owner；V2 则独立保存五帧点云并按 causal pose 对齐。二者是不同的时间抽象，不存在“FAST-LIO 移除后只剩单帧、无 mapping owner”的结论。这个 mapping 架构在源码层合理，但 8 月 30 日审计本身没有产生新的 runtime PASS。
+
+## 23. 当前 Learning Speed / Reward / SAC production contract
+
+### 23.1 Observation C：冻结的 3267 维输入
+
+当前源码仍冻结五项 policy input：
+
+1. `lidar_surrogate[3200]`：80×40 固定球面方向，值为 UNKNOWN/FREE/OCCUPIED；
+2. `future_positions_body[20][3]`：source-time active official EGO B-spline 的未来位置；
+3. `actual_velocity_body[3]`；
+4. `tracking_error_body[3]`；
+5. `previous_applied_v_max[1]`。
+
+总维度为 `3200+60+3+3+1=3267`。mission/planner 状态、progress、clearance、复杂度 label、mask、diagnostics 与 run/episode provenance 不进入 policy input。frame/stamp/generation、五帧历史、active official trajectory 或任何数值缺失时继续 fail closed；不得复用旧 C、延长过期轨迹或生成 synthetic trajectory。
+
+### 23.2 dynamic `v_max`、SpeedAdapter 与 EGO
+
+```text
+SAC normalized action [-1,1]
+ -> ActionMapping: v_max = 1.025 + 0.725 * action
+ -> SpeedRequestStamped
+ -> SpeedAdapter / SpeedSafetyFilter
+ -> SpeedActionStamped
+ -> EGO dedicated speed callback queue
+ -> immutable DynamicVmaxSnapshot commit
+ -> SpeedAppliedStamped exact ACK
+ -> causal transition -> OrderedTransitionWriter -> Replay
+```
+
+- policy 范围为 `[0.30,1.75] m/s`；EGO static `4.0 m/s` 是 planner/downstream capability ceiling，不是 SAC action，也不是 UAV 实际速度命令。
+- 合法范围内 `requested_v_max == filtered_v_max == applied_v_max`；SafetyFilter 只做 finite、范围和 clamp，不做 slew、low-pass、hysteresis 或 maximum-step shaping。
+- 相邻 action delta 超出 `[-0.3,+0.5] m/s` 时才额外请求 force-replan；范围内沿用 EGO 原生 replanning rules。
+- 正式配对只认 `(episode_id,step_index,request_id)`；scalar topic 只是镜像，不是第二个 owner。
+- 9 月 1 日后 speed callback 使用独立 `ros::CallbackQueue + AsyncSpinner(1)`；`DynamicVmaxSnapshotStore::commit()` 是 ACK 线性化点。每次 planner invocation 捕获一个 immutable `(version,v_max,force_generation)`，manager/optimizer 全程绑定同一版本；speed thread 不直接修改 FSM、map 或 optimizer，也没有启用全局 `AsyncSpinner(4)`。
+
+### 23.3 当前 Reward v3.1 与 Stage 1 / Stage 2
+
+当前源码与 YAML 的唯一 owner 为 `training/reward.py::LearningSpeedReward.evaluate()`，版本 `astradrone_paper_guided_reward_v3.1`，默认 `stage_1`：
+
+```text
+r = r_speed + r_smoothing + r_error + r_danger
+```
+
+令 `u=||actual_velocity_body||`、`e=||tracking_error_body||`、`a_t/a_{t-1}` 为当前/上一 stamped applied constraint，`N` 为最近 known occupied probe，`D=known occupied bins/3200`：
+
+```text
+q_N = clip((6.0-N)/3.5); N=None 时 q_N=0
+q_D = clip((D-0.040)/0.040)
+phi_2 = 1-(1-q_N)^0.46*(1-q_D)^0.54
+phi_1 = 1.75-phi_2
+w_safe=(1-phi_2)^2
+w_middle=2*phi_2*(1-phi_2)
+w_dangerous=phi_2^2
+```
+
+Stage 1：
+
+```text
+r_speed = w_safe*0.80*(u-phi_1)
+        + w_middle*0.25*u
+        + w_dangerous*1.00*(phi_1-u)
+r_smoothing = -0.10*(a_t-a_t-1)^2
+r_error = -2.00*min(e,0.40)^2
+r_danger = -2.00*u^2，仅 explicit dangerous terminal
+```
+
+Stage 2 代码只把 `r_speed` 换成 `0.25*u`，其余三项复用；当前未选择、未训练、未评估。
+
+最重要的当前源码裁决是：**v3.1 已删除 UNKNOWN 专用 `phi_2=0.5/phi_1=1.25` 分支。** `unknown_majority` 只作诊断；当 `N=None,D=0` 时当前 Reward 得到 `phi_2=0,phi_1=1.75`。UNKNOWN 仍通过 3200 维 policy input 影响 Actor，但不再是手工 Reward target。旧 v3.0/AGENTS 快照中“UNKNOWN 固定 1.25/0.5”的表述已过时。
+
+Reward 不读取 progress、success bonus、clearance、planner shaping 或 `state_t+1` 数值。它评价 `state_t` 的实际速度/跟踪误差，因此新 action 的直接即时项主要是 smoothing，存在一拍 credit assignment 与 planner/controller 混杂。公式、离线 replay 和 finite runtime 已验证，不等于行为目标、无 reward hacking、收敛或迁移已证明。
+
+### 23.4 SAC 与 Episode 生命周期
+
+当前唯一维护配置仍是 3267-D/1-D Gaussian SAC：twin Q/target Q、automatic entropy、Replay、异步 learner 与 checkpoint。关键值为 `gamma=0.99`、`tau=0.005`、batch 64、Actor/Critic/alpha LR `1e-5/1e-3/1e-3`、100 次 critic-only warm-up、log-std `[-3,-1]`、Replay capacity 100000、learning starts 1000、seed 1。
+
+正式目标仍是从空 Replay 完成 10000 个 training Episodes，每 500 Episode checkpoint，共 20 个；Episode 10000 后不得启动 10001。evaluation 是独立 mode，加载指定 checkpoint，固定 100 Episodes、deterministic Actor、无 learner/训练 Replay。当前两者都没有放行或完成。
+
+运行时保持：absolute 0.1 s nominal grid、no catch-up、最多一个 active ACTION INTERVAL、transition core 形成后 immutable、单 worker ordered persistence、Replay contiguous、terminal exactly-once、writer drain/closure ACK 后才允许 reset。`success/collision/planner_failure/max_episode_time/invalid_observation` 都是真实 terminal/truncation 分类；合法环境失败可以完成 Episode 并进入 Replay，但任何 final audit failure 仍使对应 qualification 总体 NO-GO。
+
+## 24. 8 月 30 日至 9 月 1 日关键技术演进
+
+| 阶段 / RUN | 真实结果 | 当前替代关系 |
+|---|---|---|
+| mapping/timing 反向审计 | mapping owner 清楚；旧 one-open 把 policy cadence 与 Replay/provenance/terminal 串成最慢 closure throughput | `MAPPING ARCHITECTURE OK`；timing 要解耦 |
+| Timing Phase 1 static | immutable transition + `OrderedTransitionWriter`；178 个 Learning Speed 测试、39 个 backend 测试等通过 | 只放行 bounded runtime |
+| Phase 1 bounded，4 Episodes | 1266 transitions；Replay/ownership/terminal全通过；pre-learning `9.975 Hz`、learner-active `9.638 Hz`；真实 planner/collision 不构成任务 PASS | timing/correctness bounded PASS |
+| Phase 2A cleanup | 删除 post-action/latest trajectory 的 hard gate，保留 selected trajectory 与 near-lifetime gate | static PASS |
+| Phase 2A bounded，6 Episodes | 1712 transitions结构全通过，但 pre-learning `8.264 Hz`、learner-active `6.775 Hz`，`causal_snapshot_unavailable=671`；Ep4/5约5.4 Hz | runtime FAIL；不能进入 Phase2B |
+| causal root-cause | 10 Hz C 与 10 Hz policy 等频相位竞争：C晚1～20 ms到达会等下一tick，0.1 s放大为0.2 s | 不是放宽 causal gate；选择15/10设计 |
+| 15 Hz perception / 10 Hz policy Phase A，6 Episodes | 2368 transitions；V2/C约14.92 Hz；causal miss `101/2473=4.08%`，较10/10下降85.5%；无5 Hz Episode；0 success、4 failure、2 truncation、1 collision proxy、3 planner failure | timing/correctness PASS，不是飞行 PASS |
+| 首次 100EP early-learning | 47/100 completed 后 Ep48 request194 `applied_identity_ack` timeout；0/47 success、34 planner failure、6 collision、7 truncation | FAIL-CLOSED，不得扩大 |
+| Ep48 根因 | request194 到 SpeedAdapter/EGO transport 后，EGO default single-thread spinner 被同步 replan 4808/4809 占用至少7.291 s，`speedLimitCallback()`未执行，ACK未生成 | 不是 runner拒绝、CPU泛化或timeout太短 |
+| EGO async fix | 独立 speed queue + immutable snapshot + main-thread force handoff；main queue忙4.50009 s时100/100 exact ACK，max `0.295469 ms` | source/unit/ROS PASS |
+| `ego_speed_async_100ep_endurance_20260901_114200_r01` | 100/100 closure、29,543 exact request/action/ACK/Replay、0 applied timeout、100 terminal exactly-once；但 Ep53/54/77/95/98 为 `invalid_observation:continuous` | EGO async子系统 PASS；RL整体 NO-GO |
+| continuous-invalid 根因 | final planned trajectory结束后 EGO进入 `WAIT_TARGET`，但 Hector actual position/speed/sustain未满足；C正确返回 `trajectory_unavailable` | primary 为 final-goal lifecycle，不是 C/V2/SAC |
+| final-goal handshake 6-case r01～r05 | 静态测试通过；多轮分别被 sandbox、formal reset、supervisor、torch path、Hector overlay阻塞；均保留0/6或无专项覆盖结果 | 不得把基础设施排除写成逻辑 PASS |
+| r06 full 100EP environment | 6/6 Episode闭合，5 success/1 planner failure；只注入2/6 case。Ep4真实 continuation request=1，但 accepted real trajectory=0，最终 `NO_FEASIBLE_TRAJECTORY` | `FINAL GOAL LIFECYCLE LOGIC FAIL` |
+| lifecycle rollback | handshake production增量全部移除；EGO async fix保留，相关 package/ROS gates通过 | 当前源码状态；不再继续补 lifecycle patch |
+| rollback baseline r02 | 31 Episodes 后 reset readiness timeout | 独立基础设施 NO-GO，不与后续混池 |
+| rollback baseline r03 | 87/100 completed；Episode88外部 shutdown、无 closure；26,761 closed Replay + 65 partial Replay | 最新总体 baseline：INCOMPLETE/NO-GO |
+
+## 25. 最新 100-Episode、速度、碰撞与 planner failure 审计
+
+### 25.1 两个不能混淆的 100EP 结论
+
+1. `ego_speed_async_100ep_endurance_20260901_114200_r01` **确实完成 100/100**，证明 EGO async speed chain 在 29,543 次 exposure 下消除了 Ep48 ACK starvation；但 5 个真实 invalid-observation terminal 使总体仍为 `RL CLOSED LOOP 100EP FAIL`。它不是 training PASS、收敛或 evaluation 证据。
+2. lifecycle 回滚后的 `post_lifecycle_rollback_100ep_baseline_20260901_202221_r03` 只完成 **87/100**；Episode88 有 65 条非 terminal Replay 后外部 shutdown，不能补算 completion，也不能 resume。它是当前源码状态下更新的 baseline，最终仍为 INCOMPLETE/NO-GO。
+
+### 25.2 rollback baseline r03
+
+| 项目 | 当前最新事实 |
+|---|---:|
+| completed / configured Episodes | 87 / 100 |
+| success | 1 |
+| `planner_failure:NO_FEASIBLE_TRAJECTORY` | 55 |
+| collision terminal | 20 |
+| `max_episode_time` | 10 |
+| `invalid_observation:continuous` | 1 |
+| closed-Episode Replay | 26,761 |
+| Episode88 partial Replay | 65 |
+| total persisted Replay | 26,826 |
+| requested/action/applied mismatch | 0 |
+| duplicate / step hole | 0 / 0 |
+| finite Reward | 26,826 / 26,826 |
+| Observation C persisted dimension/valid | 3267；26,826/26,826 |
+| coordinator C valid ratio | 44,170/44,184 = 0.999683 |
+| median / mean action period | 0.100 / 0.109913 s |
+| learner updates | 22,490，全部 finite |
+
+`requested_v_max == applied_v_max` 为 26,826/26,826，最大差为 0，最大值 `1.746997 m/s`，没有越过 1.75。EGO `4.0 m/s` 只是静态 capability ceiling。
+
+Replay policy-visible actual-speed 最大 `2.960955 m/s`；490/26,826（1.826%）、67 个 Episode identity 超过1.75。coordinator raw Gazebo-truth twist 的最大值相同。原因边界是 EGO约束逐轴 B-spline velocity，而统计为三维实际速度范数，且还有轨迹切换/执行瞬态；缺少逐样本 PositionCommand，不能把每次超限拆成范数组合与 controller overshoot。
+
+### 25.3 planner failure：`PLANNER-LIMITED`
+
+55 次 planner failure 不支持“主要由高速 SAC action 驱动”：
+
+- final requested median `1.307 m/s`，低于非 planner 的 `1.489 m/s`；最后1 s median `1.273` 对 `1.496 m/s`。
+- 13/55 final action `<=1.0 m/s`，只有8/55 `>=1.5 m/s`；按 exposure 归一后 planner failure 在 `[1.20,1.50)` 最高、在 `[1.50,1.75]` 反而较低。
+- terminal 前5→0.5 s，mean `v_max` 从1.302降到1.262；nearest mean从1.714降到0.673 m、density从0.0803升到0.1146、`phi_2`趋近1。
+- 55/55最后3 s有 plan-fail，50/55有 `First 3 control points in obstacles`，同时仍有成功 replan 与 active selected trajectory。典型链是局部 replan成功/失败交错，最后候选耗尽或安全停，而不是 dynamic action没有应用。
+
+因此主分类为 `MIXED`，planner-failure 次分类为 `PLANNER-LIMITED`。现有证据不支持先降 action upper bound来修 55 次 planner failure。
+
+### 25.4 collision：速度相关，但不是单因果
+
+20 次 collision 的 final requested median `1.522 m/s`，高于非 collision 的 `1.307 m/s`；最后1 s actual median `1.057` 对 `0.802 m/s`，density也显著更高。collision exposure-normalized rate随 action bin上升，说明高速是风险相关量。
+
+但 17/20 collision 在最后3 s已有 `plan_success=0`，且多数伴随高 density/first-3/emergency。当前 `collision` 证据层是 EGO `current_position_in_occupancy` proxy，不是独立 Gazebo contact truth。只能写“速度、障碍密度和 planner degradation 的混合结果”，不能写“1.75 m/s 单独导致碰撞”。
+
+### 25.5 SAC 与 Reward 的新疑点
+
+- action 分布从 Episodes1–20 的 mean 1.022 m/s 上升到41–60的1.614、61–87的1.593；后两阶段 `[1.50,1.75]` 占84.56%/80.03%，存在明显 upper-region 偏置，但没有 exact-bound saturation。
+- late-stage复杂状态仍有条件降速：`phi_2<0.25` 与 `phi_2>=0.75` 的 action mean 为1.660与1.477 m/s；policy并非完全忽略复杂度。
+- 14/55 planner failure 与5/20 collision 的 terminal `r_danger=0`；10个危险 terminal total reward仍为正。唯一 success return `-180.884`，而 planner/collision median return为 `-86.317/-105.597`，短失败累积较少负 step reward，存在 Episode 长度偏差与 terminal taxonomy 疑点。
+- 这些证据足以标记 `REWARD-SUSPECT`，但不足以立即修改公式、系数或 action upper bound；也不能把 planner failure 倒推为 Reward 过快。
+
+## 26. 主要新旧结论冲突与裁决
+
+| 冲突 | 旧结论 | 当前裁决 |
+|---|---|---|
+| 100-Episode 是否运行过 | 8月29日写“未启动” | 已有一轮100/100，但总体因5个 invalid observation NO-GO；rollback后新baseline仅87/100 |
+| 最新 lifecycle blocker | terminal identity handshake timeout | 后续定位为 final planned trajectory与actual acceptance脱节；handshake方案r06逻辑FAIL并已从production回滚 |
+| EGO async状态 | design READY / unit READY | dedicated queue/snapshot已实现；29,543-action run和rollback窗口均0 applied timeout，子系统runtime PASS |
+| 15/10时序 | 尚无runtime | Phase A 6ep PASS并消除5 Hz双稳态；长run保持约9 Hz但causal miss后段增加，不能称全程稳定10 Hz |
+| Reward UNKNOWN | v3.0/旧快照固定 `phi_2=0.5,phi_1=1.25` | 当前v3.1源码删除UNKNOWN target；`N=None,D=0` 得0/1.75，UNKNOWN只进policy input |
+| R04 31/31 | 容易误读为31ep PASS | 仍因invalid observation为NO-GO；31/31只证明closure/map-switch等子门 |
+| fixed-vmax 0.30～1.75 PASS | 可能被外推为Forest SAC范围安全 | 仅证明worksite fixed-only backend可执行；不覆盖Forest、动态SAC、terminal或三机/full-stack |
+| final-goal 6-case | unit/base 6ep可误写为修复成功 | r06唯一真实continuation case request=1/accepted trajectory=0并planner fail；方案已回滚 |
+| planner failure与高速 | 直觉上归因高action | 55次证据更符合PLANNER-LIMITED，failure rate不随speed单调增加 |
+| collision与高速 | 要么全归高速、要么全归planner | 当前为MIXED：高速显著相关，17/20同时有planner degradation，且collision是occupancy proxy |
+| finite learner/Reward | 可能写成训练健康/收敛 | 只能证明数值有限；0/47 success、100ep总体FAIL、rollback 1/87 success均否定放行 |
+
+## 27. 当前最新状态总表
+
+| 子系统/阶段 | 最新状态 | 证据边界 |
+|---|---|---|
+| 三机3 m同高度绕塔 | **已完成的历史工程基线** | 完整360°/8扇区/EXIT/返航/落地；不是本轮重跑 |
+| PX4/FAST-LIO full-stack | **已有基线** | 与training-only互斥；未做本轮RL transfer |
+| Observation V2/C 3267-D | **CURRENT / 数据合同成立** | 当前源码、Replay维度与valid证据；无权放宽fail-closed |
+| SpeedAdapter/SafetyFilter | **CURRENT** | finite+clamp、stamped identity；无action shaping |
+| EGO dynamic-vmax async | **子系统 runtime PASS** | 100-action stress、29,543 exposure及rollback窗口0 applied timeout |
+| Reward v3.1 Stage1 | **CURRENT / EXPERIMENTAL** | single owner、公式/finite成立；terminal coverage与行为目标待审计 |
+| Reward Stage2 | **PLANNED** | 只有公式，未训练/评估 |
+| SAC implementation | **CURRENT / bounded functionality** | Actor/Q/Replay/learner/checkpoint实现与finite运行；无收敛结论 |
+| 15 Hz perception / 10 Hz policy | **架构局部PASS、长期PARTIAL** | 无5 Hz回退；mean约9 Hz、causal miss仍存在 |
+| final-goal handshake | **SUPERSEDED / ROLLED BACK** | r06 logic FAIL；production增量已移除 |
+| rollback 100EP baseline | **INCOMPLETE / NO-GO** | 87/100，Episode88未闭合，1 success/55 planner/20 collision/1 invalid/10 max-time |
+| formal 10000-Episode training | **未完成/不放行** | 旧pilot禁止resume；当前系统门未通过 |
+| 独立100-Episode evaluation | **未完成** | 无合格checkpoint与evaluation run |
+| Forest→worksite/full-stack/三机迁移 | **未完成** | world、backend、定位、轨迹与多机分布均不同 |
+
+## 28. 本轮来源吸收与清理审计
+
+### 28.1 数量闭合
+
+```text
+runtime_artifacts Markdown discovered before cleanup = 65
+already represented by Section 21 baseline           = 41
+new runtime Markdown audited in this increment       = 24
+specified root summaries audited                     = 3 / 3
+total source Markdown scanned and merged             = 68
+NOT_FOUND                                             = 0
+runtime Markdown deleted after absorption             = 65
+specified root summaries deleted                      = 3
+target main document deleted                          = 0
+non-Markdown artifacts deleted                        = 0
+code/config/parameter changes                         = 0
+ROS/Gazebo/PX4/training/evaluation/tests run          = 0
+```
+
+第21节的原始 manifest 已逐项记录前41份 runtime 报告。本轮新增24份 runtime 报告和3份指定旧汇总如下；SHA-256为删除前值：
+
+| 来源 | 删除前 SHA-256 | 吸收主题 |
+|---|---|---|
+| `runtime_artifacts/learning_speed/upstream_mapping_and_async_timing_reverse_audit_handoff.md` | `4efd7b9e12101941eab500e0b0d78f24d4785378671bc7237cd0807e4de1fa11` | mapping/timing handoff |
+| `runtime_artifacts/learning_speed/upstream_mapping_and_async_timing_reverse_audit.md` | `b70be4cca04d31c15e5c273ea52c3c9ed1f6738ccc351c5b5f37b9b4eff2d9b0` | mapping owner与async目标架构 |
+| `runtime_artifacts/learning_speed/async_timing_refactor_phase1_report.md` | `e5f7d7f9db39c4c8ad537ac939bb6dbf8f92389882683ec5f3b9d4ed1ff6ad93` | immutable transition/ordered writer |
+| `runtime_artifacts/learning_speed/async_timing_refactor_phase1_bounded_runtime_report.md` | `a479214995018181afef09dff8afde1ca10bc74491fb0308e80fb5a492573924` | Phase1 4ep/1266 runtime |
+| `runtime_artifacts/learning_speed/async_timing_refactor_phase2a_cleanup_report.md` | `80398a21aff79505f9fb439354bef4d9341de8215091fe6c9ef24c8f205b8002` | Phase2A cleanup |
+| `runtime_artifacts/learning_speed/async_timing_refactor_phase2a_bounded_runtime_report.md` | `d2166671f90688a3ce3b99a65321e9becd0d029c3c4d027f8a89c131b433fc8e` | Phase2A cadence FAIL |
+| `runtime_artifacts/learning_speed/causal_snapshot_unavailable_root_cause_audit.md` | `14c6f64ffae5da42b63494e3779067930b483f0f7c587b924169714a4a0a5d42` | 10/10 phase race |
+| `runtime_artifacts/learning_speed/perception_policy_rate_redesign_audit.md` | `39536fc7408bdefc39a929a6fad95e9eb6a97ec5d6c225b03c2a35aaa47644ac` | 15/10设计 |
+| `runtime_artifacts/learning_speed/perception15_policy10_phaseA_runtime_report.md` | `875b9eeb85b23618bc9fa06c86ec5d69842bdef21d2a3d3e65d433a88893d9f3` | 6ep PhaseA PASS/flight NO-GO |
+| `runtime_artifacts/learning_speed/perception15_policy10_100episode_report.md` | `4c8593b91ed8d896bdd51ff8609559b13b3892361be9626c5c204087d747793b` | 47/100 ACK FAIL |
+| `runtime_artifacts/learning_speed/applied_identity_ack_episode48_root_cause_audit.md` | `2f4a833487c7456d92080563d09bc9ba231e392dadc034c28ec68b97e909414e` | request194根因 |
+| `runtime_artifacts/learning_speed/learning_speed_ego_async_execution_design_audit.md` | `4a0dc0133182765d554945b9655307af8bc620ec541dedbada2be33d3f9abc30` | EGO async方案裁决 |
+| `runtime_artifacts/learning_speed/ego_speed_async_queue_snapshot_fix_report.md` | `e81b2be867ee44bd436d0b86b5fda147b2065726224ee1a9ce6748a126fb5e52` | dedicated queue/snapshot实现 |
+| `runtime_artifacts/learning_speed/ego_speed_async_100episode_endurance_report.md` | `85306d09fd53462d70f1a2302b57e3dee9cbbea000d3ffc87e2c713e17afdce3` | 100/100总体NO-GO |
+| `runtime_artifacts/learning_speed/observation_c_continuous_invalid_root_cause_audit.md` | `bb9b59b04724a36aa3a6d2082e78c2d13a9208db997d948d2ca43d62582aef0b` | final trajectory lifecycle |
+| `runtime_artifacts/learning_speed/final_goal_lifecycle_handshake_fix_report.md` | `d85b02cf962388bbbcf7d5317d305652b66185daea462d14bc2295e7d9109a97` | handshake实现/0ep FAIL |
+| `runtime_artifacts/learning_speed/final_goal_lifecycle_6case_runtime_qualification.md` | `4d7fbf844691cceae58f8d84c37f089f0f632673b60a138476160df47aea73f7` | r03 case未覆盖 |
+| `runtime_artifacts/learning_speed/final_goal_lifecycle_6case_20260901_r04/qualification_stop_report.md` | `b0ba4fa5b9367096ed3a266094f8a27f2e25b1a23abbfbd7ed0bdfe39db57b01` | r04 sandbox STOP |
+| `runtime_artifacts/learning_speed/final_goal_lifecycle_6case_r04_external_runtime_verification.md` | `86e7890fa8f7533d37410989b5730224379d8759024dbd40acdcfbda97eb646a` | torch环境阻塞 |
+| `runtime_artifacts/learning_speed/sixcase_python_environment_mismatch_audit.md` | `6347c40feb463102893ab44ca882feaa1a80ac0b523704bec69bdbe73d428037` | Python/PYTHONPATH根因 |
+| `runtime_artifacts/learning_speed/final_goal_lifecycle_6case_r05_sameenv_rerun.md` | `907079b3ceba5b37ed55596db7283351e13436e6bb80130c458953226568a570` | Hector overlay环境阻塞 |
+| `runtime_artifacts/learning_speed/final_goal_lifecycle_6case_r06_full100epenv_runtime.md` | `86302a56e0876514a078605040b786520d09b3f16212ad7ed52ebcc241502bbb` | handshake logic FAIL |
+| `runtime_artifacts/learning_speed/post_lifecycle_rollback_100episode_baseline_report.md` | `43b4ee7c67075b9270c60160801894760aa2e293d080ca4c5bdce5e0b8a21562` | rollback与87/100 baseline |
+| `runtime_artifacts/rl_training/post_lifecycle_rollback_speed_failure_root_cause_audit.md` | `750bd8db01de9ccdec5c0b8af05fbbed0985427e097a2519ec181a56204a4c06` | speed/collision/planner/Reward审计 |
+| `AstraDroneOpen_研究报告全项目技术审计与证据索引.md` | `e6d789483725421aea0f0b74d619899dcf74a5e3f208bc4b77d39dc368620e91` | 三机/PX4/FAST-LIO/EGO全项目事实 |
+| `LearningSpeed_reward_current_audit_and_merged_report.md` | `2a80302217d4d27494af3978be57526ab674916355dd06061c61ae65dd579bcf` | Reward v3.1当前公式与历史替代 |
+| `AstraDroneOpen_项目技术演进汇总_handoff.md` | `b5cd77faa1b93597b29100cc10770dcafa076897906370fb1459fd745aade0d9` | 原51源演进/handoff |
+
+清理只针对上述清点时存在的65份 `runtime_artifacts/**/*.md` 和用户点名的3份根目录旧汇总。CSV、JSON、JSONL、log、bag、checkpoint、NPZ、图片、模型、ROS日志、原始实验目录和源码均未删除；本主文档保留并成为后续 RL 阶段唯一主参考。
+
+## 29. 当前完成度、问题与强化学习下一步
+
+### 29.1 当前已完成内容
+
+- 三机3 m同高度低空绕塔工程基线，以及PX4/MAVROS/Mid360/FAST-LIO/EGO-Swarm/任务协调的职责与证据边界已经整理清楚。
+- Learning Speed一维 dynamic `v_max` 链、SpeedAdapter/SpeedSafetyFilter、exact stamped identity、commit-before-ACK和EGO dedicated async snapshot实现已完成；Ep48 callback-starvation在后续大规模exposure中未复现。
+- Observation V2五帧3200-bin与Observation C 3267-D合同、15 Hz perception/10 Hz nominal policy、one active interval、immutable transition、ordered Replay、terminal exactly-once和reset barrier均已有源码及运行证据。
+- Reward v3.1 Stage1的唯一owner、`phi_1/phi_2`、四分项、UNKNOWN当前语义和Stage2候选边界已审计；当前runtime内所有已持久化Reward finite。
+- 已完成一轮100/100 EGO-async endurance和一轮rollback后87-Episode baseline，真实失败、partial Episode与NO-GO均保留。
+
+### 29.2 已跑通但仍需优化的问题
+
+- EGO async speed子系统已跑通，但RL整体仍受planner capability、final trajectory生命周期和invalid observation影响。
+- 15/10消除了稳定5 Hz双稳态，但长期effective rate约9 Hz，mean period 0.109913 s、p95 0.2 s，causal miss和deadline error仍需观测。
+- Replay/Actor/terminal结构在已闭合Episodes内正确，但100EP baseline没有完整闭合；Episode88不可补算或resume。
+- SAC已形成明显高速度偏置，同时对高`phi_2`有条件降速；目前只有1/87 success，不能解释为有效学习。
+- collision与高速显著相关，但多数collision同时已有planner degradation；需要更强的contact/command/制动证据后才能作单因果判断。
+- Reward的dangerous terminal覆盖和Episode长度偏差存在真实疑点，但还没有证据支持立即改Reward或降低1.75上限。
+
+### 29.3 尚未完成内容
+
+- 当前源码/参数下完整、无基础设施中断且final audit PASS的100-Episode baseline。
+- Forest中稳定的planner/collision/success表现，以及同一当前source上的固定速度dose-response。
+- Reward v3.1行为专项qualification、Stage2训练、Reward消融和长期无stall/hacking证明。
+- 正式10000-Episode training、合格checkpoint、独立100-Episode deterministic evaluation。
+- Forest unseen-map泛化、worksite training-backend评估、FAST-LIO/PX4单机transfer、三机shadow/closed-loop transfer与真机验证。
+- YOLO与三机巡检业务结果的联合验收。
+
+### 29.4 强化学习下一步建议
+
+**最高优先级不是立刻重跑100EP、修改Reward或降低action上限，而是对rollback r03的55次 terminal replan做只读EGO failure-signature与occupancy snapshot聚类。** 首先区分 first-3 control points、A*/rebound、current-position occupancy、trajectory retention/expiry与局部地图几何，固定同一当前source和真实失败口径，不调参数。
+
+随后按顺序：
+
+1. 专项审计19个危险 coordinator terminal 为何没有 `r_danger`，并用 discounted return、等长度窗口和 outcome-conditioned counterfactual 检查短失败比长成功“较少负”的长度偏差；证据完成前不改Reward。
+2. 若planner/Reward审计提出明确候选，再设计同一Forest/source、SAC-off、相同reset/route的有界固定速度dose-response，并补 PositionCommand/contact/制动与完整 planner signature telemetry；用它区分速度、控制瞬态和几何能力。
+3. 只有上述静态/有界门通过，才用全新RUN_ID、空Replay做新的bounded SAC qualification；失败即保留并停止，不resume、不skip、不放宽因果或timeout。
+4. bounded gate通过后再重做完整100-Episode baseline；只有总体final audit PASS，才讨论正式10000-Episode training。训练完成后仍需独立evaluation与逐级full-stack transfer。
+
+截至2026-09-02的总裁决：**AstraDroneOpen三机工程基线成立；Learning Speed数据链和EGO async dynamic-`v_max`子系统成立；Forest/Gazebo RL整体仍为NO-GO，正式training与evaluation未放行。**

@@ -6,6 +6,10 @@
 
 namespace ego_planner {
 
+inline std::string planningFailureReason() {
+  return "NO_FEASIBLE_TRAJECTORY";
+}
+
 // Updated only at actual planner call sites. Periodic PlannerStatus
 // publication is read-only and therefore cannot inflate failure counts.
 class PlanningStatusTracker {

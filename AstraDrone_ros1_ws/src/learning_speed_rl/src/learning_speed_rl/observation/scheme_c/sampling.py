@@ -46,11 +46,29 @@ class TrajectorySampler:
             return self._sample_distance(trajectory, elapsed)
         return self._sample_time(trajectory, elapsed)
 
-    def _adaptive_polyline(self, trajectory, elapsed):
+    def _adaptive_polyline(self, trajectory, elapsed, maximum_length=None):
+        """Build the causal trajectory prefix needed by the policy horizon.
+
+        Adaptive subdivision is chronological, so the prefix produced before
+        ``maximum_length`` is identical to the same prefix in a full-trajectory
+        subdivision.  Observation C never consumes points beyond its configured
+        distance horizon; avoiding that unused tail keeps a long fresh EGO
+        trajectory from monopolising the producer worker.
+        """
+
+        if maximum_length is not None:
+            maximum_length = float(maximum_length)
+            if not np.isfinite(maximum_length) or maximum_length <= 0.0:
+                raise ValueError("adaptive polyline length limit is invalid")
         times = []
         points = []
+        accumulated_length = 0.0
+        horizon_reached = False
 
         def append_segment(t0, p0, t1, p1, depth):
+            nonlocal accumulated_length, horizon_reached
+            if horizon_reached:
+                return
             midpoint_time = 0.5 * (t0 + t1)
             midpoint = trajectory.evaluate_elapsed(midpoint_time)
             chord_midpoint = 0.5 * (p0 + p1)
@@ -62,10 +80,17 @@ class TrajectorySampler:
             )
             if needs_split and depth < self.config.arc_length_max_depth:
                 append_segment(t0, p0, midpoint_time, midpoint, depth + 1)
+                if horizon_reached:
+                    return
                 append_segment(midpoint_time, midpoint, t1, p1, depth + 1)
                 return
+            accumulated_length += float(np.linalg.norm(p1 - points[-1]))
             times.append(t1)
             points.append(p1)
+            horizon_reached = bool(
+                maximum_length is not None
+                and accumulated_length >= maximum_length
+            )
 
         boundaries = trajectory.future_knot_times(elapsed)
         first = trajectory.evaluate_elapsed(boundaries[0])
@@ -77,10 +102,18 @@ class TrajectorySampler:
             p0 = trajectory.evaluate_elapsed(float(start))
             p1 = trajectory.evaluate_elapsed(float(end))
             append_segment(float(start), p0, float(end), p1, 0)
-        return np.asarray(times), np.asarray(points)
+            if horizon_reached:
+                break
+        return np.asarray(times), np.asarray(points), horizon_reached
 
     def _sample_distance(self, trajectory, elapsed):
-        dense_times, dense_points = self._adaptive_polyline(trajectory, elapsed)
+        required_length = min(
+            self.config.max_distance,
+            self.config.sample_spacing * self.config.sample_count,
+        )
+        dense_times, dense_points, horizon_clipped = self._adaptive_polyline(
+            trajectory, elapsed, maximum_length=required_length
+        )
         segment_lengths = np.linalg.norm(np.diff(dense_points, axis=0), axis=1)
         cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
         remaining_length = float(cumulative[-1])
@@ -114,6 +147,8 @@ class TrajectorySampler:
             )
         return sampled, query, {
             "remaining_arc_length_m": remaining_length,
+            "arc_length_horizon_clipped": horizon_clipped,
+            "remaining_arc_length_is_lower_bound": horizon_clipped,
             "sample_elapsed_times_sec": sampled_times,
             "arc_length_polyline_points": int(len(dense_points)),
         }
@@ -122,7 +157,9 @@ class TrajectorySampler:
         requested = elapsed + self.config.sample_spacing * np.arange(
             1, self.config.sample_count + 1, dtype=np.float64
         )
-        dense_times, dense_points = self._adaptive_polyline(trajectory, elapsed)
+        dense_times, dense_points, horizon_clipped = self._adaptive_polyline(
+            trajectory, elapsed
+        )
         cumulative = np.concatenate(
             ([0.0], np.cumsum(np.linalg.norm(np.diff(dense_points, axis=0), axis=1)))
         )
@@ -150,6 +187,8 @@ class TrajectorySampler:
         offsets = query_times - elapsed
         return points, offsets, {
             "remaining_arc_length_m": remaining_length,
+            "arc_length_horizon_clipped": horizon_clipped,
+            "remaining_arc_length_is_lower_bound": horizon_clipped,
             "sample_elapsed_times_sec": query_times,
             "arc_length_polyline_points": int(len(dense_points)),
         }

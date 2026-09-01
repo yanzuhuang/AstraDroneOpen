@@ -11,6 +11,7 @@
 #include <traj_utils/plan_container.hpp>
 #include <ros/ros.h>
 #include <traj_utils/planning_visualization.h>
+#include <plan_manage/dynamic_vmax_snapshot.h>
 
 namespace ego_planner
 {
@@ -29,18 +30,18 @@ namespace ego_planner
 
     /* main planning interface */
     bool reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel, Eigen::Vector3d start_acc,
-                       Eigen::Vector3d end_pt, Eigen::Vector3d end_vel, bool flag_polyInit, bool flag_randomPolyTraj);
+                       Eigen::Vector3d end_pt, Eigen::Vector3d end_vel, bool flag_polyInit,
+                       bool flag_randomPolyTraj,
+                       const DynamicVmaxSnapshot &speed_snapshot);
     bool EmergencyStop(Eigen::Vector3d stop_pos);
     bool planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
-                        const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
+                        const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
+                        double max_velocity);
     bool planGlobalTrajWaypoints(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
-                                 const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
+                                 const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
+                                 double max_velocity);
 
     void initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis = NULL);
-
-    // Runtime interface only: keep the manager time parameterization and the
-    // optimizer feasibility cost on one audited velocity limit.
-    bool setMaxVelocity(double max_velocity);
 
     void deliverTrajToOptimizer(void) { bspline_optimizer_->setSwarmTrajs(&swarm_trajs_buf_); };
 
@@ -65,6 +66,8 @@ namespace ego_planner
     // ros::Publisher obj_pub_; //zx-todo 
 
     BsplineOptimizer::Ptr bspline_optimizer_;
+    // Static launch ceiling only; never changed by the speed callback thread.
+    double capability_max_velocity_{0.0};
 
     int continous_failures_count_{0};
 

@@ -4,14 +4,11 @@ episode:
   start_timeout_sec: 600.0
   completion_timeout_sec: 30.0
   deadline_tolerance_sec: 0.02
-  maximum_in_flight: 16
   minimum_active_speed_mps: 0.20
 
 step:
-  duration_sec: 0.1
   action_timeout_sec: 3.0
   applied_timeout_sec: 4.0
-  hold_timeout_sec: 30.0
   next_observation_timeout_sec: 5.0
   requested_match_tolerance_mps: 1.0e-6
   applied_pair_tolerance_mps: 0.005

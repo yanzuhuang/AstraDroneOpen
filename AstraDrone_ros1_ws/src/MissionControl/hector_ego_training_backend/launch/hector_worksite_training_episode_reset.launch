@@ -5,7 +5,8 @@
   <arg name="runner_mode" default="qualification"/>
   <arg name="fixed_v_max" default="0.30"/>
   <arg name="v_max_min" default="0.30"/>
-  <arg name="static_max_vel" default="$(arg fixed_v_max)"/>
+  <arg name="static_max_vel" default="4.00"/>
+  <arg name="static_max_acc" default="3.00"/>
   <arg name="action_owner" default="fixed"/>
   <arg name="output_dir" default=""/>
   <arg name="require_automated_acceptance" default="false"/>
@@ -24,6 +25,7 @@
     <arg name="fixed_v_max" value="$(arg fixed_v_max)"/>
     <arg name="v_max_min" value="$(arg v_max_min)"/>
     <arg name="static_max_vel" value="$(arg static_max_vel)"/>
+    <arg name="static_max_acc" value="$(arg static_max_acc)"/>
     <arg name="action_owner" value="$(arg action_owner)"/>
     <arg name="output_dir" value="$(arg output_dir)"/>
     <arg name="require_automated_acceptance" value="$(arg require_automated_acceptance)"/>

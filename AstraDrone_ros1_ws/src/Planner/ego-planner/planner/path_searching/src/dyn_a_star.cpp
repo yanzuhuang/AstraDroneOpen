@@ -122,6 +122,9 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
 {
     ros::Time time_1 = ros::Time::now();
     ++rounds_;
+    last_expanded_node_count_ = 0;
+    last_swept_collision_count_ = 0;
+    gridPath_.clear();
 
     step_size_ = step_size;
     inv_step_size_ = 1 / step_size;
@@ -162,6 +165,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
     while (!openSet_.empty())
     {
         num_iter++;
+        ++last_expanded_node_count_;
         current = openSet_.top();
         openSet_.pop();
 
@@ -210,6 +214,15 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
 
                     if (checkOccupancy(Index2Coord(neighborPtr->index)))
                     {
+                        continue;
+                    }
+
+                    GridMap::SweptCollisionResult swept_result;
+                    if (!grid_map_->isSweptSegmentFree(
+                            Index2Coord(current->index),
+                            Index2Coord(neighborPtr->index), &swept_result))
+                    {
+                        ++last_swept_collision_count_;
                         continue;
                     }
 
