@@ -1,0 +1,94 @@
+<launch>
+  <!-- Mission-profile wrapper only. All PX4/MAVROS/FAST-LIO/EGO wiring stays
+       owned by triple_tower_inspection.launch. -->
+  <arg name="multi_layer_enabled" default="false"/>
+  <arg name="enable_control" default="false"/>
+  <arg name="start_sim" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="start_rviz" default="true"/>
+  <arg name="start_rviz_diagnostics" default="true"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="world"
+       default="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
+  <arg name="d435_enabled" default="true"/>
+  <arg name="lidar_downsample" default="1"/>
+  <arg name="learning_speed_enabled" default="false"/>
+  <arg name="uav1_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/uav1.csv"/>
+  <arg name="uav2_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/uav2.csv"/>
+  <arg name="uav3_report_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/uav3.csv"/>
+  <arg name="evidence_csv_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/swarm.csv"/>
+  <arg name="evidence_summary_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/summary.json"/>
+  <arg name="evidence_candidate_file"
+       default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/candidates.jsonl"/>
+  <arg name="evidence_record_enabled" default="true"/>
+  <arg name="evidence_candidate_record_mode" default="full"/>
+
+  <include file="$(find astra_swarm_bringup)/launch/triple_tower_inspection.launch">
+    <arg name="multi_layer_enabled" value="$(arg multi_layer_enabled)"/>
+    <arg name="enable_control" value="$(arg enable_control)"/>
+    <arg name="start_sim" value="$(arg start_sim)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="start_rviz" value="$(arg start_rviz)"/>
+    <arg name="start_rviz_diagnostics"
+         value="$(arg start_rviz_diagnostics)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="d435_enabled" value="$(arg d435_enabled)"/>
+    <arg name="lidar_downsample" value="$(arg lidar_downsample)"/>
+    <!-- This deterministic mission profile must not opt in Learning Speed. -->
+    <arg name="learning_speed_enabled" value="false"/>
+    <arg name="task_config"
+         value="$(find astra_tower_mission)/config/sector_inspection.yaml"/>
+    <arg name="low_altitude_enabled" value="false"/>
+    <arg name="uav1_orbit_permission_enabled" value="true"/>
+    <arg name="uav2_orbit_permission_enabled" value="true"/>
+    <arg name="uav3_orbit_permission_enabled" value="true"/>
+    <arg name="uav1_orbit_speed_scale_enabled" value="true"/>
+    <arg name="uav2_orbit_speed_scale_enabled" value="true"/>
+    <arg name="uav3_orbit_speed_scale_enabled" value="true"/>
+    <arg name="scale_command_limits_with_orbit_speed_scale" value="true"/>
+    <arg name="entry_nominal_speed" value="0.60"/>
+    <arg name="orbit_nominal_speed" value="0.60"/>
+    <arg name="layer_transition_nominal_speed" value="0.30"/>
+    <arg name="max_vel" value="0.60"/>
+    <arg name="max_acc" value="0.50"/>
+    <arg name="bridge_max_velocity" value="0.60"/>
+    <arg name="bridge_max_acceleration" value="0.50"/>
+    <arg name="uav1_top_height" value="34.0"/>
+    <arg name="uav2_top_height" value="28.0"/>
+    <arg name="uav3_top_height" value="22.0"/>
+    <arg name="uav1_takeoff_height" value="4.0"/>
+    <arg name="uav2_takeoff_height" value="4.0"/>
+    <arg name="uav3_takeoff_height" value="4.0"/>
+    <arg name="uav1_staging_height" value="4.0"/>
+    <arg name="uav2_staging_height" value="4.0"/>
+    <arg name="uav3_staging_height" value="4.0"/>
+    <arg name="uav1_ascent_intermediate_heights" value="[10.0, 18.0]"/>
+    <arg name="uav2_ascent_intermediate_heights" value="[10.0, 18.0]"/>
+    <arg name="uav3_ascent_intermediate_heights" value="[10.0, 18.0]"/>
+    <arg name="uav1_descent_intermediate_heights" value="[18.0, 10.0]"/>
+    <arg name="uav2_descent_intermediate_heights" value="[18.0, 10.0]"/>
+    <arg name="uav3_descent_intermediate_heights" value="[18.0, 10.0]"/>
+    <arg name="uav1_candidate_height_offsets" value="[0.0]"/>
+    <arg name="uav2_candidate_height_offsets" value="[0.0]"/>
+    <arg name="uav3_candidate_height_offsets" value="[0.0]"/>
+    <arg name="entry_target_timeout" value="360.0"/>
+    <arg name="mission_overall_timeout" value="3600.0"/>
+    <arg name="uav1_report_file" value="$(arg uav1_report_file)"/>
+    <arg name="uav2_report_file" value="$(arg uav2_report_file)"/>
+    <arg name="uav3_report_file" value="$(arg uav3_report_file)"/>
+    <arg name="evidence_csv_file" value="$(arg evidence_csv_file)"/>
+    <arg name="evidence_summary_file" value="$(arg evidence_summary_file)"/>
+    <arg name="evidence_candidate_file"
+         value="$(arg evidence_candidate_file)"/>
+    <arg name="evidence_record_enabled"
+         value="$(arg evidence_record_enabled)"/>
+    <arg name="evidence_candidate_record_mode"
+         value="$(arg evidence_candidate_record_mode)"/>
+  </include>
+</launch>

@@ -55,6 +55,7 @@ struct BridgeConfig {
   bool auto_track_on_command{false};
   bool require_start_permission{false};
   bool require_orbit_speed_scale{false};
+  bool scale_command_limits_with_orbit_speed_scale{false};
   bool tower_yaw_override_enabled{false};
   double publish_rate{50.0};
   double prestream_duration{2.0};

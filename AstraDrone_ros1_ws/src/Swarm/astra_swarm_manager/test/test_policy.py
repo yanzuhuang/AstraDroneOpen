@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from astra_swarm_manager.policy import (
     advance_entry_owner,
     angular_separation_degrees,
+    completed_predecessor_handoff_allowed,
+    contiguous_role_segments,
     corridor_clear,
     directed_phase_gap_degrees,
     entry_ready_barrier,
@@ -14,6 +16,7 @@ from astra_swarm_manager.policy import (
     fixed_layers_clear,
     formation_phase_decision,
     formation_speed_scale_targets,
+    incremental_entry_corridor_selection,
     joint_entry_corridor_selection,
     landing_permissions,
     mission_geometry_clear,
@@ -22,11 +25,13 @@ from astra_swarm_manager.policy import (
     orbit_phase_hold_ids,
     orbit_release_allowed,
     predicted_pair_clear,
+    reconcile_entry_corridor_commitments,
     role_chain_hold_ids,
     rotate_xy_about_center,
     scheduled_takeoff_allowed,
     sequential_orbit_release_allowed,
     serialized_landing_permissions,
+    serialized_transition_permissions,
     slew_speed_scale,
     task_start_barrier_ready,
     transition_permissions,
@@ -41,6 +46,30 @@ class PolicyTest(unittest.TestCase):
         return (
             center[0] + radius * math.cos(angle),
             center[1] + radius * math.sin(angle))
+
+    @staticmethod
+    def entry_corridor(uid, angle_degrees, height, suffix="nominal",
+                       center=(0.0, 0.0)):
+        def radial(radius):
+            angle = math.radians(angle_degrees)
+            return (center[0] + radius * math.cos(angle),
+                    center[1] + radius * math.sin(angle), height)
+        path = [radial(18.0), radial(15.0), radial(12.5)]
+        return {
+            "id": "U{}_{}".format(uid, suffix),
+            "angle_deg": angle_degrees,
+            "pre_radius": 18.0,
+            "entry_radius": 15.0,
+            "orbit_staging_radius": 12.5,
+            "endpoint_valid": True,
+            "path_valid": True,
+            "ego_candidate_valid": True,
+            "clearance": 1.0,
+            "pre": path[0],
+            "entry": path[1],
+            "staging": path[2],
+            "path": path,
+        }
 
     def test_orbit_release_requires_measured_phase_from_every_peer(self):
         center = (-10.0, 20.0)
@@ -252,6 +281,196 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(reason, "OK_TIER_0")
         self.assertEqual(set(selected), {1, 2, 3})
 
+    def test_incremental_entry_leader_does_not_wait_for_followers(self):
+        order = [3, 2, 1]
+        candidates = {
+            3: [self.entry_corridor(3, 337.5, 22.0)],
+        }
+        starts = {
+            uid: self.entry_corridor(uid, angle, height)["pre"]
+            for uid, angle, height in (
+                (3, 337.5, 22.0), (2, 315.0, 28.0),
+                (1, 292.5, 34.0))}
+        selected, grants, reason, diagnostics = (
+            incremental_entry_corridor_selection(
+                candidates, {}, order,
+                {3: 337.5, 2: 315.0, 1: 292.5}, (0.0, 0.0),
+                starts, 1))
+        self.assertEqual(set(selected), {3})
+        self.assertEqual(grants, {3: True, 2: False, 1: False})
+        self.assertEqual(reason, "UAV3_OK_TIER_0")
+        self.assertEqual(diagnostics["committed_role_order"], [3])
+
+    def test_incremental_uav2_uses_committed_uav3_corridor_and_trajectory(self):
+        order = [3, 2, 1]
+        leader = self.entry_corridor(3, 337.5, 22.0)
+        follower = self.entry_corridor(2, 315.0, 28.0)
+        starts = {
+            3: leader["pre"], 2: follower["pre"],
+            1: self.entry_corridor(1, 292.5, 34.0)["pre"],
+        }
+        nominal = {3: 337.5, 2: 315.0, 1: 292.5}
+
+        # The selected UAV3 corridor remains fixed, but its current predicted
+        # trajectory overlaps UAV2's proposed ingress and must reject UAV2.
+        selected, grants, reason, diagnostics = (
+            incremental_entry_corridor_selection(
+                {2: [follower]}, {3: leader}, order, nominal,
+                (0.0, 0.0), starts, 1,
+                committed_prediction_paths={3: follower["path"]}))
+        self.assertEqual(selected, {3: leader})
+        self.assertEqual(grants, {3: True, 2: False, 1: False})
+        self.assertEqual(reason,
+                         "NO_JOINT_SAFE_COMBINATION_ALL_TIERS")
+        self.assertGreater(diagnostics["tiers"]["0"]["conflict_rejected"],
+                           0)
+
+        selected, grants, reason, _ = incremental_entry_corridor_selection(
+            {2: [follower]}, {3: leader}, order, nominal,
+            (0.0, 0.0), starts, 1,
+            committed_prediction_paths={3: leader["path"]})
+        self.assertEqual(set(selected), {3, 2})
+        self.assertEqual(selected[3]["id"], leader["id"])
+        self.assertEqual(grants, {3: True, 2: True, 1: False})
+        self.assertEqual(reason, "UAV2_OK_TIER_0")
+
+    def test_incremental_uav2_rejects_crossing_committed_uav3_corridor(self):
+        order = [3, 2, 1]
+        leader = self.entry_corridor(3, 337.5, 22.0)
+        follower = self.entry_corridor(2, 315.0, 28.0)
+        leader["path"] = [(0.0, 0.0, 22.0), (10.0, 10.0, 22.0)]
+        follower["path"] = [(0.0, 10.0, 28.0), (10.0, 0.0, 28.0)]
+        starts = {3: leader["path"][0], 2: follower["path"][0],
+                  1: self.entry_corridor(1, 292.5, 34.0)["pre"]}
+        selected, grants, reason, diagnostics = (
+            incremental_entry_corridor_selection(
+                {2: [follower]}, {3: leader}, order,
+                {3: 337.5, 2: 315.0, 1: 292.5}, (0.0, 0.0),
+                starts, 1,
+                committed_prediction_paths={
+                    3: [(30.0, 30.0, 22.0), (31.0, 31.0, 22.0)]}))
+        self.assertEqual(selected, {3: leader})
+        self.assertEqual(grants, {3: True, 2: False, 1: False})
+        self.assertEqual(reason,
+                         "NO_JOINT_SAFE_COMBINATION_ALL_TIERS")
+        self.assertGreater(diagnostics["tiers"]["0"]["crossing_rejected"],
+                           0)
+
+    def test_incremental_uav1_join_failure_preserves_prefix_until_global_inhibit(self):
+        order = [3, 2, 1]
+        leader = self.entry_corridor(3, 337.5, 22.0)
+        middle = self.entry_corridor(2, 315.0, 28.0)
+        trailing = self.entry_corridor(1, 292.5, 34.0)
+        committed = {3: leader, 2: middle}
+        starts = {3: leader["pre"], 2: middle["pre"],
+                  1: trailing["pre"]}
+        nominal = {3: 337.5, 2: 315.0, 1: 292.5}
+        predictions = {3: leader["path"], 2: middle["path"]}
+
+        selected, grants, reason, _ = incremental_entry_corridor_selection(
+            {}, committed, order, nominal, (0.0, 0.0), starts, 1,
+            committed_prediction_paths=predictions)
+        self.assertEqual(selected, committed)
+        self.assertEqual(grants, {3: True, 2: True, 1: False})
+        self.assertEqual(reason, "WAITING_FOR_UAV1_CANDIDATES")
+
+        selected, grants, reason, _ = incremental_entry_corridor_selection(
+            {1: [trailing]}, committed, order, nominal, (0.0, 0.0),
+            starts, 1, committed_prediction_paths=predictions)
+        self.assertEqual(set(selected), {3, 2, 1})
+        self.assertEqual(grants, {3: True, 2: True, 1: True})
+        self.assertEqual(reason, "UAV1_OK_TIER_0")
+
+        selected, grants, reason, _ = incremental_entry_corridor_selection(
+            {}, committed, order, nominal, (0.0, 0.0), starts, 1,
+            committed_prediction_paths=predictions, globally_clear=False)
+        self.assertEqual(selected, committed)
+        self.assertEqual(grants, {3: False, 2: False, 1: False})
+        self.assertEqual(reason, "GLOBAL_SAFETY_INHIBIT")
+
+    def test_generation_reconciliation_preserves_entered_predecessor(self):
+        order = [3, 2, 1]
+        leader = self.entry_corridor(3, 337.5, 22.0, "G1")
+        middle_g1 = self.entry_corridor(2, 315.0, 28.0, "G1")
+        trailing_g1 = self.entry_corridor(1, 292.5, 34.0, "G1")
+        selection = {3: leader, 2: middle_g1, 1: trailing_g1}
+        commits = {
+            uid: {
+                "selected_candidate_id": selection[uid]["id"],
+                "candidate_generation": 1,
+                "committed": True,
+                "entered": uid == 3,
+                "released": uid == 3,
+                "mission_lock_observed": True,
+            }
+            for uid in order
+        }
+        reconciled, states, revoked, reason = (
+            reconcile_entry_corridor_commitments(
+                selection, commits, order,
+                {3: 1, 2: 2, 1: 1},
+                {3: {leader["id"]},
+                 2: {self.entry_corridor(2, 315.0, 28.0, "G2")["id"]},
+                 1: {trailing_g1["id"]}},
+                {3: leader["id"], 2: "", 1: trailing_g1["id"]},
+                safely_entered_ids={3}, released_ids={3}))
+        self.assertEqual(set(reconciled), {3})
+        self.assertEqual(revoked, [2, 1])
+        self.assertEqual(reason, "UAV2_CANDIDATE_GENERATION_CHANGED")
+        self.assertTrue(states[3]["committed"])
+        self.assertTrue(states[3]["entered"])
+        self.assertTrue(states[3]["released"])
+        self.assertFalse(states[2]["committed"])
+        self.assertFalse(states[1]["committed"])
+
+    def test_generation_reconciliation_reselects_g2_then_rebuilds_uav1(self):
+        order = [3, 2, 1]
+        nominal = {3: 337.5, 2: 315.0, 1: 292.5}
+        leader = self.entry_corridor(3, 337.5, 22.0, "G1")
+        middle_g2 = self.entry_corridor(2, 315.0, 28.0, "G2")
+        trailing_g1 = self.entry_corridor(1, 292.5, 34.0, "G1")
+        starts = {3: leader["pre"], 2: middle_g2["pre"],
+                  1: trailing_g1["pre"]}
+        selected, grants, reason, _ = incremental_entry_corridor_selection(
+            {2: [middle_g2]}, {3: leader}, order, nominal, (0.0, 0.0),
+            starts, 1, committed_prediction_paths={3: leader["path"]})
+        self.assertEqual([selected[uid]["id"] for uid in (3, 2)],
+                         [leader["id"], middle_g2["id"]])
+        self.assertEqual(grants, {3: True, 2: True, 1: False})
+        self.assertEqual(reason, "UAV2_OK_TIER_0")
+
+        selected, grants, reason, _ = incremental_entry_corridor_selection(
+            {1: [trailing_g1]}, selected, order, nominal, (0.0, 0.0),
+            starts, 1, committed_prediction_paths={
+                3: leader["path"], 2: middle_g2["path"]})
+        self.assertEqual([selected[uid]["id"] for uid in order],
+                         [leader["id"], middle_g2["id"], trailing_g1["id"]])
+        self.assertEqual(grants, {3: True, 2: True, 1: True})
+        self.assertEqual(reason, "UAV1_OK_TIER_0")
+
+    def test_generation_reconciliation_detects_disappeared_locked_candidate(self):
+        middle = self.entry_corridor(2, 315.0, 28.0, "G1")
+        leader = self.entry_corridor(3, 337.5, 22.0, "G1")
+        selection = {3: leader, 2: middle}
+        commits = {
+            3: {"selected_candidate_id": leader["id"],
+                "candidate_generation": 1, "committed": True,
+                "entered": True, "released": True,
+                "mission_lock_observed": True},
+            2: {"selected_candidate_id": middle["id"],
+                "candidate_generation": 1, "committed": True,
+                "entered": False, "released": False,
+                "mission_lock_observed": True},
+        }
+        reconciled, _, revoked, reason = (
+            reconcile_entry_corridor_commitments(
+                selection, commits, [3, 2, 1], {3: 1, 2: 1},
+                {3: {leader["id"]}, 2: set()},
+                {3: leader["id"], 2: ""}, {3}, {3}))
+        self.assertEqual(set(reconciled), {3})
+        self.assertEqual(revoked, [2])
+        self.assertEqual(reason, "UAV2_LOCKED_CANDIDATE_DISAPPEARED")
+
     def test_orbit_staging_barrier_accepts_supervised_position_latch(self):
         def state(uid):
             return SimpleNamespace(
@@ -292,6 +511,52 @@ class PolicyTest(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertLess(speed, 0.0)
         self.assertFalse(conditions["leader_forward_stable"])
+
+    def test_completed_predecessor_handoff_restores_ordered_liveness(self):
+        leader = (20.0, 0.0, 22.0)
+        middle = (0.0, -20.0, 28.0)
+        trailing = (-20.0, 0.0, 34.0)
+        phase_allowed, _, _, phase_conditions = (
+            sequential_orbit_release_allowed(
+                middle[:2], leader[:2], (0.0, 0.0), (0.0, 0.0), 1,
+                65.0, 70.0, 0.03, True, True, True, True))
+        self.assertFalse(phase_allowed)
+        self.assertFalse(phase_conditions["leader_forward_stable"])
+        allowed, conditions = completed_predecessor_handoff_allowed(
+            middle, leader, True, True, True, True, True, True, 3.0, 1.5)
+        self.assertTrue(allowed)
+        self.assertTrue(all(conditions.values()))
+        released = {3}
+        if allowed:
+            released.add(2)
+        self.assertEqual(released, {3, 2})
+
+        # UAV1 remains downstream until UAV2 itself has completed; role order
+        # is not bypassed by the handoff path.
+        allowed, conditions = completed_predecessor_handoff_allowed(
+            trailing, middle, False, True, True, True, True, True, 3.0, 1.5)
+        self.assertFalse(allowed)
+        self.assertFalse(conditions["predecessor_orbit_complete"])
+        self.assertNotIn(1, released)
+        allowed, _ = completed_predecessor_handoff_allowed(
+            trailing, middle, True, True, True, True, True, True, 3.0, 1.5)
+        self.assertTrue(allowed)
+        released.add(1)
+        self.assertEqual([uid for uid in (3, 2, 1) if uid in released],
+                         [3, 2, 1])
+
+    def test_completed_predecessor_handoff_keeps_prediction_and_distance_gates(self):
+        allowed, conditions = completed_predecessor_handoff_allowed(
+            (0.0, 0.0, 28.0), (0.0, 0.0, 22.0),
+            True, True, True, True, False, True, 3.0, 1.5)
+        self.assertFalse(allowed)
+        self.assertFalse(conditions["predicted_clear"])
+        allowed, conditions = completed_predecessor_handoff_allowed(
+            (0.0, 0.0, 23.0), (0.0, 0.0, 22.0),
+            True, True, True, True, True, True, 3.0, 1.5)
+        self.assertFalse(allowed)
+        self.assertFalse(conditions["current_3d_clear"])
+        self.assertFalse(conditions["current_ellipsoid_clear"])
 
     def test_role_bound_phase_never_infers_uav1_as_leader(self):
         positions = {
@@ -385,6 +650,16 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(role_chain_hold_ids([3, 2, 1], 1), set())
         self.assertEqual(role_chain_hold_ids([3, 2, 1], 99), set())
 
+    def test_transition_never_bridges_over_missing_fixed_role(self):
+        self.assertEqual(
+            contiguous_role_segments([3, 2, 1], {2, 1}), [[2, 1]])
+        self.assertEqual(
+            contiguous_role_segments([3, 2, 1], {3, 1}), [[3], [1]])
+        self.assertEqual(
+            contiguous_role_segments([3, 2, 1], {3, 2}), [[3, 2]])
+        self.assertEqual(
+            contiguous_role_segments([3, 2, 1], {3, 2, 1}), [[3, 2, 1]])
+
     def test_entry_ready_barrier_reports_late_vehicle(self):
         def state(phase, height=3.0, speed=0.0):
             return SimpleNamespace(
@@ -395,7 +670,7 @@ class PolicyTest(unittest.TestCase):
                   3: state("ENTRY_GATE_TRANSIT")}
         ready, reasons = entry_ready_barrier(
             [1, 2, 3], states, {1: True, 2: True, 3: True},
-            3.0, 0.35, 0.2, True)
+            [3.0, 3.0, 3.0], 0.35, 0.2, True)
         self.assertFalse(ready)
         self.assertEqual(reasons[1], "READY")
         self.assertEqual(reasons[3],
@@ -403,8 +678,26 @@ class PolicyTest(unittest.TestCase):
         states[3] = state("ENTRY_READY")
         ready, reasons = entry_ready_barrier(
             [1, 2, 3], states, {1: True, 2: True, 3: True},
-            3.0, 0.35, 0.2, True)
+            [3.0, 3.0, 3.0], 0.35, 0.2, True)
         self.assertTrue(ready)
+
+    def test_entry_ready_uses_each_uav_height(self):
+        def state(height):
+            return SimpleNamespace(
+                mission_phase="ENTRY_READY", current_height=height,
+                flight_state="HOVER_READY",
+                velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0))
+        states = {1: state(34.0), 2: state(28.0), 3: state(22.0)}
+        ready, reasons = entry_ready_barrier(
+            [1, 2, 3], states, {1: True, 2: True, 3: True},
+            [34.0, 28.0, 22.0], 0.35, 0.2, True)
+        self.assertTrue(ready)
+        self.assertEqual(reasons, {1: "READY", 2: "READY", 3: "READY"})
+        ready, reasons = entry_ready_barrier(
+            [1, 2, 3], states, {1: True, 2: True, 3: True},
+            [34.0, 28.0, 34.0], 0.35, 0.2, True)
+        self.assertFalse(ready)
+        self.assertEqual(reasons[3], "HEIGHT_NOT_READY")
 
     def test_projects_peer_angle_for_entry_eta(self):
         projected = rotate_xy_about_center(
@@ -588,6 +881,116 @@ class PolicyTest(unittest.TestCase):
             "WAIT_TRANSITION_PERMISSION", "NAVIGATING",
             24.1, 24.0, 0.4, True)
         self.assertEqual((p1, p2, confirmed), (True, False, True))
+
+    def test_three_uav_transition_owner_is_sticky_and_ordered(self):
+        def state(phase, height, speed=0.0):
+            return SimpleNamespace(
+                mission_phase=phase, current_height=height,
+                velocity=SimpleNamespace(x=speed, y=0.0, z=0.0))
+        states = {
+            3: state("WAIT_TRANSITION_PERMISSION", 22.0),
+            2: state("WAIT_TRANSITION_PERMISSION", 28.0),
+            1: state("WAIT_TRANSITION_PERMISSION", 34.0),
+        }
+        health = {1: True, 2: True, 3: True}
+        targets = {1: 30.0, 2: 24.0, 3: 18.0}
+        grants, owner, started, completed, _ = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, True))
+        self.assertEqual(owner, 3)
+        self.assertEqual(grants, {3: True, 2: False, 1: False})
+
+        states[3] = state("LAYER_TRANSITION", 20.0)
+        grants, owner, started, completed, _ = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, True,
+                owner, started, completed))
+        self.assertEqual(owner, 3)
+        self.assertEqual(started, {3})
+        self.assertEqual(grants, {3: True, 2: False, 1: False})
+
+        grants, stale_owner, stale_started, stale_completed, reasons = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, False,
+                owner, started, completed))
+        self.assertEqual(stale_owner, 3)
+        self.assertEqual(stale_started, {3})
+        self.assertEqual(stale_completed, set())
+        self.assertEqual(grants, {3: False, 2: False, 1: False})
+        self.assertEqual(reasons[3], "STALE_OR_SAFETY_INVALID")
+
+        states[3] = state("EVALUATING", 18.1)
+        grants, owner, started, completed, _ = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, True,
+                owner, started, completed))
+        self.assertEqual(completed, {3})
+        self.assertEqual(owner, 2)
+        self.assertEqual(grants, {3: False, 2: True, 1: False})
+
+        states[2] = state("LAYER_TRANSITION", 26.0)
+        grants, owner, started, completed, _ = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, True,
+                owner, started, completed))
+        states[2] = state("TARGET_LOCKED", 24.0)
+        grants, owner, started, completed, _ = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, True,
+                owner, started, completed))
+        self.assertEqual(completed, {3, 2})
+        self.assertEqual(owner, 1)
+        self.assertEqual(grants, {3: False, 2: False, 1: True})
+
+    def test_transition_owner_requires_stable_target_and_fails_closed(self):
+        def state(phase, height, speed=0.0):
+            return SimpleNamespace(
+                mission_phase=phase, current_height=height,
+                velocity=SimpleNamespace(x=speed, y=0.0, z=0.0))
+        states = {
+            3: state("LAYER_TRANSITION", 20.0),
+            2: state("WAIT_TRANSITION_PERMISSION", 28.0),
+            1: state("WAIT_TRANSITION_PERMISSION", 34.0),
+        }
+        health = {1: True, 2: True, 3: True}
+        targets = {1: 30.0, 2: 24.0, 3: 18.0}
+        grants, owner, started, completed, _ = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, True,
+                3, {3}, set()))
+        states[3] = state("EVALUATING", 18.0, speed=0.3)
+        grants, owner, started, completed, reasons = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, health, targets, 0.35, 0.2, True,
+                owner, started, completed))
+        self.assertEqual(owner, 3)
+        self.assertEqual(completed, set())
+        self.assertEqual(reasons[3], "OWNER_AWAITING_STABLE_TARGET")
+        self.assertFalse(any(grants.values()))
+        health[2] = False
+        grants, owner, _, _, reasons = serialized_transition_permissions(
+            [3, 2, 1], states, health, targets, 0.35, 0.2, True,
+            owner, started, completed)
+        self.assertEqual(owner, 3)
+        self.assertFalse(any(grants.values()))
+        self.assertEqual(reasons[1], "STALE_OR_SAFETY_INVALID")
+
+    def test_single_layer_transition_scheduler_is_disabled(self):
+        states = {
+            uid: SimpleNamespace(
+                mission_phase="WAIT_EXIT_PERMISSION", current_height=3.0,
+                velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0))
+            for uid in (1, 2, 3)}
+        grants, owner, started, completed, reasons = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, {uid: True for uid in states},
+                {1: 3.0, 2: 3.0, 3: 3.0}, 0.35, 0.2, True,
+                enabled=False))
+        self.assertFalse(any(grants.values()))
+        self.assertEqual(owner, 0)
+        self.assertEqual(started, set())
+        self.assertEqual(completed, set())
+        self.assertEqual(reasons[3], "MULTI_LAYER_DISABLED")
 
     def test_climb_through_final_height_is_not_layer_confirmation(self):
         p1, p2, confirmed = transition_permissions(

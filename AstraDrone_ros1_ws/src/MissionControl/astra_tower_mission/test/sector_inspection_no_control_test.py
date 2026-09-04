@@ -43,6 +43,8 @@ class SectorInspectionNoControl(unittest.TestCase):
         self.layer_transition_positions = []
         self.normal_return_positions = []
         self.exit_gate_positions = []
+        self.home_overhead_positions = []
+        self.segmented_descent_positions = []
         self.face_tower_modes = []
         self.mavros_setpoints = 0
         self.position = [12.0, 0.0, 4.0]
@@ -148,7 +150,22 @@ class SectorInspectionNoControl(unittest.TestCase):
                     message.pose.position.y,
                     message.pose.position.z,
                 ))
-            if state == "GO_TO_EXIT_GATE":
+            if state == "HOME_OVERHEAD_TRANSIT":
+                self.home_overhead_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
+            if state == "SEGMENTED_HOME_DESCENT":
+                self.segmented_descent_positions.append((
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    message.pose.position.z,
+                ))
+            if (state == "GO_TO_EXIT_GATE" or
+                    (abs(message.pose.position.z - 22.0) < 0.05 and
+                     abs(math.hypot(message.pose.position.x,
+                                    message.pose.position.y) - 15.0) < 0.1)):
                 self.exit_gate_positions.append((
                     message.pose.position.x,
                     message.pose.position.y,
@@ -296,7 +313,16 @@ class SectorInspectionNoControl(unittest.TestCase):
             self.assertEqual(self.return_calls, 1)
             self.assertNotIn("NORMAL_RETURN", self.states)
             self.assertIn("GO_TO_EXIT_GATE", self.states)
+            self.assertIn("HOME_OVERHEAD_TRANSIT", self.states)
+            self.assertIn("SEGMENTED_HOME_DESCENT", self.states)
             self.assertNotIn("RETURN_EGRESS", self.states)
+            self.assertGreaterEqual(len(self.exit_gate_positions), 1)
+            self.assertAlmostEqual(self.exit_gate_positions[-1][0],
+                                   selected_entry[0], places=2)
+            self.assertAlmostEqual(self.exit_gate_positions[-1][1],
+                                   selected_entry[1], places=2)
+            self.assertAlmostEqual(self.exit_gate_positions[-1][2],
+                                   22.0, places=2)
             self.assertIn("LAYER_TRANSITION", self.states)
             self.assertEqual(self.states.count("STAGING_POINT"), 1)
             self.assertEqual(self.sector_failure_goal_count, 2)
@@ -308,6 +334,21 @@ class SectorInspectionNoControl(unittest.TestCase):
             self.assertGreaterEqual(
                 self.states.count("LAYER_TRANSITION"), 3)
             self.assertEqual(len(self.normal_return_positions), 0)
+            self.assertEqual(len(self.home_overhead_positions), 1)
+            self.assertAlmostEqual(
+                self.home_overhead_positions[0][0], 12.0, places=2)
+            self.assertAlmostEqual(
+                self.home_overhead_positions[0][1], 0.0, places=2)
+            self.assertAlmostEqual(
+                self.home_overhead_positions[0][2], 22.0, places=2)
+            self.assertEqual(
+                [round(item[2], 2)
+                 for item in self.segmented_descent_positions],
+                [18.0, 10.0],
+            )
+            for item in self.segmented_descent_positions:
+                self.assertAlmostEqual(item[0], 12.0, places=2)
+                self.assertAlmostEqual(item[1], 0.0, places=2)
             final_layer_gate_positions = [
                 item for item in self.goal_positions
                 if abs(item[2] - 22.0) < 0.05 and

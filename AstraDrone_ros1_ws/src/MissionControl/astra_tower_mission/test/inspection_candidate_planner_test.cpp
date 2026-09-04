@@ -118,6 +118,67 @@ TEST(ClearanceSemantics, CurrentPreEntryInflatedDistancePoint967Passes) {
   EXPECT_FALSE(mappedEndpointClear(pre_entry, {voxel}, 1.0));
 }
 
+TEST(EntryStaticSemantics, SoftCoarseObstacleIsRiskButNotHardBlockage) {
+  CandidatePoint endpoint = candidate(8.0, 0.0, 5.0);
+  StaticObstacle coarse;
+  coarse.id = "tower_crane";
+  coarse.x = endpoint.x;
+  coarse.y = endpoint.y;
+  coarse.z_min = 0.0;
+  coarse.z_max = 35.0;
+  coarse.half_extent_x = 3.0;
+  coarse.half_extent_y = 10.0;
+
+  EXPECT_TRUE(pointInObstacle(
+      obstacleAtDistance(endpoint, 0.0), coarse, 2.0));
+  EXPECT_TRUE(hardStaticEndpointBlockage(
+      endpoint, {coarse}, "radio_tower", 2.0, false).empty());
+  EXPECT_EQ(hardStaticEndpointBlockage(
+                endpoint, {coarse}, "radio_tower", 2.0, true),
+            "tower_crane");
+}
+
+TEST(ExitStaticSemantics, ExplicitlyHardCoarseObstacleStillBlocks) {
+  CandidatePoint endpoint = candidate(8.0, 0.0, 5.0);
+  StaticObstacle hard_obstacle;
+  hard_obstacle.id = "hard_building";
+  hard_obstacle.x = endpoint.x;
+  hard_obstacle.y = endpoint.y;
+  hard_obstacle.z_min = 0.0;
+  hard_obstacle.z_max = 20.0;
+  hard_obstacle.half_extent_x = 1.0;
+  hard_obstacle.half_extent_y = 1.0;
+
+  EXPECT_EQ(hardStaticEndpointBlockage(
+                endpoint, {hard_obstacle}, "radio_tower", 1.0, true),
+            "hard_building");
+  EXPECT_TRUE(hardStaticEndpointBlockage(
+      endpoint, {hard_obstacle}, "radio_tower", 1.0, false).empty());
+}
+
+TEST(EntryStaticSemantics, TowerBodyRemainsHardWhenCoarseGeometryIsSoft) {
+  CandidatePoint endpoint = candidate(1.0, 0.0, 5.0);
+  StaticObstacle tower;
+  tower.id = "radio_tower";
+  tower.x = 0.0;
+  tower.y = 0.0;
+  tower.radius = 2.0;
+  tower.z_min = 0.0;
+  tower.z_max = 40.0;
+
+  EXPECT_EQ(hardStaticEndpointBlockage(
+                endpoint, {tower}, "radio_tower", 1.0, false),
+            "radio_tower");
+}
+
+TEST(EntryStaticSemantics, LiveInflatedOccupancyRemainsHard) {
+  CandidatePoint endpoint = candidate(8.0, 0.0, 5.0);
+  const geometry_msgs::Point occupied = obstacleAtDistance(endpoint, 0.4);
+  EXPECT_FALSE(mappedEndpointClear(endpoint, {occupied}, 0.5));
+  EXPECT_TRUE(hardStaticEndpointBlockage(
+      endpoint, {}, "radio_tower", 2.0, false).empty());
+}
+
 TEST(ClearanceSemantics, EntryGateAndExitGateUseInflatedMargin) {
   RouteConfig route;
   route.center_x = 0.0;
@@ -156,6 +217,35 @@ TEST(ClearanceSemantics, EntryGateAndExitGateUseInflatedMargin) {
   EXPECT_TRUE(mappedEndpointClear(
       exit_gate, {obstacleAtDistance(exit_gate, 0.8)},
       mappedTaskClearance(config)));
+}
+
+TEST(ClearanceSemantics, CorridorDiagnosticUsesTheAuthoritativeSafetyCheck) {
+  geometry_msgs::Point from;
+  geometry_msgs::Point to;
+  to.z = 10.0;
+  geometry_msgs::Point blocking_point;
+  blocking_point.x = 0.3;
+  blocking_point.z = 5.0;
+
+  const CorridorCheckResult blocked =
+      lineCorridorCheck(from, to, {blocking_point}, {}, 0.5, 0.5);
+  EXPECT_FALSE(blocked.safe);
+  EXPECT_TRUE(blocked.has_blocking_point);
+  EXPECT_DOUBLE_EQ(blocked.blocking_point.x, blocking_point.x);
+  EXPECT_DOUBLE_EQ(blocked.blocking_point.y, blocking_point.y);
+  EXPECT_DOUBLE_EQ(blocked.blocking_point.z, blocking_point.z);
+  EXPECT_NEAR(blocked.blocking_point_to_corridor_distance, 0.3, 1.0e-9);
+  EXPECT_EQ(blocked.safe,
+            lineCorridorSafe(from, to, {blocking_point}, {}, 0.5, 0.5));
+
+  blocking_point.x = 0.8;
+  const CorridorCheckResult clear =
+      lineCorridorCheck(from, to, {blocking_point}, {}, 0.5, 0.5);
+  EXPECT_TRUE(clear.safe);
+  EXPECT_FALSE(clear.has_blocking_point);
+  EXPECT_TRUE(std::isinf(clear.blocking_point_to_corridor_distance));
+  EXPECT_EQ(clear.safe,
+            lineCorridorSafe(from, to, {blocking_point}, {}, 0.5, 0.5));
 }
 
 TEST(InspectionCandidatePlanner, GoalInsideKnownObstacleIsRejected) {
@@ -1490,6 +1580,77 @@ TEST(InspectionCandidatePlanner, ExplicitVerticalGoalsKeepXYAndRequestedHeights)
   for (const auto& goal : descent) {
     EXPECT_DOUBLE_EQ(goal.x, reference.x);
     EXPECT_DOUBLE_EQ(goal.y, reference.y);
+  }
+}
+
+TEST(InspectionCandidatePlanner, ThreeUavAscentProfilesUseSharedIntermediateHeights) {
+  CandidatePoint reference;
+  reference.x = -4.0;
+  reference.y = 8.0;
+  reference.z = 4.0;
+  for (const double final_height : {34.0, 28.0, 22.0}) {
+    const auto ascent = buildVerticalGoalsAtHeights(
+        reference, {10.0, 18.0, final_height}, "THREE_UAV_ASCENT");
+    ASSERT_EQ(ascent.size(), 3U);
+    EXPECT_DOUBLE_EQ(ascent[0].z, 10.0);
+    EXPECT_DOUBLE_EQ(ascent[1].z, 18.0);
+    EXPECT_DOUBLE_EQ(ascent[2].z, final_height);
+    for (const auto& goal : ascent) {
+      EXPECT_DOUBLE_EQ(goal.x, reference.x);
+      EXPECT_DOUBLE_EQ(goal.y, reference.y);
+    }
+  }
+}
+
+TEST(InspectionCandidatePlanner, ThreeUavHomeOverheadGoalsKeepHomeXYAndHeight) {
+  const std::vector<geometry_msgs::Point> homes = [] {
+    std::vector<geometry_msgs::Point> values(3U);
+    values[0].x = 0.0;
+    values[0].y = 0.0;
+    values[0].z = 4.0;
+    values[1].x = 4.0;
+    values[1].y = 0.0;
+    values[1].z = 4.0;
+    values[2].x = 8.0;
+    values[2].y = 0.0;
+    values[2].z = 4.0;
+    return values;
+  }();
+  const std::vector<double> heights{34.0, 28.0, 22.0};
+  for (std::size_t index = 0U; index < homes.size(); ++index) {
+    const auto overhead = buildHomeOverheadGoal(
+        homes[index], heights[index], "UAV_HOME_OVERHEAD");
+    EXPECT_EQ(overhead.id, "UAV_HOME_OVERHEAD");
+    EXPECT_DOUBLE_EQ(overhead.x, homes[index].x);
+    EXPECT_DOUBLE_EQ(overhead.y, homes[index].y);
+    EXPECT_DOUBLE_EQ(overhead.z, heights[index]);
+    EXPECT_FALSE(overhead.face_tower);
+    EXPECT_FALSE(overhead.require_arrival_yaw);
+  }
+}
+
+TEST(InspectionCandidatePlanner, ThreeUavReturnDescentProfilesAreFilteredAndStrict) {
+  const std::vector<double> configured{40.0, 10.0, 18.0, 18.0, 3.0};
+  for (const double current_height : {34.0, 28.0, 22.0}) {
+    const auto heights = deriveDescendingIntermediateHeights(
+        current_height, 4.0, configured);
+    ASSERT_EQ(heights, (std::vector<double>{18.0, 10.0}));
+    CandidatePoint overhead;
+    overhead.x = 3.0;
+    overhead.y = -2.0;
+    overhead.z = current_height;
+    const auto descent = buildVerticalGoalsAtHeights(
+        overhead, heights, "SEGMENTED_HOME_DESCENT");
+    ASSERT_EQ(descent.size(), 2U);
+    EXPECT_DOUBLE_EQ(descent[0].z, 18.0);
+    EXPECT_DOUBLE_EQ(descent[1].z, 10.0);
+    EXPECT_GT(current_height, descent[0].z);
+    EXPECT_GT(descent[0].z, descent[1].z);
+    EXPECT_GT(descent[1].z, 4.0);
+    for (const auto& goal : descent) {
+      EXPECT_DOUBLE_EQ(goal.x, overhead.x);
+      EXPECT_DOUBLE_EQ(goal.y, overhead.y);
+    }
   }
 }
 

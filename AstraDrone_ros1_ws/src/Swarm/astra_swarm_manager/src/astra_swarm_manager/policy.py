@@ -185,7 +185,7 @@ def joint_entry_corridor_selection(
     inter-vehicle clearance.
     """
     ids = [int(uid) for uid in ordered_uav_ids]
-    if (len(ids) < 2 or len(ids) != len(set(ids)) or direction not in (-1, 1)
+    if (not ids or len(ids) != len(set(ids)) or direction not in (-1, 1)
             or any(uid not in candidates_by_uid or not candidates_by_uid[uid]
                    for uid in ids)
             or any(uid not in nominal_angles or uid not in starts
@@ -324,7 +324,16 @@ def joint_entry_corridor_selection(
                 for outcome in outcomes:
                     outcome["crossing_rejected"] += 1
                 continue
-            samples = {uid: _sample_polyline(paths[uid]) for uid in ids}
+            # A committed predecessor may already be flying its selected
+            # corridor.  Keep its latched corridor for crossing checks, while
+            # using its current-pose/trajectory projection for time-aligned
+            # separation against the joining role.
+            predicted_paths = {
+                uid: [tuple(point) for point in selected[uid].get(
+                    "predicted_path", paths[uid])]
+                for uid in ids}
+            samples = {
+                uid: _sample_polyline(predicted_paths[uid]) for uid in ids}
             minimum_pair_distance = float("inf")
             conflict = False
             for first, second in combinations(ids, 2):
@@ -458,6 +467,176 @@ def joint_entry_corridor_selection(
     diagnostics["selected_rank"] = selected_metrics["rank"]
     diagnostics["result"] = "OK_TIER_{}".format(selected_tier)
     return best, diagnostics["result"], diagnostics
+
+
+def incremental_entry_corridor_selection(
+        candidates_by_uid, committed_selection, ordered_uav_ids,
+        nominal_angles, center, starts, direction,
+        minimum_gap_degrees=20.0, maximum_gap_degrees=30.0,
+        hard_clearance=0.5, minimum_3d=3.0, swarm_clearance=1.5,
+        angular_window_degrees=12.0, nominal_orbit_radius=12.5,
+        orbit_radius_step=2.0, committed_prediction_paths=None,
+        globally_clear=True):
+    """Latch one ENTRY role at a time while preserving the committed prefix.
+
+    The existing joint selector remains the sole geometry/safety evaluator.
+    Already committed roles are supplied as singleton candidate sets, so a
+    later role can never replace an earlier corridor. Their current predicted
+    trajectories augment (but do not replace) the committed-corridor crossing
+    checks. A missing or rejected later role retains prior grants; only a
+    global safety failure revokes every permission.
+    """
+    order = [int(uid) for uid in ordered_uav_ids]
+    committed = dict(committed_selection or {})
+    grants = {uid: False for uid in order}
+    if not order or len(order) != len(set(order)):
+        return committed, grants, "INVALID_ROLE_ORDER", {}
+    committed_ids = set(committed)
+    expected_prefix = set(order[:len(committed_ids)])
+    if (committed_ids != expected_prefix
+            or any(uid not in nominal_angles or uid not in starts
+                   for uid in order[:min(len(order), len(committed_ids) + 1)])):
+        return committed, grants, "INVALID_COMMITTED_ROLE_PREFIX", {}
+    if not globally_clear:
+        return committed, grants, "GLOBAL_SAFETY_INHIBIT", {}
+    for uid in committed_ids:
+        grants[uid] = True
+    if len(committed_ids) == len(order):
+        return committed, grants, "ALL_ROLES_COMMITTED", {
+            "committed_role_order": list(order)}
+
+    next_uid = order[len(committed_ids)]
+    next_candidates = list(candidates_by_uid.get(next_uid, []))
+    if not next_candidates:
+        return committed, grants, "WAITING_FOR_UAV{}_CANDIDATES".format(
+            next_uid), {"next_role": next_uid,
+                        "committed_role_order": order[:len(committed_ids)]}
+
+    prediction_paths = committed_prediction_paths or {}
+    if any(uid not in prediction_paths or not prediction_paths[uid]
+           for uid in committed_ids):
+        return committed, grants, "COMMITTED_TRAJECTORY_MISSING_OR_STALE", {
+            "next_role": next_uid,
+            "committed_role_order": order[:len(committed_ids)]}
+
+    prefix = order[:len(committed_ids) + 1]
+    prefix_candidates = {}
+    for uid in prefix[:-1]:
+        fixed = dict(committed[uid])
+        fixed["predicted_path"] = list(prediction_paths[uid])
+        prefix_candidates[uid] = [fixed]
+    prefix_candidates[next_uid] = next_candidates
+    selected, reason, diagnostics = joint_entry_corridor_selection(
+        prefix_candidates, prefix, nominal_angles, center, starts, direction,
+        minimum_gap_degrees, maximum_gap_degrees, hard_clearance,
+        minimum_3d, swarm_clearance, angular_window_degrees,
+        nominal_orbit_radius, orbit_radius_step)
+    diagnostics["next_role"] = next_uid
+    diagnostics["committed_role_order"] = prefix[:-1]
+    if not selected:
+        return committed, grants, reason, diagnostics
+
+    updated = dict(committed)
+    updated[next_uid] = selected[next_uid]
+    grants[next_uid] = True
+    diagnostics["committed_role_order"] = prefix
+    return updated, grants, "UAV{}_{}".format(next_uid, reason), diagnostics
+
+
+def reconcile_entry_corridor_commitments(
+        committed_selection, commit_state, ordered_uav_ids,
+        current_generations, current_candidate_ids,
+        current_locked_candidate_ids=None, safely_entered_ids=None,
+        released_ids=None):
+    """Rollback a stale committed ENTRY role and every downstream role.
+
+    A commitment remains sticky only while its mission is still using the
+    generation and candidate that the manager selected.  Roles that have
+    already safely entered (or have been released) are immutable
+    predecessors.  The first stale, not-yet-entered role becomes the next
+    incremental arbitration owner; every later selection is withdrawn.
+    """
+    order = [int(uid) for uid in ordered_uav_ids]
+    selection = dict(committed_selection or {})
+    states = {
+        int(uid): dict(value) for uid, value in (commit_state or {}).items()}
+    locked = current_locked_candidate_ids or {}
+    entered = set() if safely_entered_ids is None else set(
+        int(uid) for uid in safely_entered_ids)
+    released = set() if released_ids is None else set(
+        int(uid) for uid in released_ids)
+    if (not order or len(order) != len(set(order))
+            or set(selection) != set(order[:len(selection)])):
+        return selection, states, [], "INVALID_COMMITTED_ROLE_PREFIX"
+
+    for uid in order:
+        state = states.setdefault(uid, {
+            "selected_candidate_id": "",
+            "candidate_generation": None,
+            "committed": False,
+            "entered": False,
+            "released": False,
+            "mission_lock_observed": False,
+        })
+        state["entered"] = bool(state.get("entered", False) or uid in entered)
+        state["released"] = bool(
+            state.get("released", False) or uid in released)
+        if uid not in selection:
+            continue
+        selected_id = selection[uid].get("id", "")
+        state["selected_candidate_id"] = selected_id
+        state["committed"] = True
+        observed_lock = str(locked.get(uid, ""))
+        if observed_lock == selected_id:
+            state["mission_lock_observed"] = True
+
+    rollback_index = None
+    rollback_reason = "COMMITMENTS_CURRENT"
+    for index, uid in enumerate(order):
+        if uid not in selection:
+            break
+        state = states[uid]
+        if state["entered"] or state["released"]:
+            continue
+        if uid not in current_generations:
+            continue
+        current_generation = int(current_generations[uid])
+        committed_generation = state.get("candidate_generation")
+        selected_id = state.get("selected_candidate_id", "")
+        candidate_ids = set(current_candidate_ids.get(uid, set()))
+        observed_lock = str(locked.get(uid, ""))
+        stale_reason = ""
+        if committed_generation is None:
+            stale_reason = "COMMITTED_GENERATION_MISSING"
+        elif current_generation != int(committed_generation):
+            stale_reason = "CANDIDATE_GENERATION_CHANGED"
+        elif selected_id not in candidate_ids:
+            stale_reason = "LOCKED_CANDIDATE_DISAPPEARED"
+        elif observed_lock and observed_lock != selected_id:
+            stale_reason = "MISSION_LOCK_CHANGED"
+        elif (state.get("mission_lock_observed", False)
+              and not observed_lock):
+            stale_reason = "MISSION_LOCK_CLEARED"
+        if stale_reason:
+            rollback_index = index
+            rollback_reason = "UAV{}_{}".format(uid, stale_reason)
+            break
+
+    if rollback_index is None:
+        return selection, states, [], rollback_reason
+
+    revoked = []
+    for uid in order[rollback_index:]:
+        if uid not in selection:
+            continue
+        revoked.append(uid)
+        selection.pop(uid, None)
+        state = states[uid]
+        state["selected_candidate_id"] = ""
+        state["candidate_generation"] = None
+        state["committed"] = False
+        state["mission_lock_observed"] = False
+    return selection, states, revoked, rollback_reason
 
 
 def task_start_barrier_ready(uav_ids, states, health, globally_clear):
@@ -714,13 +893,35 @@ def role_chain_hold_ids(ordered_uav_ids, source_uav_id):
     return set(ids[ids.index(source) + 1:])
 
 
-def entry_ready_barrier(uav_ids, states, health, mission_height,
+def contiguous_role_segments(ordered_uav_ids, active_uav_ids):
+    """Keep active formation links without bridging over an absent role."""
+    order = [int(uid) for uid in ordered_uav_ids]
+    active = set(int(uid) for uid in active_uav_ids)
+    if not order or len(order) != len(set(order)) or not active <= set(order):
+        return []
+    segments = []
+    current = []
+    for uid in order:
+        if uid in active:
+            current.append(uid)
+        elif current:
+            segments.append(current)
+            current = []
+    if current:
+        segments.append(current)
+    return segments
+
+
+def entry_ready_barrier(uav_ids, states, health, mission_heights,
                         height_tolerance, maximum_speed, globally_clear):
-    """Require every independent gate hover before synchronized staging."""
+    """Evaluate every independent ENTRY hover at its configured height."""
     if not globally_clear or not uav_ids:
         return False, {}
+    heights = [float(value) for value in mission_heights]
+    if len(heights) != len(uav_ids):
+        return False, {uid: "HEIGHT_CONFIG_MISMATCH" for uid in uav_ids}
     reasons = {}
-    for uid in uav_ids:
+    for index, uid in enumerate(uav_ids):
         if uid not in states:
             reasons[uid] = "STATE_MISSING"
             continue
@@ -733,7 +934,7 @@ def entry_ready_barrier(uav_ids, states, health, mission_height,
         elif state.mission_phase not in {
                 "ENTRY_READY", "WAIT_ORBIT_PERMISSION"}:
             reasons[uid] = "NOT_AT_ENTRY_GATE:{}".format(state.mission_phase)
-        elif abs(float(state.current_height) - float(mission_height)) > float(
+        elif abs(float(state.current_height) - heights[index]) > float(
                 height_tolerance):
             reasons[uid] = "HEIGHT_NOT_READY"
         elif not math.isfinite(speed) or speed > float(maximum_speed):
@@ -747,6 +948,109 @@ def entry_ready_barrier(uav_ids, states, health, mission_height,
         else:
             reasons[uid] = "READY"
     return all(reasons.get(uid) == "READY" for uid in uav_ids), reasons
+
+
+def serialized_transition_permissions(
+        ordered_uav_ids, states, health, target_heights, height_tolerance,
+        maximum_speed, globally_clear, active_owner=0, started_ids=None,
+        completed_ids=None, enabled=True):
+    """Grant one sticky layer-transition owner in the configured role order.
+
+    A transition is complete only after its owner has entered LAYER_TRANSITION,
+    returned to an active orbit phase, reached its configured target
+    height, and settled below ``maximum_speed``. Missing/stale/unsafe inputs
+    revoke every grant without transferring the sticky owner.
+    """
+    order = [int(uid) for uid in ordered_uav_ids]
+    started = set() if started_ids is None else set(started_ids)
+    completed = set() if completed_ids is None else set(completed_ids)
+    grants = {uid: False for uid in order}
+    reasons = {uid: "WAITING_FOR_PREDECESSOR" for uid in order}
+    owner = int(active_owner)
+    if not enabled:
+        return grants, 0, set(), set(), {
+            uid: "MULTI_LAYER_DISABLED" for uid in order}
+    if (not order or len(order) != len(set(order))
+            or owner not in set(order) | {0}
+            or set(target_heights) != set(order)
+            or not math.isfinite(float(height_tolerance))
+            or not math.isfinite(float(maximum_speed))
+            or float(height_tolerance) <= 0.0
+            or float(maximum_speed) < 0.0):
+        return grants, owner, started, completed, {
+            uid: "INVALID_TRANSITION_CONFIG" for uid in order}
+    if (not globally_clear
+            or any(uid not in states or not bool(health.get(uid, False))
+                   for uid in order)):
+        return grants, owner, started, completed, {
+            uid: "STALE_OR_SAFETY_INVALID" for uid in order}
+
+    def settled_at_target(uid):
+        state = states[uid]
+        velocity = state.velocity
+        speed = math.sqrt(
+            float(velocity.x) ** 2 + float(velocity.y) ** 2
+            + float(velocity.z) ** 2)
+        return bool(
+            math.isfinite(speed)
+            and abs(float(state.current_height)
+                    - float(target_heights[uid])) <= float(height_tolerance)
+            and speed <= float(maximum_speed))
+
+    completion_phases = {"EVALUATING", "TARGET_LOCKED", "NAVIGATING"}
+    allowed_owner_phases = {
+        "WAIT_TRANSITION_PERMISSION", "LAYER_TRANSITION", "HOLDING"}
+    failure_phases = {
+        "WAIT_EXIT_PERMISSION", "GO_TO_EXIT_GATE", "NORMAL_RETURN",
+        "RETURN_EGRESS", "HOME_OVERHEAD_TRANSIT", "SEGMENTED_HOME_DESCENT",
+        "RETURN_HOME", "FAILURE_LANDING", "DONE", "ERROR",
+        "FAILSAFE", "SAFETY_INHIBIT"}
+
+    if owner:
+        owner_phase = states[owner].mission_phase
+        if owner_phase == "LAYER_TRANSITION":
+            started.add(owner)
+        if (owner in started and owner_phase in completion_phases
+                and settled_at_target(owner)):
+            completed.add(owner)
+            reasons[owner] = "TRANSITION_COMPLETE"
+            owner = 0
+        elif owner_phase in failure_phases:
+            reasons[owner] = "OWNER_PHASE_{}".format(owner_phase)
+            return grants, owner, started, completed, reasons
+
+    if not owner:
+        for index, uid in enumerate(order):
+            if uid in completed:
+                reasons[uid] = "TRANSITION_COMPLETE"
+                continue
+            if any(predecessor not in completed for predecessor in order[:index]):
+                reasons[uid] = "WAITING_FOR_PREDECESSOR"
+                break
+            phase = states[uid].mission_phase
+            if phase == "LAYER_TRANSITION":
+                reasons[uid] = "UNOWNED_TRANSITION_FAIL_CLOSED"
+                return grants, 0, started, completed, reasons
+            if phase == "WAIT_TRANSITION_PERMISSION":
+                owner = uid
+                reasons[uid] = "OWNER_GRANTED"
+            else:
+                reasons[uid] = "WAITING_FOR_LAYER_COMPLETION"
+            break
+
+    for uid in order:
+        if uid in completed:
+            reasons[uid] = "TRANSITION_COMPLETE"
+    if owner:
+        phase = states[owner].mission_phase
+        if phase in allowed_owner_phases:
+            grants[owner] = True
+            reasons[owner] = "OWNER_ACTIVE"
+        elif owner in started and phase in completion_phases:
+            reasons[owner] = "OWNER_AWAITING_STABLE_TARGET"
+        else:
+            reasons[owner] = "OWNER_PHASE_{}_FAIL_CLOSED".format(phase)
+    return grants, owner, started, completed, reasons
 
 
 def orbit_staging_ready_barrier(uav_ids, states, health, mission_heights,
@@ -842,6 +1146,45 @@ def sequential_orbit_release_allowed(follower_position, leader_position,
         "globally_clear": bool(globally_clear),
     }
     return all(conditions.values()), phase, speed, conditions
+
+
+def completed_predecessor_handoff_allowed(
+        follower_position, leader_position, predecessor_orbit_complete,
+        predecessor_in_return_phase, leader_trajectory_fresh,
+        follower_ready, predicted_clear, globally_clear,
+        minimum_3d, swarm_clearance):
+    """Fail-closed release fallback after the predecessor completed orbit.
+
+    This is distinct from the normal 65--70 degree moving-window gate.  It is
+    available only after completion has been observed and retains current and
+    predicted 3-D/EGO-ellipsoid separation plus freshness/global safety.
+    Fixed-role ordering remains the caller's responsibility.
+    """
+    leader = tuple(float(value) for value in leader_position)
+    follower = tuple(float(value) for value in follower_position)
+    finite_positions = bool(
+        len(leader) >= 3 and len(follower) >= 3
+        and all(math.isfinite(value) for value in leader[:3] + follower[:3]))
+    current_3d_clear = bool(
+        finite_positions
+        and float(minimum_3d) > 0.0
+        and distance3(leader[:3], follower[:3]) >= float(minimum_3d))
+    current_ellipsoid_clear = bool(
+        finite_positions
+        and float(swarm_clearance) > 0.0
+        and ellipsoid_distance(leader[:3], follower[:3])
+        >= 2.0 * float(swarm_clearance))
+    conditions = {
+        "predecessor_orbit_complete": bool(predecessor_orbit_complete),
+        "predecessor_in_return_phase": bool(predecessor_in_return_phase),
+        "leader_trajectory_fresh": bool(leader_trajectory_fresh),
+        "follower_ready": bool(follower_ready),
+        "current_3d_clear": current_3d_clear,
+        "current_ellipsoid_clear": current_ellipsoid_clear,
+        "predicted_clear": bool(predicted_clear),
+        "globally_clear": bool(globally_clear),
+    }
+    return all(conditions.values()), conditions
 
 
 def orbit_release_allowed(waiting_position, orbiting_positions, center,

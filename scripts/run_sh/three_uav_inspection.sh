@@ -191,7 +191,15 @@ if [[ "$record_mode" != none ]]; then
   uav3_report_file="$results_dir/uav3.csv"
   evidence_record_enabled=true
 fi
-launch_args=(astra_swarm_bringup triple_tower_inspection.launch
+launch_file="${ASTRA_THREE_UAV_LAUNCH:-triple_tower_inspection.launch}"
+case "$launch_file" in
+  triple_tower_inspection.launch|triple_tower_multi_height_inspection.launch) ;;
+  *)
+    echo "unsupported three-UAV launch profile: $launch_file" >&2
+    exit 2
+    ;;
+esac
+launch_args=(astra_swarm_bringup "$launch_file"
   "enable_control:=$enable_control" "gui:=$gui" "start_rviz:=$rviz"
   "world:=$world_file"
   "learning_speed_enabled:=$learning_speed"
@@ -202,6 +210,9 @@ launch_args=(astra_swarm_bringup triple_tower_inspection.launch
   "uav3_report_file:=$uav3_report_file"
   "evidence_record_enabled:=$evidence_record_enabled"
   "evidence_candidate_record_mode:=$record_mode")
+if [[ "$launch_file" == triple_tower_multi_height_inspection.launch ]]; then
+  launch_args+=("multi_layer_enabled:=${ASTRA_MULTI_LAYER_ENABLED:-false}")
+fi
 if [[ "$record_mode" == none ]]; then
   roslaunch "${launch_args[@]}" &
 else

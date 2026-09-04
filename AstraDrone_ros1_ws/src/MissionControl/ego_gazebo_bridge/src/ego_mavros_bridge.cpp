@@ -153,6 +153,10 @@ void EgoMavrosBridge::loadConfig() {
   private_node_handle_.param("require_orbit_speed_scale",
                              config_.require_orbit_speed_scale,
                              config_.require_orbit_speed_scale);
+  private_node_handle_.param(
+      "scale_command_limits_with_orbit_speed_scale",
+      config_.scale_command_limits_with_orbit_speed_scale,
+      config_.scale_command_limits_with_orbit_speed_scale);
   private_node_handle_.param("tower_yaw_override_enabled",
                              config_.tower_yaw_override_enabled,
                              config_.tower_yaw_override_enabled);
@@ -799,8 +803,13 @@ void EgoMavrosBridge::commandCallback(
     return;
   }
   RawCommandLimits limits;
-  limits.max_velocity = config_.max_velocity;
-  limits.max_acceleration = config_.max_acceleration;
+  const double command_scale =
+      config_.require_orbit_speed_scale &&
+              config_.scale_command_limits_with_orbit_speed_scale
+          ? orbit_speed_scale_
+          : 1.0;
+  limits.max_velocity = config_.max_velocity * command_scale;
+  limits.max_acceleration = config_.max_acceleration * command_scale;
   limits.max_yaw_rate = config_.max_yaw_rate;
   limits.gravity_alignment_tolerance =
       config_.gravity_alignment_tolerance;

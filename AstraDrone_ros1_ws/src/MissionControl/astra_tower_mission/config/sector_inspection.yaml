@@ -62,6 +62,11 @@ entry_gate:
   radial_sample_step: 1.0
   maximum_horizontal_distance: 60.0
   minimum_clearance: 2.0
+  # The production swarm stack feeds /uavN/stage3/occupancy_inflate from
+  # EGO's grid_map/occupancy_inflate output. Apply only the task's additional
+  # margin to that already-inflated representation.
+  map_points_are_inflated: true
+  map_additional_clearance: 0.5
   # FAST-LIO publishes obstacle hits, not a persistent free/unknown voxel
   # state. The instantaneous MID360 field-of-view ratio is therefore a risk
   # diagnostic for sector endpoints, not a hard rejection. Fresh-map,
@@ -129,6 +134,8 @@ candidate:
   radius_offsets_m: [0.0, 2.0, 4.0]
   height_offsets_m: [0.0, -1.0, -2.0, -3.0]
   minimum_clearance: 2.0
+  map_points_are_inflated: true
+  map_additional_clearance: 0.5
   corridor_sample_step: 0.5
   blocked_corridor_penalty: 6.0
   score_clearance_weight: 0.2
@@ -215,10 +222,15 @@ goal_timeout: 180.0
 # the long EGO return trajectory.
 return_timeout: 300.0
 landing_timeout: 90.0
+return:
+  # Normal high-altitude completion first reaches home XY at the current
+  # inspection height, then descends through these independent EGO goals.
+  # The bridge retains ownership of only the final 10 -> 4 m HOME_HOVER leg.
+  descent_intermediate_heights: [18.0, 10.0]
 return_egress:
-  # Failure fallback only. Normal completion reaches the final layer's
-  # EXIT_GATE and then lets EGO plan directly to the bridge's 4 m home hover,
-  # avoiding a task-commanded climb to this conservative fallback height.
+  # Failure fallback only. Normal completion uses HOME_OVERHEAD_TRANSIT and
+  # SEGMENTED_HOME_DESCENT; this tower-exterior route remains the bounded
+  # recovery path when normal return admission/tracking fails.
   orbit_radius: 24.0
   transit_height: 38.0
   maximum_angle_step_deg: 30.0

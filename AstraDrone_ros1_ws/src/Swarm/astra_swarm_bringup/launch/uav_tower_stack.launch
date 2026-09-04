@@ -13,6 +13,7 @@
   <arg name="takeoff_height" default="4.0"/>
   <arg name="staging_height" default="$(arg takeoff_height)"/>
   <arg name="ascent_intermediate_heights" default="[]"/>
+  <arg name="descent_intermediate_heights" default="[18.0, 10.0]"/>
   <arg name="entry_sector" default="7"/>
   <arg name="entry_angle_deg"
        default="$(eval (float(arg('entry_sector')) - 1.0) * 45.0)"/>
@@ -26,6 +27,7 @@
   <arg name="coordination_enabled" default="true"/>
   <arg name="orbit_permission_enabled" default="false"/>
   <arg name="orbit_speed_scale_enabled" default="false"/>
+  <arg name="scale_command_limits_with_orbit_speed_scale" default="false"/>
   <arg name="learning_speed_enabled" default="false"/>
   <arg name="learning_speed_config"
        default="$(find learning_speed_rl)/config/speed_adapter.yaml"/>
@@ -48,6 +50,8 @@
   <arg name="candidate_height_offsets" default="[0.0, -1.0, -2.0]"/>
   <arg name="max_vel" default="0.30"/>
   <arg name="max_acc" default="0.50"/>
+  <arg name="bridge_max_velocity" default="0.50"/>
+  <arg name="bridge_max_acceleration" default="1.00"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
@@ -98,6 +102,8 @@
            value="$(arg require_start_permission)"/>
       <arg name="require_orbit_speed_scale"
            value="$(arg orbit_speed_scale_enabled)"/>
+      <arg name="scale_command_limits_with_orbit_speed_scale"
+           value="$(arg scale_command_limits_with_orbit_speed_scale)"/>
       <arg name="orbit_speed_scale_topic"
            value="/$(arg uav_ns)/swarm/orbit_speed_scale"/>
       <arg name="drone_id" value="$(arg planner_drone_id)"/>
@@ -138,6 +144,9 @@
       <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
       <arg name="max_vel" value="$(arg max_vel)"/>
       <arg name="max_acc" value="$(arg max_acc)"/>
+      <arg name="bridge_max_velocity" value="$(arg bridge_max_velocity)"/>
+      <arg name="bridge_max_acceleration"
+           value="$(arg bridge_max_acceleration)"/>
       <arg name="planning_horizon" value="$(arg planning_horizon)"/>
       <arg name="manual_target_height" value="$(arg inspection_top_height)"/>
       <arg name="use_goal_height" value="true"/>
@@ -228,6 +237,8 @@
       <param name="staging/height" value="$(arg staging_height)"/>
       <rosparam param="staging/ascent_intermediate_heights"
                 subst_value="true">$(arg ascent_intermediate_heights)</rosparam>
+      <rosparam param="return/descent_intermediate_heights"
+                subst_value="true">$(arg descent_intermediate_heights)</rosparam>
       <param name="mission/maximum_height"
              value="$(arg mission_maximum_height)"/>
       <param name="mission/minimum_height"

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <queue>
 #include <sstream>
@@ -19,6 +20,29 @@ double distance3d(double ax, double ay, double az, double bx, double by,
                  double bz) {
   return std::sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by) +
                    (az - bz) * (az - bz));
+}
+
+double pointSegmentDistance(const geometry_msgs::Point& point,
+                            const geometry_msgs::Point& start,
+                            const geometry_msgs::Point& finish) {
+  const double vx = finish.x - start.x;
+  const double vy = finish.y - start.y;
+  const double vz = finish.z - start.z;
+  const double length_squared = vx * vx + vy * vy + vz * vz;
+  if (length_squared <= 1.0e-12) {
+    return distance3d(point.x, point.y, point.z,
+                      start.x, start.y, start.z);
+  }
+  const double projection = std::max(
+      0.0, std::min(1.0,
+                    ((point.x - start.x) * vx +
+                     (point.y - start.y) * vy +
+                     (point.z - start.z) * vz) /
+                        length_squared));
+  return distance3d(point.x, point.y, point.z,
+                    start.x + projection * vx,
+                    start.y + projection * vy,
+                    start.z + projection * vz);
 }
 
 std::string indexedId(int sector, std::size_t index) {
@@ -173,11 +197,34 @@ bool pointInObstacle(const geometry_msgs::Point& point,
   return obstacleClearance(point, obstacle, inflation) < 0.0;
 }
 
-bool lineCorridorSafe(const geometry_msgs::Point& from,
-                      const geometry_msgs::Point& to,
-                      const std::vector<geometry_msgs::Point>& cloud_points,
-                      const std::vector<StaticObstacle>& obstacles,
-                      double inflation, double sample_step) {
+std::string hardStaticEndpointBlockage(
+    const CandidatePoint& target,
+    const std::vector<StaticObstacle>& obstacles,
+    const std::string& tower_obstacle_id,
+    double minimum_clearance,
+    bool known_obstacle_is_hard_constraint) {
+  geometry_msgs::Point point;
+  point.x = target.x;
+  point.y = target.y;
+  point.z = target.z;
+  for (const auto& obstacle : obstacles) {
+    const bool tower_body = obstacle.id == tower_obstacle_id;
+    if ((tower_body || known_obstacle_is_hard_constraint) &&
+        pointInObstacle(point, obstacle, minimum_clearance)) {
+      return obstacle.id;
+    }
+  }
+  return std::string();
+}
+
+CorridorCheckResult lineCorridorCheck(
+    const geometry_msgs::Point& from,
+    const geometry_msgs::Point& to,
+    const std::vector<geometry_msgs::Point>& cloud_points,
+    const std::vector<StaticObstacle>& obstacles,
+    double inflation,
+    double sample_step) {
+  CorridorCheckResult result;
   const double length = distance3d(from.x, from.y, from.z, to.x, to.y, to.z);
   const std::size_t samples = static_cast<std::size_t>(std::max(
       1.0, std::ceil(length / std::max(0.05, sample_step))));
@@ -188,16 +235,37 @@ bool lineCorridorSafe(const geometry_msgs::Point& from,
     point.y = from.y + ratio * (to.y - from.y);
     point.z = from.z + ratio * (to.z - from.z);
     for (const auto& obstacle : obstacles) {
-      if (pointInObstacle(point, obstacle, inflation)) return false;
+      if (pointInObstacle(point, obstacle, inflation)) {
+        result.safe = false;
+        result.has_blocking_point = true;
+        result.blocking_point = point;
+        result.blocking_point_to_corridor_distance = 0.0;
+        return result;
+      }
     }
     for (const auto& cloud : cloud_points) {
       if (distance3d(point.x, point.y, point.z, cloud.x, cloud.y, cloud.z) <
           inflation) {
-        return false;
+        result.safe = false;
+        result.has_blocking_point = true;
+        result.blocking_point = cloud;
+        result.blocking_point_to_corridor_distance =
+            pointSegmentDistance(cloud, from, to);
+        return result;
       }
     }
   }
-  return true;
+  return result;
+}
+
+bool lineCorridorSafe(const geometry_msgs::Point& from,
+                      const geometry_msgs::Point& to,
+                      const std::vector<geometry_msgs::Point>& cloud_points,
+                      const std::vector<StaticObstacle>& obstacles,
+                      double inflation, double sample_step) {
+  return lineCorridorCheck(from, to, cloud_points, obstacles, inflation,
+                           sample_step)
+      .safe;
 }
 
 bool evaluateCandidate(CandidatePoint* candidate, const Sector& sector,
@@ -953,6 +1021,50 @@ std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
     previous_height = height;
   }
   return goals;
+}
+
+CandidatePoint buildHomeOverheadGoal(const geometry_msgs::Point& home,
+                                     double inspection_height,
+                                     const std::string& id) {
+  CandidatePoint overhead;
+  if (!std::isfinite(home.x) || !std::isfinite(home.y) ||
+      !std::isfinite(home.z) || !std::isfinite(inspection_height) ||
+      id.empty()) {
+    return overhead;
+  }
+  overhead.id = id;
+  overhead.sector_id = -1;
+  overhead.x = home.x;
+  overhead.y = home.y;
+  overhead.z = inspection_height;
+  overhead.require_arrival_yaw = false;
+  overhead.face_tower = false;
+  return overhead;
+}
+
+std::vector<double> deriveDescendingIntermediateHeights(
+    double current_height, double final_height,
+    const std::vector<double>& configured_heights) {
+  if (!std::isfinite(current_height) || !std::isfinite(final_height) ||
+      current_height <= final_height) {
+    return {};
+  }
+  std::vector<double> heights;
+  heights.reserve(configured_heights.size());
+  for (double height : configured_heights) {
+    if (std::isfinite(height) && height < current_height - 1.0e-6 &&
+        height > final_height + 1.0e-6) {
+      heights.push_back(height);
+    }
+  }
+  std::sort(heights.begin(), heights.end(), std::greater<double>());
+  heights.erase(std::unique(
+                    heights.begin(), heights.end(),
+                    [](double first, double second) {
+                      return std::abs(first - second) < 1.0e-6;
+                    }),
+                heights.end());
+  return heights;
 }
 
 std::vector<double> deriveInspectionHeights(

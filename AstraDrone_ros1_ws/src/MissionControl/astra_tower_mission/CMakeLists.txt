@@ -154,4 +154,5 @@ if(CATKIN_ENABLE_TESTING)
   endif()
 
   add_rostest(test/sector_inspection_no_control.test)
+  add_rostest(test/sector_exit_admission_failure_no_control.test)
 endif()

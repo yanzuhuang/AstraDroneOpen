@@ -6,6 +6,7 @@
 
 #include <geometry_msgs/Point.h>
 
+#include <limits>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -177,6 +178,17 @@ struct ReturnEgressConfig {
   double minimum_goal_separation{0.5};
 };
 
+// Diagnostic companion for lineCorridorSafe().  The safe/blocked decision is
+// produced by the same sampled corridor check; callers may inspect the first
+// blocking map point without maintaining a second collision implementation.
+struct CorridorCheckResult {
+  bool safe{true};
+  bool has_blocking_point{false};
+  geometry_msgs::Point blocking_point;
+  double blocking_point_to_corridor_distance{
+      std::numeric_limits<double>::infinity()};
+};
+
 // Select the task-side distance threshold from the representation being
 // queried. Raw/filtered points and coarse geometry use minimum_clearance;
 // EGO's already-inflated occupancy uses only map_additional_clearance.
@@ -294,6 +306,16 @@ std::vector<CandidatePoint> buildVerticalGoalsAtHeights(
     const std::vector<double>& target_heights,
     const std::string& id_prefix);
 
+CandidatePoint buildHomeOverheadGoal(
+    const geometry_msgs::Point& home,
+    double inspection_height,
+    const std::string& id = "HOME_OVERHEAD");
+
+std::vector<double> deriveDescendingIntermediateHeights(
+    double current_height,
+    double final_height,
+    const std::vector<double>& configured_heights);
+
 std::vector<double> deriveInspectionHeights(
     double inspection_top_height,
     const std::vector<double>& layer_offsets);
@@ -380,6 +402,19 @@ bool returnLandingNearHome(const geometry_msgs::Point& landed_position,
 bool pointInObstacle(const geometry_msgs::Point& point,
                      const StaticObstacle& obstacle,
                      double inflation);
+std::string hardStaticEndpointBlockage(
+    const CandidatePoint& target,
+    const std::vector<StaticObstacle>& obstacles,
+    const std::string& tower_obstacle_id,
+    double minimum_clearance,
+    bool known_obstacle_is_hard_constraint);
+CorridorCheckResult lineCorridorCheck(
+    const geometry_msgs::Point& from,
+    const geometry_msgs::Point& to,
+    const std::vector<geometry_msgs::Point>& cloud_points,
+    const std::vector<StaticObstacle>& obstacles,
+    double inflation,
+    double sample_step);
 bool lineCorridorSafe(const geometry_msgs::Point& from,
                       const geometry_msgs::Point& to,
                       const std::vector<geometry_msgs::Point>& cloud_points,

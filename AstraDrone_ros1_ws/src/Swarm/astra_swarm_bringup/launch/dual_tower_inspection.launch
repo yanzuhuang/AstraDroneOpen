@@ -30,6 +30,7 @@
        default="$(arg orbit_permission_enabled)"/>
   <arg name="uav1_orbit_speed_scale_enabled" default="false"/>
   <arg name="uav2_orbit_speed_scale_enabled" default="false"/>
+  <arg name="scale_command_limits_with_orbit_speed_scale" default="false"/>
   <arg name="learning_speed_enabled" default="false"/>
   <arg name="uav1_learning_speed_enabled"
        default="$(arg learning_speed_enabled)"/>
@@ -51,6 +52,10 @@
   <arg name="uav2_takeoff_height" default="4.0"/>
   <arg name="uav1_staging_height" default="$(arg uav1_takeoff_height)"/>
   <arg name="uav2_staging_height" default="$(arg uav2_takeoff_height)"/>
+  <arg name="uav1_ascent_intermediate_heights" default="[]"/>
+  <arg name="uav2_ascent_intermediate_heights" default="[]"/>
+  <arg name="uav1_descent_intermediate_heights" default="[18.0, 10.0]"/>
+  <arg name="uav2_descent_intermediate_heights" default="[18.0, 10.0]"/>
   <arg name="uav1_layer_offsets" default="[0.0, -4.0]"/>
   <arg name="uav2_layer_offsets" default="[0.0, -4.0]"/>
   <arg name="uav1_candidate_height_offsets" default="[0.0, -1.0, -2.0]"/>
@@ -87,6 +92,11 @@
   <arg name="phase_tolerance_degrees" default="15.0"/>
   <arg name="entry_nominal_speed" default="0.20"/>
   <arg name="orbit_nominal_speed" default="0.14"/>
+  <arg name="layer_transition_nominal_speed" default="0.30"/>
+  <arg name="multi_layer_enabled" default="true"/>
+  <arg name="swarm_transition_order" default="[2, 1]"/>
+  <arg name="swarm_transition_target_heights"
+       default="[$(arg uav1_final_height), $(arg uav2_final_height)]"/>
   <arg name="formation_role_order" default="[2, 1]"/>
   <arg name="target_phase_deg" default="67.5"/>
   <arg name="normal_phase_min_deg" default="57.5"/>
@@ -111,6 +121,8 @@
   <arg name="uav2_mission_minimum_height" default="2.0"/>
   <arg name="max_vel" default="0.30"/>
   <arg name="max_acc" default="0.50"/>
+  <arg name="bridge_max_velocity" default="0.50"/>
+  <arg name="bridge_max_acceleration" default="1.00"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
@@ -357,12 +369,18 @@
          value="$(arg uav1_candidate_height_offsets)"/>
     <arg name="takeoff_height" value="$(arg uav1_takeoff_height)"/>
     <arg name="staging_height" value="$(arg uav1_staging_height)"/>
+    <arg name="ascent_intermediate_heights"
+         value="$(arg uav1_ascent_intermediate_heights)"/>
+    <arg name="descent_intermediate_heights"
+         value="$(arg uav1_descent_intermediate_heights)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
     <arg name="coordination_enabled" value="$(arg uav1_coordination_enabled)"/>
     <arg name="orbit_permission_enabled"
          value="$(arg uav1_orbit_permission_enabled)"/>
     <arg name="orbit_speed_scale_enabled"
          value="$(arg uav1_orbit_speed_scale_enabled)"/>
+    <arg name="scale_command_limits_with_orbit_speed_scale"
+         value="$(arg scale_command_limits_with_orbit_speed_scale)"/>
     <arg name="learning_speed_enabled"
          value="$(arg uav1_learning_speed_enabled)"/>
     <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
@@ -394,6 +412,9 @@
          value="$(arg uav1_mission_minimum_height)"/>
     <arg name="max_vel" value="$(arg max_vel)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="bridge_max_velocity" value="$(arg bridge_max_velocity)"/>
+    <arg name="bridge_max_acceleration"
+         value="$(arg bridge_max_acceleration)"/>
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
@@ -433,12 +454,18 @@
          value="$(arg uav2_candidate_height_offsets)"/>
     <arg name="takeoff_height" value="$(arg uav2_takeoff_height)"/>
     <arg name="staging_height" value="$(arg uav2_staging_height)"/>
+    <arg name="ascent_intermediate_heights"
+         value="$(arg uav2_ascent_intermediate_heights)"/>
+    <arg name="descent_intermediate_heights"
+         value="$(arg uav2_descent_intermediate_heights)"/>
     <arg name="low_altitude_enabled" value="$(arg low_altitude_enabled)"/>
     <arg name="coordination_enabled" value="$(arg uav2_coordination_enabled)"/>
     <arg name="orbit_permission_enabled"
          value="$(arg uav2_orbit_permission_enabled)"/>
     <arg name="orbit_speed_scale_enabled"
          value="$(arg uav2_orbit_speed_scale_enabled)"/>
+    <arg name="scale_command_limits_with_orbit_speed_scale"
+         value="$(arg scale_command_limits_with_orbit_speed_scale)"/>
     <arg name="learning_speed_enabled"
          value="$(arg uav2_learning_speed_enabled)"/>
     <arg name="learning_speed_config" value="$(arg learning_speed_config)"/>
@@ -470,6 +497,9 @@
          value="$(arg uav2_mission_minimum_height)"/>
     <arg name="max_vel" value="$(arg max_vel)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="bridge_max_velocity" value="$(arg bridge_max_velocity)"/>
+    <arg name="bridge_max_acceleration"
+         value="$(arg bridge_max_acceleration)"/>
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
     <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
     <arg name="swarm_clearance" value="$(arg swarm_clearance)"/>
@@ -551,6 +581,13 @@
            value="$(arg phase_tolerance_degrees)"/>
     <param name="entry_nominal_speed" value="$(arg entry_nominal_speed)"/>
     <param name="orbit_nominal_speed" value="$(arg orbit_nominal_speed)"/>
+    <param name="layer_transition_nominal_speed"
+           value="$(arg layer_transition_nominal_speed)"/>
+    <param name="multi_layer_enabled" value="$(arg multi_layer_enabled)"/>
+    <rosparam param="transition_order"
+              subst_value="true">$(arg swarm_transition_order)</rosparam>
+    <rosparam param="transition_target_heights"
+              subst_value="true">$(arg swarm_transition_target_heights)</rosparam>
     <rosparam param="formation_role_order"
               subst_value="true">$(arg formation_role_order)</rosparam>
     <param name="target_phase_deg" value="$(arg target_phase_deg)"/>

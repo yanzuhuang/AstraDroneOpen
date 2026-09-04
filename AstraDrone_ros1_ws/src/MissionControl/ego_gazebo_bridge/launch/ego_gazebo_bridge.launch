@@ -8,6 +8,7 @@
   <arg name="enable_control" default="false"/>
   <arg name="require_start_permission" default="true"/>
   <arg name="require_orbit_speed_scale" default="false"/>
+  <arg name="scale_command_limits_with_orbit_speed_scale" default="false"/>
   <arg name="orbit_speed_scale_topic" default="/swarm/orbit_speed_scale"/>
   <arg name="orbit_speed_scale_timeout" default="0.5"/>
   <arg name="drone_id" default="0"/>
@@ -45,6 +46,8 @@
   <arg name="map_size_z" default="3.0"/>
   <arg name="max_vel" default="0.5"/>
   <arg name="max_acc" default="1.0"/>
+  <arg name="bridge_max_velocity" default="0.5"/>
+  <arg name="bridge_max_acceleration" default="1.0"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="manual_target_height" default="1.0"/>
   <arg name="use_goal_height" default="false"/>
@@ -201,10 +204,17 @@
            value="$(arg require_start_permission)"/>
     <param name="require_orbit_speed_scale"
            value="$(arg require_orbit_speed_scale)"/>
+    <param name="scale_command_limits_with_orbit_speed_scale"
+           value="$(arg scale_command_limits_with_orbit_speed_scale)"/>
     <param name="orbit_speed_scale_topic"
            value="$(arg orbit_speed_scale_topic)"/>
     <param name="orbit_speed_scale_timeout"
            value="$(arg orbit_speed_scale_timeout)"/>
+    <!-- Keep the execution envelope aligned with the EGO capability passed
+         through this launch. Vehicle YAMLs may still define other safety
+         fields, but must not silently retain the bridge's 0.5 m/s fallback. -->
+    <param name="max_velocity" value="$(arg bridge_max_velocity)"/>
+    <param name="max_acceleration" value="$(arg bridge_max_acceleration)"/>
     <param name="auto_track_on_command" value="$(arg auto_track_on_command)"/>
     <param name="planning_frame" value="$(arg planning_frame)"/>
     <param name="mavros_frame" value="$(arg mavros_frame)"/>

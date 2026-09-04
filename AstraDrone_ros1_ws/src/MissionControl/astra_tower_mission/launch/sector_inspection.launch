@@ -12,6 +12,7 @@
   <arg name="layer_offsets" default="[0.0, -4.0]"/>
   <arg name="takeoff_height" default="4.0"/>
   <arg name="staging_height" default="$(arg takeoff_height)"/>
+  <arg name="descent_intermediate_heights" default="[18.0, 10.0]"/>
   <arg name="mission_transit_height" default="$(arg takeoff_height)"/>
   <arg name="mission_minimum_height" default="2.0"/>
   <arg name="low_altitude_enabled" default="false"/>
@@ -104,6 +105,8 @@
     <param name="fsm/manual_target_height"
            value="$(arg inspection_top_height)"/>
     <param name="staging/height" value="$(arg staging_height)"/>
+    <rosparam param="return/descent_intermediate_heights"
+              subst_value="true">$(arg descent_intermediate_heights)</rosparam>
     <param name="low_altitude/enabled"
            value="$(arg low_altitude_enabled)"/>
     <param name="low_altitude/entry_height"

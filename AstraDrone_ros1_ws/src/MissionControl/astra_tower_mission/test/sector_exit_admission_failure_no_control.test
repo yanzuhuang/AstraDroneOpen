@@ -1,0 +1,52 @@
+<launch>
+  <node pkg="astra_tower_mission" type="sector_inspection_mission_node"
+        name="tower_mission" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find astra_tower_mission)/config/sector_inspection.yaml"/>
+    <param name="enable_control" value="true"/>
+    <param name="tower/center/x" value="0.0"/>
+    <param name="tower/center/y" value="0.0"/>
+    <param name="tower/collision_radius" value="2.0"/>
+    <param name="mission/radius" value="8.0"/>
+    <param name="mission/inspection_top_height" value="10.0"/>
+    <rosparam param="mission/layer_offsets">[0.0]</rosparam>
+    <param name="mission/minimum_height" value="2.0"/>
+    <param name="mission/maximum_height" value="45.0"/>
+    <param name="mission/virtual_ceil_height" value="45.0"/>
+    <param name="mission/start_angle_deg" value="0.0"/>
+    <param name="mission/direction" value="counter_clockwise"/>
+    <param name="mission/observation_angle_deg" value="0.0"/>
+    <param name="mission/observation_radius_offset" value="3.0"/>
+    <param name="mission/sector_limit" value="1"/>
+    <param name="mission/inspection_laps" value="1"/>
+    <param name="mission/planned_cycles" value="1"/>
+    <param name="entry_gate/entry_sector" value="7"/>
+    <param name="entry_gate/minimum_radius" value="15.0"/>
+    <param name="entry_gate/maximum_radius" value="15.0"/>
+    <param name="entry_gate/preferred_radius" value="15.0"/>
+    <rosparam param="candidate/angle_offsets_deg">[0.0]</rosparam>
+    <rosparam param="candidate/radius_offsets_m">[0.0]</rosparam>
+    <rosparam param="candidate/height_offsets_m">[0.0]</rosparam>
+    <param name="staging/height" value="4.0"/>
+    <rosparam param="staging/ascent_intermediate_heights">[]</rosparam>
+    <param name="coverage/unknown_ratio_limit" value="0.90"/>
+    <param name="coverage/wait_timeout" value="2.0"/>
+    <param name="coordination/require_exit_permission" value="true"/>
+    <param name="coordination/exit_permission_topic"
+           value="/tower_mission/exit_permission"/>
+    <param name="return_egress/orbit_radius" value="12.0"/>
+    <param name="return_egress/transit_height" value="20.0"/>
+    <param name="return_egress/maximum_retries" value="0"/>
+    <param name="failure_hold_duration" value="0.1"/>
+    <param name="arrival_hold_duration" value="0.05"/>
+    <param name="input_timeout" value="1.0"/>
+    <param name="map_timeout" value="1.0"/>
+    <param name="report_file"
+           value="runtime_artifacts/sector_exit_admission_failure_no_control/mission.csv"/>
+  </node>
+
+  <test test-name="sector_exit_admission_failure_no_control"
+        pkg="astra_tower_mission"
+        type="sector_exit_admission_failure_no_control_test.py"
+        time-limit="25.0"/>
+</launch>

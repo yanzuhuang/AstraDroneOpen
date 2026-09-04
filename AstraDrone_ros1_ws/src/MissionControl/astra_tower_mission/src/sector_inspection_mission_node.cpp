@@ -63,6 +63,8 @@ enum class MissionState {
   kLayerTransition,
   kWaitExitPermission,
   kGoToExitGate,
+  kHomeOverheadTransit,
+  kSegmentedHomeDescent,
   kNormalReturn,
   kReturnEgress,
   kReturnHome,
@@ -90,6 +92,8 @@ const char* missionStateName(MissionState state) {
     case MissionState::kLayerTransition: return "LAYER_TRANSITION";
     case MissionState::kWaitExitPermission: return "WAIT_EXIT_PERMISSION";
     case MissionState::kGoToExitGate: return "GO_TO_EXIT_GATE";
+    case MissionState::kHomeOverheadTransit: return "HOME_OVERHEAD_TRANSIT";
+    case MissionState::kSegmentedHomeDescent: return "SEGMENTED_HOME_DESCENT";
     case MissionState::kNormalReturn: return "NORMAL_RETURN";
     case MissionState::kReturnEgress: return "RETURN_EGRESS";
     case MissionState::kReturnHome: return "RETURN_HOME";
@@ -108,6 +112,8 @@ enum class GoalKind {
   kRecovery,
   kLayerTransition,
   kExitGate,
+  kHomeOverhead,
+  kSegmentedHomeDescent,
   kNormalReturn,
   kReturnEgress
 };
@@ -223,6 +229,7 @@ class SectorInspectionMissionNode {
     int minimum_joint_tier{-1};
     double minimum_clearance{0.0};
     double score{-1.0e9};
+    std::string coarse_static_risk;
   };
 
   void logEntryGateSectorDefinitions() const {
@@ -298,6 +305,9 @@ class SectorInspectionMissionNode {
                         return_egress_target_timeout_, 90.0);
     private_node_.param("return_egress/home_xy_tolerance",
                         return_home_xy_tolerance_, 1.5);
+    private_node_.param("return/descent_intermediate_heights",
+                        return_descent_intermediate_heights_,
+                        std::vector<double>{18.0, 10.0});
     private_node_.param("return_egress/orbit_radius",
                         return_egress_config_.orbit_radius, 24.0);
     private_node_.param("return_egress/transit_height",
@@ -907,6 +917,13 @@ class SectorInspectionMissionNode {
       throw std::runtime_error(
           "derived ascent heights must end at first inspection height");
     }
+    if (return_descent_intermediate_heights_.empty() ||
+        !std::all_of(return_descent_intermediate_heights_.begin(),
+                     return_descent_intermediate_heights_.end(),
+                     [](double height) { return std::isfinite(height); })) {
+      throw std::runtime_error(
+          "return/descent_intermediate_heights must be finite and non-empty");
+    }
     layer_visit_sequence_ =
         buildLayerVisitSequence(inspection_heights_.size(), planned_cycles_);
     if (layer_visit_sequence_.empty() ||
@@ -1256,7 +1273,21 @@ class SectorInspectionMissionNode {
 
   void entryCorridorSelectionCallback(
       const std_msgs::String::ConstPtr& msg) {
-    if (entry_corridor_locked_ || msg->data.empty()) return;
+    if (msg->data.empty()) {
+      if (state_ == MissionState::kWaitEntryPermission &&
+          entry_corridor_locked_) {
+        ROS_WARN(
+            "[THREE_UAV_ENTRY] UAV%d manager revoked not-yet-entered "
+            "selection id=%s generation=%u; waiting for re-arbitration",
+            uav_id_, selected_entry_corridor_.id.c_str(),
+            entry_corridor_generation_);
+        entry_corridor_locked_ = false;
+        entry_gate_locked_ = false;
+        selected_entry_corridor_ = EntryCorridorCandidate();
+      }
+      return;
+    }
+    if (entry_corridor_locked_) return;
     const auto selected = std::find_if(
         entry_corridor_candidates_.begin(), entry_corridor_candidates_.end(),
         [&msg](const EntryCorridorCandidate& candidate) {
@@ -1357,6 +1388,7 @@ class SectorInspectionMissionNode {
       }
     } catch (const std::exception&) { cloud_points_.clear(); }
     have_cloud_ = !cloud_points_.empty();
+    cloud_stamp_ = msg->header.stamp;
     cloud_received_ = ros::Time::now();
     rebuildCoverageRays();
   }
@@ -1493,7 +1525,9 @@ class SectorInspectionMissionNode {
         }
       }
     } catch (const std::exception&) { occupancy_points_.clear(); }
-    have_occupancy_ = true; occupancy_received_ = ros::Time::now();
+    have_occupancy_ = true;
+    occupancy_stamp_ = msg->header.stamp;
+    occupancy_received_ = ros::Time::now();
   }
 
   void plannerStatusCallback(const astra_custom_msgs::PlannerStatus::ConstPtr& msg) {
@@ -1629,6 +1663,13 @@ class SectorInspectionMissionNode {
     return std::string();
   }
 
+  std::string hardStaticEndpointRisk(const CandidatePoint& target) const {
+    return hardStaticEndpointBlockage(
+        target, obstacles_, route_.tower_name,
+        filter_config_.minimum_clearance,
+        filter_config_.known_obstacle_is_hard_constraint);
+  }
+
   bool mappedEndpointClear(const CandidatePoint& target,
                            double clearance) const {
     if (target.z < route_.minimum_height ||
@@ -1684,8 +1725,14 @@ class SectorInspectionMissionNode {
 
   bool mappedCorridorSafe(const geometry_msgs::Point& from,
                           const geometry_msgs::Point& to) const {
+    return mappedCorridorCheck(from, to).safe;
+  }
+
+  CorridorCheckResult mappedCorridorCheck(
+      const geometry_msgs::Point& from,
+      const geometry_msgs::Point& to) const {
     static const std::vector<StaticObstacle> no_static_obstacles;
-    return lineCorridorSafe(
+    return lineCorridorCheck(
         from, to, planningMapPoints(), no_static_obstacles,
         mappedTaskClearance(), filter_config_.corridor_sample_step);
   }
@@ -1731,12 +1778,27 @@ class SectorInspectionMissionNode {
       return reject("ENTRY_GATE_MAP_CLEARANCE");
     if (!mappedEndpointClear(candidate->orbit_staging, map_clearance))
       return reject("ORBIT_STAGING_MAP_CLEARANCE");
-    if (!staticEndpointRisk(candidate->pre_entry).empty())
-      return reject("PRE_ENTRY_STATIC_CLEARANCE");
-    if (!staticEndpointRisk(candidate->entry_gate).empty())
-      return reject("ENTRY_GATE_STATIC_CLEARANCE");
-    if (!staticEndpointRisk(candidate->orbit_staging).empty())
-      return reject("ORBIT_STAGING_STATIC_CLEARANCE");
+    const auto check_static_endpoint =
+        [this, candidate, &reject](const CandidatePoint& endpoint,
+                                   const std::string& label) {
+          const std::string risk = staticEndpointRisk(endpoint);
+          const std::string hard_risk = hardStaticEndpointRisk(endpoint);
+          if (!hard_risk.empty()) {
+            return reject(label + "_STATIC_CLEARANCE:" + hard_risk);
+          }
+          if (!risk.empty()) {
+            if (!candidate->coarse_static_risk.empty()) {
+              candidate->coarse_static_risk += ',';
+            }
+            candidate->coarse_static_risk += label + ':' + risk;
+          }
+          return true;
+        };
+    if (!check_static_endpoint(candidate->pre_entry, "PRE_ENTRY")) return false;
+    if (!check_static_endpoint(candidate->entry_gate, "ENTRY_GATE")) return false;
+    if (!check_static_endpoint(candidate->orbit_staging, "ORBIT_STAGING")) {
+      return false;
+    }
     const std::vector<geometry_msgs::Point> anchors{
         start, candidatePoint(candidate->pre_entry),
         candidatePoint(candidate->entry_gate),
@@ -1804,7 +1866,7 @@ class SectorInspectionMissionNode {
       item.yaw = static_cast<float>(point.yaw);
       item.accepted = true;
       std::ostringstream evidence;
-      evidence << "LOCAL_ACCEPTED_PENDING_JOINT"
+      evidence << "LOCAL_ACCEPTED_PENDING_ROLE_PREFIX"
                << ";RADIUS_TIER=" << corridor.radius_tier
                << ";MINIMUM_JOINT_TIER=" << corridor.minimum_joint_tier
                << ";ORBIT_STAGING_RADIUS=" << std::fixed
@@ -1814,7 +1876,11 @@ class SectorInspectionMissionNode {
                << ";EGO_STATUS=NOT_PRECHECKED_NO_PRIOR_FAILURE"
                << ";ENDPOINT_CLEARANCE=" << corridor.endpoint_clearance
                << ";PATH_CLEARANCE=" << corridor.minimum_clearance
-               << ";INGRESS_LENGTH=" << corridor.ingress_length;
+               << ";INGRESS_LENGTH=" << corridor.ingress_length
+               << ";COARSE_STATIC_RISK="
+               << (corridor.coarse_static_risk.empty()
+                       ? "NONE"
+                       : corridor.coarse_static_risk);
       item.rejection_reason = evidence.str();
       item.clearance = static_cast<float>(
           suffix == "ORBIT_STAGING" ? corridor.endpoint_clearance
@@ -2103,7 +2169,53 @@ class SectorInspectionMissionNode {
     target_point.x = target.x;
     target_point.y = target.y;
     target_point.z = target.z;
-    if (!mappedCorridorSafe(current, target_point)) {
+    const CorridorCheckResult corridor =
+        mappedCorridorCheck(current, target_point);
+    if (!corridor.safe) {
+      const bool map_points_are_inflated = planningMapPointsAreInflated();
+      const ros::Time map_stamp = map_points_are_inflated
+                                      ? occupancy_stamp_
+                                      : cloud_stamp_;
+      const ros::Time map_received = map_points_are_inflated
+                                         ? occupancy_received_
+                                         : cloud_received_;
+      const double map_age = map_received.isZero()
+                                 ? std::numeric_limits<double>::infinity()
+                                 : (now - map_received).toSec();
+      const double nan = std::numeric_limits<double>::quiet_NaN();
+      const geometry_msgs::Point blocking_point =
+          corridor.has_blocking_point
+              ? corridor.blocking_point
+              : geometry_msgs::Point();
+      const double blocking_x =
+          corridor.has_blocking_point ? blocking_point.x : nan;
+      const double blocking_y =
+          corridor.has_blocking_point ? blocking_point.y : nan;
+      const double blocking_z =
+          corridor.has_blocking_point ? blocking_point.z : nan;
+      const double previous_height =
+          approach_index_ == 0U ? staging_height_
+                                : approach_goals_[approach_index_ - 1U].z;
+      std::ostringstream segment;
+      segment << std::fixed << std::setprecision(2) << previous_height << "->";
+      if (approach_index_ + 1U == approach_goals_.size()) {
+        segment << "final";
+      } else {
+        segment << target.z;
+      }
+      ROS_ERROR(
+          "[ASCENT_BLOCK_DIAG] UAV%d current_xyz=(%.3f,%.3f,%.3f) "
+          "target_xyz=(%.3f,%.3f,%.3f) blocking_point_xyz=(%.3f,%.3f,%.3f) "
+          "blocking_point_to_corridor_distance=%.3f effective_clearance=%.3f "
+          "map_points_are_inflated=%s map_source=%s map_stamp=%.9f "
+          "map_receipt_age=%.3f map_fresh=%s ascent_segment=%s",
+          uav_id_, current.x, current.y, current.z, target_point.x,
+          target_point.y, target_point.z, blocking_x, blocking_y, blocking_z,
+          corridor.blocking_point_to_corridor_distance,
+          mappedTaskClearance(), map_points_are_inflated ? "true" : "false",
+          map_points_are_inflated ? "occupancy_inflate" : "filtered_cloud_fallback",
+          map_stamp.toSec(), map_age, mapFresh(now) ? "true" : "false",
+          segment.str().c_str());
       *reason = "ASCENT_PATH_BLOCKED";
       return false;
     }
@@ -2503,6 +2615,12 @@ class SectorInspectionMissionNode {
     // representation, not the topic's nominal type, selects the threshold.
     return !occupancy_points_.empty() &&
            filter_config_.map_points_are_inflated;
+  }
+
+  const char* planningMapRepresentation() const {
+    if (occupancy_points_.empty()) return "filtered_cloud_fallback";
+    return planningMapPointsAreInflated() ? "inflated_occupancy"
+                                          : "raw_occupancy";
   }
 
   CandidateFilterConfig planningFilterConfig() const {
@@ -3865,12 +3983,24 @@ class SectorInspectionMissionNode {
   }
 
   bool startExitGate(const ros::Time& now, const std::string& reason) {
+    exit_gate_last_failure_.clear();
     if (current_layer_ < 0 ||
         current_layer_ >= static_cast<int>(inspection_heights_.size())) {
+      exit_gate_last_failure_ =
+          "EXIT_GATE_ADMISSION_FAILED:INVALID_CURRENT_LAYER";
+      ROS_ERROR("[SECTOR_INSPECTION_TASK] %s",
+                exit_gate_last_failure_.c_str());
       return false;
     }
     if (!layer_entry_gate_valid_[current_layer_] &&
         !lockLayerGate(current_layer_, now)) {
+      exit_gate_last_failure_ =
+          "EXIT_GATE_ADMISSION_FAILED:LAYER_GATE_UNAVAILABLE";
+      if (!entry_gate_last_failure_.empty()) {
+        exit_gate_last_failure_ += ":" + entry_gate_last_failure_;
+      }
+      ROS_ERROR("[SECTOR_INSPECTION_TASK] %s",
+                exit_gate_last_failure_.c_str());
       return false;
     }
     CandidatePoint exit_gate = layer_entry_gates_[current_layer_];
@@ -3882,19 +4012,36 @@ class SectorInspectionMissionNode {
     exit_gate.layer_id = current_layer_;
     exit_gate.require_arrival_yaw = false;
     exit_gate.face_tower = true;
-    if (!mapFresh(now)) return false;
+    if (!mapFresh(now)) {
+      exit_gate_last_failure_ = "EXIT_GATE_ADMISSION_FAILED:MAP_STALE";
+      ROS_ERROR("[SECTOR_INSPECTION_TASK] %s",
+                exit_gate_last_failure_.c_str());
+      return false;
+    }
     const std::string map_blockage =
         mappedEndpointBlockage(exit_gate, mappedTaskClearance());
     if (!map_blockage.empty()) {
-      ROS_ERROR("[SECTOR_INSPECTION_TASK] EXIT_GATE rejected by latest map: %s",
-                map_blockage.c_str());
+      exit_gate_last_failure_ =
+          "EXIT_GATE_ADMISSION_FAILED:LATEST_MAP_ENDPOINT:" + map_blockage;
+      ROS_ERROR("[SECTOR_INSPECTION_TASK] %s",
+                exit_gate_last_failure_.c_str());
+      return false;
+    }
+    const std::string hard_static_risk = hardStaticEndpointRisk(exit_gate);
+    if (!hard_static_risk.empty()) {
+      exit_gate_last_failure_ =
+          "EXIT_GATE_ADMISSION_FAILED:HARD_STATIC_ENDPOINT:" +
+          hard_static_risk;
+      ROS_ERROR("[SECTOR_INSPECTION_TASK] %s",
+                exit_gate_last_failure_.c_str());
       return false;
     }
     const std::string static_risk = staticEndpointRisk(exit_gate);
     if (!static_risk.empty()) {
-      ROS_ERROR("[SECTOR_INSPECTION_TASK] EXIT_GATE rejected by coarse geometry: %s",
-                static_risk.c_str());
-      return false;
+      ROS_WARN("[SECTOR_INSPECTION_DIAG] uav=%d EXIT_GATE coarse-static "
+               "risk=%s action=SOFT_DIAGNOSTIC; latest-map endpoint and "
+               "hard-static checks passed",
+               uav_id_, static_risk.c_str());
     }
     final_return_ = true;
     have_sent_goal_ = false;
@@ -3907,6 +4054,85 @@ class SectorInspectionMissionNode {
     transition(MissionState::kGoToExitGate, reason);
     publishGoal(exit_gate, GoalKind::kExitGate);
     return true;
+  }
+
+  bool managedHomeReturnGoalSafe(const CandidatePoint& target,
+                                 const ros::Time& now,
+                                 bool require_straight_corridor) const {
+    if (!have_odom_ || !mapFresh(now) ||
+        !mappedEndpointClear(target, mappedTaskClearance())) {
+      return false;
+    }
+    if (!require_straight_corridor) {
+      return true;
+    }
+    geometry_msgs::Point to;
+    to.x = target.x;
+    to.y = target.y;
+    to.z = target.z;
+    return mappedCorridorSafe(pointOf(odom_), to);
+  }
+
+  bool startHomeOverheadTransit(const ros::Time& now,
+                                const std::string& reason) {
+    if (!have_home_position_ || current_layer_ < 0 ||
+        current_layer_ >= static_cast<int>(inspection_heights_.size())) {
+      return false;
+    }
+    CandidatePoint overhead = buildHomeOverheadGoal(
+        home_position_, inspection_heights_[current_layer_],
+        "HOME_OVERHEAD_L" + std::to_string(current_layer_) + "_Z" +
+            std::to_string(inspection_heights_[current_layer_]));
+    if (overhead.id.empty() ||
+        !managedHomeReturnGoalSafe(overhead, now, false)) {
+      return false;
+    }
+    const std::vector<double> descent_heights =
+        deriveDescendingIntermediateHeights(
+            overhead.z, transit_height_,
+            return_descent_intermediate_heights_);
+    return_descent_goals_ = buildVerticalGoalsAtHeights(
+        overhead, descent_heights, "SEGMENTED_HOME_DESCENT");
+    return_descent_index_ = 0U;
+    have_sent_goal_ = false;
+    arrival_since_ = ros::Time(0);
+    transition(MissionState::kHomeOverheadTransit,
+               reason + "; home-overhead EGO transit selected");
+    ROS_WARN(
+        "[SECTOR_INSPECTION_RETURN] uav=%d HOME_OVERHEAD=(%.2f,%.2f,%.2f) "
+        "descent_intermediates=%zu final_bridge_height=%.2f "
+        "action=PUBLISH_FRESH_EGO_GOAL",
+        uav_id_, overhead.x, overhead.y, overhead.z,
+        return_descent_goals_.size(), transit_height_);
+    publishGoal(overhead, GoalKind::kHomeOverhead);
+    return true;
+  }
+
+  void abortManagedHomeReturn(const std::string& reason) {
+    failure_reason_ = reason;
+    mission_failure_latched_ = true;
+    publishMissionCompletion();
+    requestBridgeReturnOrLand(
+        reason + "; managed overhead/segmented return failed closed");
+  }
+
+  void recoverFromExitGateAdmissionFailure(const std::string& reason) {
+    exit_gate_last_failure_ = reason;
+    failure_reason_ = reason;
+    ROS_ERROR("[SECTOR_INSPECTION_DIAG] uav=%d mission_state=%s %s "
+              "action=START_BOUNDED_RETURN_EGRESS",
+              uav_id_, missionStateName(state_),
+              exit_gate_last_failure_.c_str());
+    return_egress_retries_ = 0;
+    if (buildReturnEgress()) {
+      transition(MissionState::kReturnEgress,
+                 exit_gate_last_failure_ +
+                     "; bounded tower-exterior recovery selected");
+      return;
+    }
+    requestReturnOrLand(
+        exit_gate_last_failure_ +
+        "; bounded RETURN_EGRESS could not be initialized");
   }
 
   bool startNormalReturn(const std::string& reason,
@@ -4202,9 +4428,12 @@ class SectorInspectionMissionNode {
         have_last_published_target_ &&
         goal_xy_change <= layer_transition_same_xy_tolerance_;
     const char* switch_mode =
-        kind == GoalKind::kLayerTransition
+        kind == GoalKind::kLayerTransition ||
+                kind == GoalKind::kSegmentedHomeDescent
             ? (same_xy ? "VERTICAL" : "DIAGONAL")
-            : "NORMAL";
+            : (kind == GoalKind::kHomeOverhead
+                   ? "HOME_OVERHEAD_TRANSIT"
+                   : "NORMAL");
     const CandidatePoint* entry_exit_gate =
         current_layer_ >= 0 &&
                 current_layer_ <
@@ -4448,6 +4677,8 @@ class SectorInspectionMissionNode {
         state_ == MissionState::kRecovering ||
         state_ == MissionState::kLayerTransition ||
         state_ == MissionState::kGoToExitGate ||
+        state_ == MissionState::kHomeOverheadTransit ||
+        state_ == MissionState::kSegmentedHomeDescent ||
         state_ == MissionState::kNormalReturn ||
         state_ == MissionState::kReturnEgress;
     const auto permission_ready =
@@ -4478,11 +4709,22 @@ class SectorInspectionMissionNode {
     const bool landing_permission_ready = permission_ready(
         require_landing_permission_, landing_permission_,
         landing_permission_received_);
-    if (enable_control_ && require_transition_permission_ &&
-        active_mission_state && !transition_permission_ready) {
+    // task_start_permission is also the continuously refreshed global swarm
+    // safety lease.  Keep that lease separate from the serialized layer
+    // transition token so non-owners may continue their current orbit.
+    if (enable_control_ && require_task_start_permission_ &&
+        active_mission_state && !task_start_permission_ready) {
       coordination_hold_pending_ = true;
       phase_hold_pending_ = false;
       requestHold("SWARM_SAFETY_INHIBIT: coordinator permission false/stale");
+      return;
+    }
+    if (enable_control_ && require_transition_permission_ &&
+        state_ == MissionState::kLayerTransition &&
+        !transition_permission_ready) {
+      coordination_hold_pending_ = true;
+      phase_hold_pending_ = false;
+      requestHold("SWARM_TRANSITION_INHIBIT: owner permission false/stale");
       return;
     }
     const bool active_orbit_state =
@@ -4525,6 +4767,9 @@ class SectorInspectionMissionNode {
         normal_return_failure_pending_ = true;
       } else if (state_ == MissionState::kGoToExitGate) {
         exit_gate_failure_pending_ = true;
+      } else if (state_ == MissionState::kHomeOverheadTransit ||
+                 state_ == MissionState::kSegmentedHomeDescent) {
+        managed_home_return_failure_pending_ = true;
       } else if (state_ == MissionState::kReturnEgress) {
         return_egress_failure_pending_ = true;
       } else if (state_ == MissionState::kLayerTransition) {
@@ -4649,8 +4894,8 @@ class SectorInspectionMissionNode {
           if (!entry_permission_ready) {
             coverage_wait_started_ = ros::Time(0);
             transition(MissionState::kWaitEntryPermission,
-                       "entry hover and map are ready; waiting for exclusive "
-                       "swarm ENTRY corridor permission");
+                       "entry hover and map are ready; waiting for individual "
+                       "role-prefix ENTRY corridor permission");
           } else if (lockFinalEntryGate(now) && startEntryGateTransit()) {
             coverage_wait_started_ = ros::Time(0);
           } else if (!entry_gate_last_failure_.empty()) {
@@ -4724,7 +4969,13 @@ class SectorInspectionMissionNode {
         if (!buildEntryCorridorCandidates(now)) {
           entry_gate_failure_pending_ = true;
           entry_gate_no_safe_candidate_hold_ = true;
-          requestHold("NO_FULL_CORRIDOR_CANDIDATE_AT_1M_CLEARANCE");
+          std::ostringstream reason;
+          reason << "NO_FULL_CORRIDOR_CANDIDATE"
+                 << ":effective_clearance=" << std::fixed
+                 << std::setprecision(3) << mappedTaskClearance()
+                 << ";representation="
+                 << planningMapRepresentation();
+          requestHold(reason.str());
         }
       } else if (entry_corridor_locked_ &&
                  !selectedEntryCorridorStillSafe(now)) {
@@ -4737,8 +4988,9 @@ class SectorInspectionMissionNode {
         publishEntryCorridorCandidates(now);
         ROS_INFO_THROTTLE(
             1.0,
-            "[THREE_UAV_ENTRY] UAV%d waiting for joint corridor selection and "
-            "common entry permission candidates=%zu locked=%s",
+            "[THREE_UAV_ENTRY] UAV%d waiting for role-prefix corridor "
+            "selection and individual entry permission candidates=%zu "
+            "locked=%s",
             uav_id_, entry_corridor_candidates_.size(),
             entry_corridor_locked_ ? "true" : "false");
       }
@@ -4756,7 +5008,7 @@ class SectorInspectionMissionNode {
           requestTracking(false);
           transition(
               MissionState::kWaitOrbitStagingPermission,
-              "ENTRY_GATE reached; ENTRY_READY waiting for common "
+               "ENTRY_GATE reached; ENTRY_READY waiting for individual "
               "MOVE_TO_ORBIT_STAGING permission");
         } else if (!lockDirectionalInitialSector(now)) {
           entry_gate_failure_pending_ = true;
@@ -5056,7 +5308,11 @@ class SectorInspectionMissionNode {
                      orbit_completion_reason.c_str());
             if (current_layer_visit_index_ + 1U <
                 layer_visit_sequence_.size()) {
-              if (!transition_permission_ready) {
+              // Always enter the explicit wait state when coordination owns
+              // layer serialization. A previously published permission from
+              // the just-finished orbit must never be consumed as a new
+              // transition grant in the same timer cycle.
+              if (require_transition_permission_) {
                 requestTracking(false);
                 transition(MissionState::kWaitLayerPermission,
                            "closed layer complete at transition anchor; "
@@ -5083,15 +5339,11 @@ class SectorInspectionMissionNode {
                            "final closed inspection layer completed; "
                            "going to current-layer EXIT_GATE")) {
               // startExitGate publishes the new active target immediately.
-            } else if (buildReturnEgress()) {
-              transition(
-                  MissionState::kReturnEgress,
-                  "current-layer EXIT_GATE unavailable; bounded "
-                  "tower-exterior fallback selected");
             } else {
-              requestReturnOrLand(
-                  "safe RETURN_EGRESS could not be initialized after "
-                  "final layer");
+              recoverFromExitGateAdmissionFailure(
+                  exit_gate_last_failure_.empty()
+                      ? "EXIT_GATE_ADMISSION_FAILED:UNSPECIFIED_HARD_GATE"
+                      : exit_gate_last_failure_);
             }
           } else {
             current_sector_ = lap_visit_sequence_[visit_cursor_];
@@ -5206,11 +5458,18 @@ class SectorInspectionMissionNode {
                  "mission_state=%s sector=%d target=%s action=MOVE_TO_EXIT_GATE",
                  uav_id_, missionStateName(state_), activeSectorId(),
                  active_target_.id.c_str());
-        if (requestResume() &&
-            startExitGate(
-                now,
-                "exclusive swarm EXIT/return corridor permission granted")) {
+        if (!requestResume()) {
+          recoverFromExitGateAdmissionFailure(
+              "EXIT_GATE_ADMISSION_FAILED:BRIDGE_RESUME_REJECTED");
+        } else if (startExitGate(
+                       now,
+                       "exclusive swarm EXIT/return corridor permission granted")) {
           // The existing EXIT_GATE and return logic resumes unchanged.
+        } else {
+          recoverFromExitGateAdmissionFailure(
+              exit_gate_last_failure_.empty()
+                  ? "EXIT_GATE_ADMISSION_FAILED:UNSPECIFIED_HARD_GATE"
+                  : exit_gate_last_failure_);
         }
       }
     } else if (state_ == MissionState::kGoToExitGate) {
@@ -5237,8 +5496,12 @@ class SectorInspectionMissionNode {
                   "EXIT_GATE reached but reverse ingress reference unavailable");
             }
           } else {
-            requestBridgeReturnOrLand(
-                "current-layer EXIT_GATE reached; direct EGO return home");
+            if (!startHomeOverheadTransit(
+                    now,
+                    "current-layer EXIT_GATE reached at inspection height")) {
+              abortManagedHomeReturn(
+                  "HOME_OVERHEAD admission failed on latest map");
+            }
           }
         }
       } else {
@@ -5253,13 +5516,94 @@ class SectorInspectionMissionNode {
           requestReturnOrLand("EXIT_GATE target timeout");
         }
       }
+    } else if (state_ == MissionState::kHomeOverheadTransit) {
+      if (!have_sent_goal_) {
+        CandidatePoint overhead = buildHomeOverheadGoal(
+            home_position_, inspection_heights_[current_layer_],
+            "HOME_OVERHEAD_L" + std::to_string(current_layer_) + "_Z" +
+                std::to_string(inspection_heights_[current_layer_]));
+        if (!managedHomeReturnGoalSafe(overhead, now, false)) {
+          abortManagedHomeReturn(
+              "HOME_OVERHEAD endpoint invalid in latest map");
+        } else {
+          publishGoal(overhead, GoalKind::kHomeOverhead);
+        }
+      } else if (arrived(now)) {
+        if (arrival_since_.isZero()) arrival_since_ = now;
+        if (now - arrival_since_ >= ros::Duration(arrival_hold_duration_)) {
+          have_sent_goal_ = false;
+          arrival_since_ = ros::Time(0);
+          transition(MissionState::kSegmentedHomeDescent,
+                     "HOME_OVERHEAD reached; fixed-XY descent begins");
+        }
+      } else {
+        arrival_since_ = ros::Time(0);
+        std::string failure;
+        if (plannerFailure(now, &failure)) {
+          abortManagedHomeReturn(
+              "HOME_OVERHEAD planner failure: " + failure);
+        } else if (noProgressTimedOut(now)) {
+          abortManagedHomeReturn("HOME_OVERHEAD no progress");
+        } else if (now - goal_sent_ >
+                   ros::Duration(return_egress_target_timeout_)) {
+          abortManagedHomeReturn("HOME_OVERHEAD target timeout");
+        }
+      }
+    } else if (state_ == MissionState::kSegmentedHomeDescent) {
+      if (return_descent_index_ >= return_descent_goals_.size()) {
+        requestBridgeReturnOrLand(
+            "segmented home descent reached final 10m intermediate; "
+            "bridge owns only final HOME_HOVER descent");
+      } else if (!have_sent_goal_) {
+        const CandidatePoint& target =
+            return_descent_goals_[return_descent_index_];
+        if (!managedHomeReturnGoalSafe(target, now, true)) {
+          abortManagedHomeReturn(
+              "SEGMENTED_HOME_DESCENT occupancy corridor blocked");
+        } else {
+          ROS_WARN(
+              "[SECTOR_INSPECTION_RETURN] uav=%d descent segment=%zu/%zu "
+              "same_home_xy=(%.2f,%.2f) target_z=%.2f "
+              "map_fresh=true corridor_clear=true action=EGO_FRESH_REPLAN",
+              uav_id_, return_descent_index_ + 1U,
+              return_descent_goals_.size(), target.x, target.y, target.z);
+          publishGoal(target, GoalKind::kSegmentedHomeDescent);
+        }
+      } else if (arrived(now)) {
+        if (arrival_since_.isZero()) arrival_since_ = now;
+        if (now - arrival_since_ >= ros::Duration(arrival_hold_duration_)) {
+          ++return_descent_index_;
+          have_sent_goal_ = false;
+          arrival_since_ = ros::Time(0);
+          if (return_descent_index_ >= return_descent_goals_.size()) {
+            requestBridgeReturnOrLand(
+                "segmented home descent reached final 10m intermediate; "
+                "bridge owns only final HOME_HOVER descent");
+          }
+        }
+      } else {
+        arrival_since_ = ros::Time(0);
+        std::string failure;
+        if (plannerFailure(now, &failure)) {
+          abortManagedHomeReturn(
+              "SEGMENTED_HOME_DESCENT planner failure: " + failure);
+        } else if (noProgressTimedOut(now)) {
+          abortManagedHomeReturn("SEGMENTED_HOME_DESCENT no progress");
+        } else if (now - goal_sent_ >
+                   ros::Duration(return_egress_target_timeout_)) {
+          abortManagedHomeReturn("SEGMENTED_HOME_DESCENT target timeout");
+        }
+      }
     } else if (state_ == MissionState::kHolding) {
       if (now - state_entered_ >= ros::Duration(failure_hold_duration_)) {
         if (coordination_hold_pending_) {
           const bool resuming_entry =
               state_before_hold_ == MissionState::kEntryGateTransit;
+          const bool resuming_transition =
+              state_before_hold_ == MissionState::kLayerTransition;
           const bool coordination_restored =
-              transition_permission_ready &&
+              task_start_permission_ready &&
+              (!resuming_transition || transition_permission_ready) &&
               (!phase_hold_pending_ || orbit_permission_ready) &&
               (!resuming_entry || entry_permission_ready);
           if (!coordination_restored) {
@@ -5401,6 +5745,11 @@ class SectorInspectionMissionNode {
           requestReturnOrLand(
               failure_reason_ +
               "; EXIT_GATE tracking failed, using bounded safe fallback");
+        } else if (managed_home_return_failure_pending_) {
+          managed_home_return_failure_pending_ = false;
+          abortManagedHomeReturn(
+              failure_reason_ +
+              "; HOME_OVERHEAD/SEGMENTED_HOME_DESCENT tracking failed");
         } else if (normal_return_failure_pending_) {
           normal_return_failure_pending_ = false;
           ++normal_return_retries_;
@@ -5895,7 +6244,8 @@ class SectorInspectionMissionNode {
   RecoveryConfig recovery_config_;
   ReturnEgressConfig return_egress_config_;
   std::vector<CandidateOffset> offsets_;
-  std::vector<double> inspection_heights_, ascent_step_heights_;
+  std::vector<double> inspection_heights_, ascent_step_heights_,
+      return_descent_intermediate_heights_;
   EntryGateConfig entry_gate_config_;
   std::vector<StaticObstacle> obstacles_;
   std::vector<Sector> sectors_;
@@ -5907,6 +6257,7 @@ class SectorInspectionMissionNode {
   std::vector<CandidatePoint> successful_ingress_trace_;
   std::vector<CandidatePoint> normal_return_goals_;
   std::vector<CandidatePoint> return_egress_goals_;
+  std::vector<CandidatePoint> return_descent_goals_;
   std::vector<CandidatePoint> entry_gate_candidates_;
   std::vector<EntryCorridorCandidate> entry_corridor_candidates_;
   std::vector<CandidatePoint> layer_transition_goals_;
@@ -5923,6 +6274,7 @@ class SectorInspectionMissionNode {
   std::size_t current_sector_{0}, approach_index_{0}, recovery_step_{0},
       entry_gate_transit_index_{0}, return_egress_index_{0},
       normal_return_index_{0}, layer_transition_index_{0},
+      return_descent_index_{0},
       visited_sector_count_{0}, visit_cursor_{0},
       current_layer_visit_index_{0};
   int return_egress_retries_{0}, normal_return_retries_{0},
@@ -5949,7 +6301,8 @@ class SectorInspectionMissionNode {
   GoalKind active_goal_kind_{GoalKind::kEntryGate};
   MissionState state_{MissionState::kWaitInputs};
   MissionState state_before_hold_{MissionState::kWaitInputs};
-  std::string bridge_state_, failure_reason_, entry_gate_last_failure_;
+  std::string bridge_state_, failure_reason_, entry_gate_last_failure_,
+      exit_gate_last_failure_;
   nav_msgs::Odometry odom_;
   quadrotor_msgs::PositionCommand command_;
   astra_custom_msgs::PlannerStatus planner_status_;
@@ -5962,6 +6315,7 @@ class SectorInspectionMissionNode {
       entry_gate_relocation_pending_{false},
       entry_gate_no_safe_candidate_hold_{false},
       exit_gate_failure_pending_{false},
+      managed_home_return_failure_pending_{false},
       return_egress_failure_pending_{false},
       normal_return_failure_pending_{false}, sector_retry_pending_{false},
       ascent_retry_pending_{false}, normal_return_attempted_{false},
@@ -5979,8 +6333,8 @@ class SectorInspectionMissionNode {
   bool orbit_staging_arrived_{false}, orbit_released_latched_{false};
   bool mission_failure_latched_{false}, orbit_complete_{false};
   geometry_msgs::Point home_position_, coverage_origin_;
-  ros::Time odom_received_, command_received_, cloud_received_,
-      occupancy_received_, planner_status_received_, bridge_state_received_,
+  ros::Time odom_received_, command_received_, cloud_stamp_, cloud_received_,
+      occupancy_stamp_, occupancy_received_, planner_status_received_, bridge_state_received_,
       coverage_received_, fcu_state_received_, extended_state_received_,
       task_start_permission_received_, transition_permission_received_, entry_permission_received_,
       orbit_staging_permission_received_, orbit_permission_received_,
