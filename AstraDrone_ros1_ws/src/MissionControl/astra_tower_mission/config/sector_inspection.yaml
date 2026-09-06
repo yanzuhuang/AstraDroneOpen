@@ -128,6 +128,10 @@ coverage:
   sensor_max_elevation_deg: 52.2
 
 candidate:
+  # Reuse the validated single-UAV high-altitude fixed-sector geometry and
+  # inner-radius-first candidate chain in the multi-UAV mission. ENTRY
+  # generation and coarse corridor policy remain independently owned.
+  high_altitude_policy: true
   # Candidate order does not determine the winner. Hard live-map checks are
   # followed by a weighted score that strongly penalizes radial/sector drift.
   angle_offsets_deg: [0.0, -5.0, 5.0, -10.0, 10.0, -12.0, 12.0]
@@ -145,8 +149,9 @@ candidate:
   score_distance_weight: 0.1
   score_continuity_weight: 0.2
   # The crane OBB encloses large empty volumes between sparse mesh members.
-  # Keep it as a risk/corridor hint; fresh inflated occupancy remains the hard
-  # endpoint authority and the tower radial keep-out remains hard.
+  # Keep it as the same soft endpoint/corridor risk used by the successful
+  # single-UAV high-altitude implementation. Fresh inflated occupancy remains
+  # the hard endpoint authority and the tower radial keep-out remains hard.
   known_obstacle_is_hard_constraint: false
 
 # Conservative known static geometry. These coarse regions only contribute

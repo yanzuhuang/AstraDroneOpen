@@ -14,7 +14,7 @@ for argument in "$@"; do
       ;;
     --help)
       echo "three_uav_multi_height_inspection.sh [--single-layer|--multi-layer] [three_uav_inspection options]"
-      echo "Default: distinct top heights with one layer; --multi-layer enables 34->30, 28->24 and 22->18 m."
+      echo "Default: distinct top heights 26/20/14 m; --multi-layer enables 26->22, 20->16 and 14->10 m."
       forwarded+=("$argument")
       ;;
     *) forwarded+=("$argument") ;;

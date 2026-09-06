@@ -360,6 +360,14 @@ def joint_entry_corridor_selection(
 
             minimum_clearance = min(float(item["clearance"])
                                     for item in combination)
+            nominal_gaps = [
+                normalize_degrees(direction * (
+                    float(nominal_angles[leader])
+                    - float(nominal_angles[follower])))
+                for leader, follower in zip(ids[:-1], ids[1:])]
+            role_gap_deviation = sum(
+                abs((gap - nominal_gap + 180.0) % 360.0 - 180.0)
+                for gap, nominal_gap in zip(gaps, nominal_gaps))
             angle_deviation = sum(abs((float(selected[uid]["angle_deg"])
                                        - float(nominal_angles[uid]) + 180.0)
                                       % 360.0 - 180.0) for uid in ids)
@@ -367,10 +375,15 @@ def joint_entry_corridor_selection(
                 "ingress_length", _polyline_length(paths[uid])))
                 for uid, item in zip(ids, combination))
             identifiers = tuple(selected[uid]["id"] for uid in ids)
-            rank = (-minimum_clearance, angle_deviation, ingress_length,
-                    identifiers)
+            # Prefix arbitration must prefer the configured relative role
+            # geometry before minimizing each candidate's absolute angle.
+            # Otherwise a locally attractive middle-role point can consume
+            # the only 20--30 degree slot available to the trailing role.
+            rank = (-minimum_clearance, role_gap_deviation,
+                    angle_deviation, ingress_length, identifiers)
             rank_values = {
                 "minimum_clearance": minimum_clearance,
+                "role_gap_deviation": role_gap_deviation,
                 "angle_deviation": angle_deviation,
                 "ingress_length": ingress_length,
                 "candidate_ids": list(identifiers),
@@ -383,10 +396,12 @@ def joint_entry_corridor_selection(
                 current = outcome["best_valid_rank"]
                 if (current is None
                         or (-rank_values["minimum_clearance"],
+                            rank_values["role_gap_deviation"],
                             rank_values["angle_deviation"],
                             rank_values["ingress_length"],
                             tuple(rank_values["candidate_ids"]))
                         < (-current["minimum_clearance"],
+                           current["role_gap_deviation"],
                            current["angle_deviation"],
                            current["ingress_length"],
                            tuple(current["candidate_ids"]))):
@@ -398,6 +413,7 @@ def joint_entry_corridor_selection(
                     "gaps": gaps,
                     "minimum_clearance": minimum_clearance,
                     "minimum_pair_distance": minimum_pair_distance,
+                    "role_gap_deviation": role_gap_deviation,
                     "angle_deviation": angle_deviation,
                     "ingress_length": ingress_length,
                     "rank": rank_values,
@@ -950,6 +966,126 @@ def entry_ready_barrier(uav_ids, states, health, mission_heights,
     return all(reasons.get(uid) == "READY" for uid in uav_ids), reasons
 
 
+def derive_layer_target_heights(uav_ids, initial_heights, layer_offsets,
+                                layer_index):
+    """Derive one layer's per-UAV targets without vehicle-specific rules."""
+    ids = [int(uid) for uid in uav_ids]
+    heights = [float(value) for value in initial_heights]
+    offsets = [float(value) for value in layer_offsets]
+    if (not ids or len(ids) != len(set(ids)) or len(heights) != len(ids)
+            or not offsets or layer_index < 0 or layer_index >= len(offsets)
+            or not all(math.isfinite(value) for value in heights + offsets)
+            or abs(offsets[0]) > 1.0e-9
+            or any(offsets[index] >= offsets[index - 1]
+                   for index in range(1, len(offsets)))):
+        return {}
+    return {
+        uid: heights[index] + offsets[layer_index]
+        for index, uid in enumerate(ids)
+    }
+
+
+def layer_transition_speed_config_valid(multi_layer_enabled,
+                                        transition_speed, orbit_speed):
+    """Validate transition speed only when layer transitions are active."""
+    transition = float(transition_speed)
+    orbit = float(orbit_speed)
+    if not math.isfinite(transition) or not math.isfinite(orbit):
+        return False
+    if transition <= 0.0 or orbit <= 0.0:
+        return False
+    return (not bool(multi_layer_enabled)) or transition <= orbit
+
+
+def downstream_handoff_ready(uid, role_order, layers, released_layers):
+    """A role remains available until its immediate follower joins this layer."""
+    index = role_order.index(uid)
+    return (index + 1 == len(role_order)
+            or released_layers.get(role_order[index + 1], -1) >= layers[uid])
+
+
+def async_role_transition_permissions(
+        role_order, states, health, initial_heights, offsets, layers,
+        confirmed_release_layers, height_tolerance, maximum_speed,
+        globally_clear,
+        owner=0, started=False):
+    """One sticky owner; completion is witnessed, never inferred from height alone.
+
+    Per-role layers count completed transitions. No round-wide reset or barrier
+    is used; a predecessor may orbit or remain safely latched at target-layer
+    staging while its follower is still on an older layer.  A follower becomes
+    eligible as soon as its immediate predecessor has physically completed the
+    target-layer transition; target-layer orbit release is intentionally not a
+    second transition barrier.
+    """
+    layers = dict(layers)
+    grants = {uid: False for uid in role_order}
+    reasons = {uid: "WAITING_FOR_ORBIT_COMPLETION" for uid in role_order}
+    if (not role_order or len(set(role_order)) != len(role_order)
+            or set(layers) != set(role_order)
+            or set(initial_heights) != set(role_order)
+            or owner not in set(role_order) | {0}
+            or not offsets or height_tolerance <= 0 or maximum_speed < 0
+            or any(not math.isfinite(float(v)) for v in
+                   list(initial_heights.values()) + list(offsets)
+                   + [height_tolerance, maximum_speed])
+            or any(not isinstance(v, int) or v < 0 or v >= len(offsets)
+                   for v in layers.values())):
+        return grants, owner, started, layers, {uid: "INVALID_CONFIG" for uid in role_order}
+    if (not globally_clear or any(uid not in states or not health.get(uid, False)
+                                for uid in role_order)):
+        return grants, owner, started, layers, {uid: "STALE_OR_SAFETY_INVALID" for uid in role_order}
+
+    if any(states[uid].mission_phase == "LAYER_TRANSITION" and uid != owner
+           for uid in role_order):
+        return grants, owner, started, layers, {uid: "UNOWNED_TRANSITION" for uid in role_order}
+
+    def settled(uid, layer):
+        state = states[uid]
+        values = [state.current_height, state.velocity.x,
+                  state.velocity.y, state.velocity.z]
+        return (all(math.isfinite(float(v)) for v in values)
+                and abs(values[0] - initial_heights[uid] - offsets[layer]) <= height_tolerance
+                and math.sqrt(sum(v*v for v in values[1:])) <= maximum_speed)
+
+    if owner:
+        phase = states[owner].mission_phase
+        started = started or phase == "LAYER_TRANSITION"
+        target = layers[owner] + 1
+        if (started and target < len(offsets)
+                and phase == "ORBIT_STAGING_READY" and settled(owner, target)):
+            layers[owner] = target
+            reasons[owner] = "TRANSITION_COMPLETE"
+            # Return this tick without granting another owner: the caller first
+            # resets only this role's orbit release and exposes the new layer.
+            return grants, 0, False, layers, reasons
+        if phase in {"WAIT_TRANSITION_PERMISSION", "LAYER_TRANSITION", "HOLDING"}:
+            grants[owner] = True
+            reasons[owner] = "OWNER_ACTIVE"
+        else:
+            reasons[owner] = "OWNER_AWAITING_STABLE_TARGET"
+        return grants, owner, started, layers, reasons
+
+    for index, uid in enumerate(role_order):
+        target = layers[uid] + 1
+        if target >= len(offsets):
+            reasons[uid] = "FINAL_LAYER"
+            continue
+        if states[uid].mission_phase != "WAIT_TRANSITION_PERMISSION":
+            continue
+        if index and layers[role_order[index - 1]] < target:
+            reasons[uid] = "WAITING_FOR_PREDECESSOR"
+            continue
+        if (confirmed_release_layers.get(uid, -1) != layers[uid]
+                or not settled(uid, layers[uid])):
+            reasons[uid] = "SOURCE_NOT_READY"
+            continue
+        grants[uid] = True
+        reasons[uid] = "OWNER_GRANTED"
+        return grants, uid, False, layers, reasons
+    return grants, 0, False, layers, reasons
+
+
 def serialized_transition_permissions(
         ordered_uav_ids, states, health, target_heights, height_tolerance,
         maximum_speed, globally_clear, active_owner=0, started_ids=None,
@@ -997,7 +1133,8 @@ def serialized_transition_permissions(
                     - float(target_heights[uid])) <= float(height_tolerance)
             and speed <= float(maximum_speed))
 
-    completion_phases = {"EVALUATING", "TARGET_LOCKED", "NAVIGATING"}
+    completion_phases = {
+        "ORBIT_STAGING_READY", "EVALUATING", "TARGET_LOCKED", "NAVIGATING"}
     allowed_owner_phases = {
         "WAIT_TRANSITION_PERMISSION", "LAYER_TRANSITION", "HOLDING"}
     failure_phases = {
@@ -1146,6 +1283,31 @@ def sequential_orbit_release_allowed(follower_position, leader_position,
         "globally_clear": bool(globally_clear),
     }
     return all(conditions.values()), phase, speed, conditions
+
+
+def target_layer_late_release_allowed(phase, phase_max_degrees, conditions):
+    """Release a safe target-layer follower that arrived after the window.
+
+    The ordinary 65--70 degree gate remains authoritative for the initial
+    orbit. During an asynchronous layer transition, waiting another full
+    release window after the predecessor is already safely ahead only
+    increases the gap. All non-phase gates remain mandatory, and a phase at
+    or beyond 180 degrees is rejected to preserve fixed role order.
+    """
+    required = (
+        "leader_forward_stable", "leader_trajectory_fresh",
+        "follower_ready", "predicted_clear", "globally_clear")
+    if not isinstance(conditions, dict):
+        return False
+    try:
+        phase = float(phase)
+        phase_max_degrees = float(phase_max_degrees)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        math.isfinite(phase) and math.isfinite(phase_max_degrees)
+        and 0.0 < phase_max_degrees < phase < 180.0
+        and all(bool(conditions.get(name, False)) for name in required))
 
 
 def completed_predecessor_handoff_allowed(

@@ -303,3 +303,18 @@ ENTRY 应按 `home/hover → PRE_ENTRY → ENTRY_GATE → ORBIT_STAGING` 的顺�
 - 修改 `worksite.world` 来迎合候选；
 - 将 `dist0` 当作硬净空；
 - 在没有新联合选择的情况下绕过三机管理器单独换点。
+
+
+## 15. 高空异步多层任务补充（2026-09-05）
+
+本节仅适用于显式启用多层协调的高空任务；第 11 节的同高度基线配置与 single-layer 协调保持原样。
+
+- `formation_role_order` 定义角色链，当前为 `[3,2,1]`。任意时刻最多一个 sticky transition owner；安全或 freshness 失效撤销许可，不把未完成 owner 转给其他机。
+- 首角色完成自己的当前层即可申请切层；其余角色还须等待直接 predecessor 完成目标层 transition。取消全机 orbit-complete 与全机 transition-complete barrier。
+- transition complete 必须有 owner 实际进入 `LAYER_TRANSITION` 的证据，随后到达目标高度、速度稳定并进入 `ORBIT_STAGING_READY`。每机独立保存层号，只重建该机的新层 release。
+- 首角色到达新层后即可放行；followers 优先使用同层直接 predecessor 的正常运动 phase release（65°～70°）。若 follower 完成 transition 时 predecessor 已安全越过窗口，则目标层允许在有界 `<180°` 角色顺序内立即接续；freshness、前向速度、当前/预测 3D 与椭球净空、global safety 仍全部为硬门。不同层之间不做编队相位/软速度跟随；全局机间安全继续生效。
+- 最终层闭环后，若直接 follower 尚未获得该层 release，predecessor 继续执行当前层经候选 admission 的巡航，不进入 EXIT。handoff 携带 follower 已获 release 的层号及接收 freshness，旧层确认不能满足新层条件。没有 follower 或 follower 已获该层 release 才可结束；异常 completed-predecessor fallback 保留。
+- `candidate/high_altitude_policy=true` 在高空 YAML 显式启用：普通扇区使用固定 `0/45/.../315°` 网格；第一点、普通点和下一层第一点复用已有候选筛选与半径分层选择。ENTRY 角色参考角、generation 协议、HOME_OVERHEAD 与 LAND serialization 不变。
+- 高空普通候选（包括第一巡塔点）复用真实成功的单机高空语义：塔体径向 keep-out 与 fresh inflated occupancy 是硬门，`tower_crane` 整体 coarse OBB 只保留为端点/走廊 soft risk，不得用它封死整圈候选。live-map 直线走廊仍是 EGO 绕行风险提示，不能将直线阻塞等同于所有路径不可达。
+- 高空现有 `minimum_clearance=2.0 m` 比通用规则的 1.0 m 更严格，本轮不降低；已膨胀地图附加净空仍为 0.5 m。三机候选高度仍为 `[0]`，层偏移仍为 `[0,-4]`。
+- 三机高空默认高度为 Layer 0 `UAV1/UAV2/UAV3 = 26/20/14 m`，Layer 1 在统一 `[0,-4]` 偏移下为 `22/16/10 m`。高度变化不改变候选网格、EGO、安全距离、transition 顺序或 predecessor exit guard。

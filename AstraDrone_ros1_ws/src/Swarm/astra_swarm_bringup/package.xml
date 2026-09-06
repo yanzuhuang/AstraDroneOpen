@@ -32,4 +32,6 @@
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>traj_utils</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <test_depend>python3-nose</test_depend>
+  <test_depend>roslaunch</test_depend>
 </package>

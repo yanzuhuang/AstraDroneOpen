@@ -1043,6 +1043,31 @@ TEST(InspectionCandidatePlanner, DirectionalSelectionWrapsAcrossZeroWithoutRever
   EXPECT_EQ(sectors[clockwise[1]].sector_id, 7);
 }
 
+TEST(InspectionCandidatePlanner,
+     FixedWorldSectorsChooseRoleSpecificEntryStagingSector) {
+  RouteConfig route;
+  route.radius = 12.5;
+  route.height = 24.0;
+  route.start_angle_rad = 0.0;
+  route.direction = OrbitDirection::kCounterClockwise;
+  const auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 3.0,
+      std::vector<CandidateOffset>{{0.0, 0.0, 0.0}});
+
+  // Ordinary sector centers stay fixed at world-frame multiples of 45 deg.
+  // ENTRY staging is taken from the first such sector in each role's travel
+  // direction instead of unconditionally reusing sector 0 for every UAV.
+  for (const auto& example :
+       std::vector<std::pair<double, int>>{{337.5, 0},
+                                           {315.0, 7},
+                                           {292.5, 7}}) {
+    const auto order = directionalSectorOrder(
+        example.first * kPi / 180.0, sectors, route.direction);
+    ASSERT_FALSE(order.empty());
+    EXPECT_EQ(sectors[order.front()].sector_id, example.second);
+  }
+}
+
 TEST(InspectionCandidatePlanner, EntryToOppositeWaypointCrossesTowerKeepOut) {
   geometry_msgs::Point entry;
   entry.x = 0.0;
@@ -1937,6 +1962,130 @@ TEST(InspectionCandidatePlanner, BlockedLayerHeightUsesLocalDescentThenRestoresN
 }
 
 }  // namespace
+
+TEST(InspectionCandidatePlanner,
+     HighAltitudeCraneIsSoftWhileTowerAndOccupancyRemainHard) {
+  RouteConfig route;
+  route.center_x = -10.0551;
+  route.center_y = 19.7104;
+  route.radius = 12.5;
+  route.height = 30.0;
+  route.minimum_height = 2.0;
+  route.maximum_height = 45.0;
+  route.tower_collision_radius = 6.41;
+  route.minimum_safety_distance = 2.0;
+  route.start_angle_rad = 0.0;
+  auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 3.0, {{0.0, 0.0, 0.0}});
+  StaticObstacle crane;
+  crane.id = "tower_crane";
+  crane.x = 2.7535;
+  crane.y = 14.7908;
+  crane.z_min = 0.0;
+  crane.z_max = 35.0283;
+  crane.half_extent_x = 3.2732;
+  crane.half_extent_y = 19.5424;
+  crane.yaw = -0.479608;
+  CandidateFilterConfig config;
+  config.minimum_clearance = 2.0;
+  config.map_points_are_inflated = true;
+  config.map_additional_clearance = 0.5;
+  geometry_msgs::Point current;
+  current.x = route.center_x + route.radius;
+  current.y = route.center_y - 5.0;
+  current.z = route.height;
+  auto point = sectors[0].candidates.front();
+  config.known_obstacle_is_hard_constraint = false;
+  ASSERT_TRUE(evaluateCandidate(&point, sectors[0], current, {}, {crane},
+                                true, config));
+  EXPECT_NE(point.risk_reason.find("COARSE_KNOWN_OBSTACLE_OVERLAP"),
+            std::string::npos);
+
+  CandidatePoint inside_tower = point;
+  inside_tower.x = route.center_x + route.tower_collision_radius + 1.0;
+  inside_tower.y = route.center_y;
+  EXPECT_FALSE(evaluateCandidate(&inside_tower, sectors[0], current, {},
+                                 {crane}, true, config));
+  EXPECT_EQ(inside_tower.rejection_reason, "TOWER_KEEP_OUT");
+
+  geometry_msgs::Point occupied;
+  occupied.x = point.x;
+  occupied.y = point.y;
+  occupied.z = point.z;
+  EXPECT_FALSE(evaluateCandidate(&point, sectors[0], current, {occupied},
+                                 {crane}, true, config));
+  EXPECT_EQ(point.rejection_reason, "OCCUPANCY_OR_CLEARANCE");
+  EXPECT_FALSE(evaluateCandidate(&point, sectors[0], current, {}, {crane},
+                                 false, config));
+  EXPECT_EQ(point.rejection_reason, "MAP_STALE");
+}
+
+TEST(InspectionCandidatePlanner,
+     HighAltitudeClosedOrbitUsesTwelveFiveFourteenFiveSixteenFiveChain) {
+  RouteConfig route;
+  route.center_x = 0.0;
+  route.center_y = 0.0;
+  route.radius = 12.5;
+  route.height = 30.0;
+  route.start_angle_rad = 0.0;
+  route.minimum_height = 14.0;
+  route.maximum_height = 40.0;
+  route.tower_collision_radius = 6.41;
+  auto sectors = buildInspectionSectors(
+      route, 8, 1, 12.0, 4.0, 3.0,
+      {{0.0, 0.0, 0.0}, {0.0, 2.0, 0.0}, {0.0, 4.0, 0.0}});
+  CandidateFilterConfig config;
+  config.minimum_clearance = 2.0;
+  config.map_points_are_inflated = true;
+  config.map_additional_clearance = 0.5;
+  geometry_msgs::Point current;
+  current.x = 12.5;
+  current.y = -5.0;
+  current.z = 30.0;
+  auto select = [&](Sector& sector, int blocked_tiers,
+                    const CandidatePoint* locked = nullptr) {
+    std::vector<geometry_msgs::Point> occupied;
+    for (int tier = 0; tier < blocked_tiers; ++tier) {
+      geometry_msgs::Point p;
+      p.x = sector.candidates[tier].x;
+      p.y = sector.candidates[tier].y;
+      p.z = sector.candidates[tier].z;
+      occupied.push_back(p);
+    }
+    for (auto& candidate : sector.candidates) {
+      evaluateCandidate(&candidate, sector, current, occupied, {}, true,
+                        config);
+    }
+    return chooseBestCandidateByRadiusTier(sector, locked, 2.0, false, 2.0);
+  };
+
+  const int anchor_index = select(sectors[0], 0);
+  ASSERT_EQ(anchor_index, 0);
+  const CandidatePoint anchor = sectors[0].candidates[anchor_index];
+  EXPECT_NEAR(std::hypot(anchor.x, anchor.y), 12.5, 1.0e-9);
+  const int tier_one = select(sectors[1], 1);
+  ASSERT_EQ(tier_one, 1);
+  EXPECT_NEAR(std::hypot(sectors[1].candidates[tier_one].x,
+                         sectors[1].candidates[tier_one].y),
+              14.5, 1.0e-9);
+  const int tier_two = select(sectors[2], 2);
+  ASSERT_EQ(tier_two, 2);
+  EXPECT_NEAR(std::hypot(sectors[2].candidates[tier_two].x,
+                         sectors[2].candidates[tier_two].y),
+              16.5, 1.0e-9);
+  EXPECT_EQ(select(sectors[3], 3), -1);
+
+  // Closing a lap re-evaluates and returns to the exact recorded start
+  // candidate instead of selecting a different point in sector zero.
+  const int closing_index = select(sectors[0], 0, &anchor);
+  ASSERT_EQ(closing_index, anchor_index);
+  EXPECT_EQ(sectors[0].candidates[closing_index].id, anchor.id);
+  for (std::size_t i = 0; i < sectors.size(); ++i) {
+    EXPECT_NEAR(directedAngularDifference(0., sectors[i].nominal_angle_rad,
+                                          OrbitDirection::kCounterClockwise),
+                i * kPi / 4.0, 1.0e-9);
+  }
+}
 }  // namespace astra_tower_mission
 
 int main(int argc, char** argv) {

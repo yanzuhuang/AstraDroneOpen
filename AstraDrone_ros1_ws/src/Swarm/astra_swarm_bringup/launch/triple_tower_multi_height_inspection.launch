@@ -59,9 +59,9 @@
     <arg name="max_acc" value="0.50"/>
     <arg name="bridge_max_velocity" value="0.60"/>
     <arg name="bridge_max_acceleration" value="0.50"/>
-    <arg name="uav1_top_height" value="34.0"/>
-    <arg name="uav2_top_height" value="28.0"/>
-    <arg name="uav3_top_height" value="22.0"/>
+    <arg name="uav1_top_height" value="26.0"/>
+    <arg name="uav2_top_height" value="20.0"/>
+    <arg name="uav3_top_height" value="14.0"/>
     <arg name="uav1_takeoff_height" value="4.0"/>
     <arg name="uav2_takeoff_height" value="4.0"/>
     <arg name="uav3_takeoff_height" value="4.0"/>
@@ -70,7 +70,9 @@
     <arg name="uav3_staging_height" value="4.0"/>
     <arg name="uav1_ascent_intermediate_heights" value="[10.0, 18.0]"/>
     <arg name="uav2_ascent_intermediate_heights" value="[10.0, 18.0]"/>
-    <arg name="uav3_ascent_intermediate_heights" value="[10.0, 18.0]"/>
+    <!-- UAV3's 14 m layer-0 endpoint is below 18 m, so its strictly ascending
+         segmented-climb intermediates stop at 10 m. -->
+    <arg name="uav3_ascent_intermediate_heights" value="[10.0]"/>
     <arg name="uav1_descent_intermediate_heights" value="[18.0, 10.0]"/>
     <arg name="uav2_descent_intermediate_heights" value="[18.0, 10.0]"/>
     <arg name="uav3_descent_intermediate_heights" value="[18.0, 10.0]"/>

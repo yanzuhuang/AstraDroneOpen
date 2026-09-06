@@ -37,8 +37,8 @@
   <arg name="warning_phase_min_deg" default="45.0"/>
   <arg name="emergency_phase_deg" default="45.0"/>
   <arg name="leader_wait_phase_deg" default="95.0"/>
-  <arg name="entry_nominal_speed" default="0.20"/>
-  <arg name="orbit_nominal_speed" default="0.14"/>
+  <arg name="entry_nominal_speed" default="0.60"/>
+  <arg name="orbit_nominal_speed" default="0.60"/>
   <arg name="layer_transition_nominal_speed" default="0.30"/>
   <arg name="multi_layer_enabled" default="false"/>
   <arg name="low_altitude_enabled" default="true"/>
@@ -54,10 +54,10 @@
        default="$(arg low_altitude_enabled)"/>
   <arg name="uav3_orbit_speed_scale_enabled"
        default="$(arg low_altitude_enabled)"/>
-  <arg name="scale_command_limits_with_orbit_speed_scale" default="false"/>
+  <arg name="scale_command_limits_with_orbit_speed_scale" default="true"/>
   <!-- Declare the reviewed ceiling before Learning Speed uses it as a
        default; roslaunch resolves arg defaults in declaration order. -->
-  <arg name="max_vel" default="0.20"/>
+  <arg name="max_vel" default="0.60"/>
   <arg name="learning_speed_enabled" default="false"/>
   <arg name="uav1_learning_speed_enabled"
        default="$(arg learning_speed_enabled)"/>
@@ -139,8 +139,8 @@
   <arg name="uav2_mission_minimum_height" default="2.0"/>
   <arg name="uav3_mission_minimum_height" default="2.0"/>
   <arg name="max_acc" default="0.50"/>
-  <arg name="bridge_max_velocity" default="0.50"/>
-  <arg name="bridge_max_acceleration" default="1.00"/>
+  <arg name="bridge_max_velocity" default="0.60"/>
+  <arg name="bridge_max_acceleration" default="0.50"/>
   <arg name="planning_horizon" default="7.5"/>
   <arg name="obstacles_inflation" default="0.40"/>
   <arg name="swarm_clearance" default="1.50"/>
@@ -321,8 +321,7 @@
          value="$(arg layer_transition_nominal_speed)"/>
     <arg name="multi_layer_enabled" value="$(arg multi_layer_enabled)"/>
     <arg name="swarm_transition_order" value="[3, 2, 1]"/>
-    <arg name="swarm_transition_target_heights"
-         value="[$(arg uav1_final_height), $(arg uav2_final_height), $(arg uav3_final_height)]"/>
+    <arg name="swarm_layer_offsets" value="$(arg uav1_layer_offsets)"/>
     <arg name="swarm_home_positions"
          value="[[$(arg uav1_spawn_x), $(arg spawn_y), 0.0], [$(arg uav2_spawn_x), $(arg spawn_y), 0.0], [$(arg uav3_spawn_x), $(arg spawn_y), 0.0]]"/>
     <arg name="swarm_takeoff_heights"

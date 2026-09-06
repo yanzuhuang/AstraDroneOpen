@@ -22,6 +22,7 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Int32.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <std_msgs/UInt32.h>
@@ -550,11 +551,13 @@ class SectorInspectionMissionNode {
     entry_angle_deg_ = positiveAngleDegrees(entry_angle_deg_ * kPi / 180.0);
     entry_angle_rad_ = entry_angle_deg_ * kPi / 180.0;
     entry_nominal_angle_deg_ = entry_angle_deg_;
-    // Each vehicle's continuous orbit reference begins at its own exact gate
-    // angle.  The eight sectors remain coverage/progress bins and are shifted
-    // consistently; no vehicle is snapped back to a shared 45-degree point.
+    private_node_.param("candidate/high_altitude_policy",
+                        high_altitude_candidate_policy_, false);
+    // High-altitude ordinary sectors retain rule.md's fixed world angles.
+    // ENTRY keeps its role-derived angle and generation protocol.
     start_angle_deg_ = entry_angle_deg_;
-    route_.start_angle_rad = entry_angle_rad_;
+    route_.start_angle_rad =
+        high_altitude_candidate_policy_ ? 0.0 : entry_angle_rad_;
     private_node_.param("entry_gate/pre_entry_radius", pre_entry_radius_,
                         18.0);
     private_node_.param("entry_gate/pre_entry_maximum_radius",
@@ -682,7 +685,8 @@ class SectorInspectionMissionNode {
 
     route_.height = inspection_height_;
     route_.waypoint_count = sector_count_;
-    route_.start_angle_rad = entry_angle_rad_;
+    route_.start_angle_rad =
+        high_altitude_candidate_policy_ ? 0.0 : entry_angle_rad_;
     recovery_config_.maximum_radius = std::min(
         recovery_config_.maximum_radius,
         route_.radius + sector_radius_half_width_);
@@ -1084,6 +1088,16 @@ class SectorInspectionMissionNode {
       exit_permission_sub_ = node_.subscribe(
           exit_permission_topic_, 5,
           &SectorInspectionMissionNode::exitPermissionCallback, this);
+    }
+    if (require_orbit_permission_ && inspection_heights_.size() > 1U) {
+      const std::string prefix = orbit_permission_topic_.substr(
+          0, orbit_permission_topic_.find_last_of('/') + 1);
+      downstream_handoff_sub_ = node_.subscribe<std_msgs::Int32>(
+          prefix + "downstream_handoff_layer", 5,
+          [this](const std_msgs::Int32::ConstPtr& message) {
+            downstream_handoff_layer_ = message->data;
+            downstream_handoff_received_ = ros::Time::now();
+          });
     }
     if (require_orbit_permission_) {
       orbit_permission_sub_ = node_.subscribe(
@@ -1919,18 +1933,24 @@ class SectorInspectionMissionNode {
     const double map_clearance = mappedTaskClearance();
 
     // The first orbit point is not a special fixed-radius target.  Evaluate
-    // the exact same candidate grid used by every numbered sector, then use
-    // those accepted candidates as ORBIT_STAGING choices in the joint ENTRY
-    // corridors.  This keeps candidate IDs valid for the normal EGO retry and
+    // the exact same candidate grid used by the first fixed world sector in
+    // this role's travel direction, then use those accepted candidates as
+    // ORBIT_STAGING choices in the joint ENTRY corridors.  Using sectors_.front()
+    // would make every role advertise sector 0 after fixed-sector restoration,
+    // which violates the manager's role-specific ENTRY angle windows for UAV2
+    // and UAV1.  Candidate IDs remain valid for normal EGO retry and
     // PLANNER_UNREACHABLE bookkeeping after the joint selection is latched.
     if (sectors_.empty()) return false;
-    Sector& first_sector = sectors_.front();
+    const auto entry_sector_order = directionalSectorOrder(
+        entry_angle_rad_, sectors_, route_.direction);
+    if (entry_sector_order.empty()) return false;
+    Sector& first_sector = sectors_[entry_sector_order.front()];
     std::vector<CandidatePoint> orbit_candidates;
     orbit_candidates.reserve(first_sector.candidates.size());
     for (auto candidate : first_sector.candidates) {
       geometry_msgs::Point target = candidatePoint(candidate);
       evaluateCandidate(&candidate, first_sector, start, planningMapPoints(),
-                        obstacles_, true, planningFilterConfig(), nullptr,
+                        obstacles_, mapFresh(now), planningFilterConfig(), nullptr,
                         candidateUnknownRatio(target));
       if (planner_unreachable_candidates_.count(candidate.id) > 0U) {
         candidate.accepted = false;
@@ -2673,6 +2693,20 @@ class SectorInspectionMissionNode {
     candidates_pub_.publish(message);
   }
 
+  void resetOrbitCycleBookkeeping() {
+    orbit_tracking_initialized_ = false;
+    orbit_released_latched_ = false;
+    orbit_staging_arrived_ = false;
+    reverse_orbit_detected_ = false;
+    orbit_start_angle_ = 0.0;
+    previous_orbit_angle_ = 0.0;
+    accumulated_orbit_angle_ = 0.0;
+    directed_orbit_position_ = 0.0;
+    furthest_directed_orbit_position_ = 0.0;
+    visited_sector_mask_ = 0U;
+    orbit_complete_ = false;
+  }
+
   bool buildInspectionLayer(int layer_index) {
     if (layer_index < 0 ||
         layer_index >= static_cast<int>(inspection_heights_.size()) ||
@@ -2693,14 +2727,7 @@ class SectorInspectionMissionNode {
     current_lap_ = 1;
     waypoint_in_lap_ = 1;
     completed_laps_ = 0;
-    orbit_tracking_initialized_ = false;
-    orbit_released_latched_ = false;
-    orbit_staging_arrived_ = false;
-    reverse_orbit_detected_ = false;
-    accumulated_orbit_angle_ = 0.0;
-    directed_orbit_position_ = 0.0;
-    furthest_directed_orbit_position_ = 0.0;
-    visited_sector_mask_ = 0U;
+    resetOrbitCycleBookkeeping();
     have_last_inspection_target_ = false;
     have_layer_start_anchor_ = false;
     layer_start_anchor_ = CandidatePoint();
@@ -2855,9 +2882,16 @@ class SectorInspectionMissionNode {
           candidate.rejection_reason = "FIRST_LEG_TOWER_KEEP_OUT";
         }
       }
-      const int candidate_index = chooseBestCandidate(
-          sector, nullptr, 0.0,
-          filter_config_.prefer_clear_straight_corridor);
+      const int candidate_index = high_altitude_candidate_policy_
+                                      ? chooseBestCandidateByRadiusTier(
+                                            sector, nullptr, 0.0,
+                                            filter_config_
+                                                .prefer_clear_straight_corridor,
+                                            2.0)
+                                      : chooseBestCandidate(
+                                            sector, nullptr, 0.0,
+                                            filter_config_
+                                                .prefer_clear_straight_corridor);
       best_candidate_indices[order_index] = candidate_index;
       const int selected_index = candidate_index;
       const bool skipped = sector.sector_id == skipped_sector_id;
@@ -3141,13 +3175,14 @@ class SectorInspectionMissionNode {
     const CandidatePoint* locked = sector.locked_index >= 0
                                        ? &sector.candidates[sector.locked_index]
                                        : nullptr;
-    const int selected = low_altitude_mode_
-        ? chooseBestCandidateByRadiusTier(
-              sector, locked, target_replacement_margin_,
-              filter_config_.prefer_clear_straight_corridor, 2.0)
-        : chooseBestCandidate(
-        sector, locked, target_replacement_margin_,
-        filter_config_.prefer_clear_straight_corridor);
+    const int selected = (low_altitude_mode_ || high_altitude_candidate_policy_)
+                             ? chooseBestCandidateByRadiusTier(
+                                   sector, locked, target_replacement_margin_,
+                                   filter_config_.prefer_clear_straight_corridor,
+                                   2.0)
+                             : chooseBestCandidate(
+                                   sector, locked, target_replacement_margin_,
+                                   filter_config_.prefer_clear_straight_corridor);
     if (selected < 0) {
       std::unordered_map<std::string, int> rejection_counts;
       for (const auto& candidate : sector.candidates) {
@@ -3775,7 +3810,8 @@ class SectorInspectionMissionNode {
       point.z = candidate.z;
       evaluateCandidate(
           &candidate, start_sector, pointOf(odom_), planningMapPoints(),
-          obstacles_, true, planningFilterConfig(), &layer_transition_anchor_,
+          obstacles_, mapFresh(now), planningFilterConfig(),
+          &layer_transition_anchor_,
           candidateUnknownRatio(point));
       if (!candidate.accepted) continue;
       const double xy_distance = std::hypot(
@@ -3784,6 +3820,16 @@ class SectorInspectionMissionNode {
       if (selected < 0 || xy_distance < selected_xy_distance) {
         selected = static_cast<int>(index);
         selected_xy_distance = xy_distance;
+      }
+    }
+    if (high_altitude_candidate_policy_) {
+      selected = chooseBestCandidateByRadiusTier(
+          start_sector, nullptr, target_replacement_margin_,
+          filter_config_.prefer_clear_straight_corridor, 2.0);
+      if (selected >= 0) {
+        selected_xy_distance = std::hypot(
+            start_sector.candidates[selected].x - layer_transition_anchor_.x,
+            start_sector.candidates[selected].y - layer_transition_anchor_.y);
       }
     }
     if (selected < 0) {
@@ -3930,21 +3976,49 @@ class SectorInspectionMissionNode {
     return true;
   }
 
-  bool activatePendingLayerAfterTransition(const ros::Time& now) {
+  bool prepareLayerExitGateAfterTransition(int next_layer) {
+    if (next_layer < 0 ||
+        next_layer >= static_cast<int>(inspection_heights_.size()) ||
+        current_layer_ < 0 ||
+        current_layer_ >= static_cast<int>(layer_entry_gates_.size()) ||
+        !layer_entry_gate_valid_[current_layer_]) {
+      return false;
+    }
+    if (layer_entry_gate_valid_[next_layer]) return true;
+
+    // A layer transition arrives directly at the next orbit anchor; it is
+    // not a second mission ENTRY.  Re-running lockLayerGate() here couples
+    // layer activation to the coarse ENTRY candidate filter and can reject a
+    // safely reached layer before its orbit starts.  Preserve the audited
+    // role-specific gate XY and defer the next layer's actual EXIT admission
+    // to startExitGate(), which still applies the latest-map and hard-static
+    // fail-closed checks at the time the final orbit is complete.
+    CandidatePoint exit_gate = layer_entry_gates_[current_layer_];
+    exit_gate.layer_id = next_layer;
+    exit_gate.z = inspection_heights_[next_layer];
+    layer_entry_gates_[next_layer] = exit_gate;
+    layer_entry_gate_valid_[next_layer] = true;
+    ROS_WARN("[SECTOR_INSPECTION_TASK] next-layer EXIT_GATE seed prepared: "
+             "source_layer=%d target_layer=%d xy=(%.3f, %.3f) z=%.3f; "
+             "actual EXIT remains subject to live admission",
+             current_layer_, next_layer, exit_gate.x, exit_gate.y,
+             exit_gate.z);
+    return true;
+  }
+
+  bool activatePendingLayerAfterTransition() {
     if (pending_layer_sectors_.empty() ||
         current_layer_visit_index_ + 1U >= layer_visit_sequence_.size()) {
       return false;
     }
     const int next_layer =
         layer_visit_sequence_[current_layer_visit_index_ + 1U];
-    // Evaluate and store the next layer's ENTRY/EXIT_GATE only after the
-    // vehicle and sensor have actually reached that height. Evaluating a
-    // lower gate from the upper layer incorrectly classifies it as unknown.
-    if (!lockLayerGate(next_layer, now)) return false;
+    if (!prepareLayerExitGateAfterTransition(next_layer)) return false;
     layer_sector_runtime_[current_layer_] = sectors_;
     ++current_layer_visit_index_;
     current_layer_ = layer_visit_sequence_[current_layer_visit_index_];
     route_.height = inspection_heights_[current_layer_];
+    resetOrbitCycleBookkeeping();
     sectors_ = pending_layer_sectors_;
     pending_layer_sectors_.clear();
     lap_visit_sequence_ = buildClosedLapVisitSequence(
@@ -3964,21 +4038,33 @@ class SectorInspectionMissionNode {
     current_lap_ = 1;
     completed_laps_ = 0;
     waypoint_in_lap_ = 1;
-    visit_cursor_ = 1U;
+    visit_cursor_ = 0U;
     ++visited_sector_count_;
-    current_sector_ = lap_visit_sequence_[visit_cursor_];
     have_sent_goal_ = false;
     arrival_since_ = ros::Time(0);
     current_target_plan_attempt_ = 0;
     planner_unreachable_candidates_.clear();
+    orbit_staging_arrived_ = true;
     ROS_WARN("[SECTOR_INSPECTION_TASK] next-layer first waypoint confirmed by actual "
              "arrival: layer=%d height=%.2f waypoint=%d target=%s; "
-             "continuing the closed lap without republishing that same goal",
+             "orbit angle/mask/completion/release state reset",
              current_layer_, route_.height,
              pending_layer_start_anchor_.sector_id + 1,
              pending_layer_start_anchor_.id.c_str());
-    transition(MissionState::kEvaluate,
-               "next-layer first waypoint reached and counted");
+    if (require_orbit_permission_) {
+      if (!requestTracking(false)) return false;
+      transition(MissionState::kWaitOrbitPermission,
+                 "next-layer anchor reached; waiting for rebuilt fixed-role "
+                 "ORBIT_RELEASE");
+    } else {
+      orbit_released_latched_ = true;
+      updateOrbitProgress(pointOf(odom_));
+      ++visit_cursor_;
+      if (visit_cursor_ >= lap_visit_sequence_.size()) return false;
+      current_sector_ = lap_visit_sequence_[visit_cursor_];
+      transition(MissionState::kEvaluate,
+                 "next-layer anchor reached; uncoordinated orbit starts");
+    }
     return true;
   }
 
@@ -5294,20 +5380,48 @@ class SectorInspectionMissionNode {
                           orbit_completion_reason);
               return;
             }
+            const bool downstream_ready =
+                !require_orbit_permission_ || inspection_heights_.size() <= 1U ||
+                current_layer_visit_index_ + 1U < layer_visit_sequence_.size() ||
+                (!downstream_handoff_received_.isZero() &&
+                 now >= downstream_handoff_received_ &&
+                 (now - downstream_handoff_received_).toSec() <= coordination_permission_timeout_ &&
+                 downstream_handoff_layer_ >= current_layer_);
+            if (!downstream_ready) {
+              // Keep a moving release predecessor. A stationary WAIT_EXIT
+              // cannot supply the normal tangential-speed/phase release gate.
+              // This is another checked circuit, not another completed layer.
+              resetOrbitCycleBookkeeping();
+              orbit_released_latched_ = true;
+              orbit_staging_arrived_ = true;
+              updateOrbitProgress(pointOf(odom_));
+              visit_cursor_ = 1U;
+              current_sector_ = lap_visit_sequence_[visit_cursor_];
+              transition(MissionState::kEvaluate,
+                         "DOWNSTREAM_HANDOFF_PENDING: continue current-layer "
+                         "candidate-admitted orbit until follower release");
+              return;
+            }
             completed_laps_ = inspection_laps_;
             ++completed_layer_count_;
             orbit_complete_ =
                 completed_layer_count_ >=
                 static_cast<int>(layer_visit_sequence_.size());
             publishMissionCompletion();
+            const bool next_layer_available =
+                current_layer_visit_index_ + 1U <
+                layer_visit_sequence_.size();
             ROS_WARN("[SECTOR_INSPECTION_DIAG] uav=%d orbit complete laps=%d "
-                     "sector=%d target=%s %s "
-                     "action=REQUEST_EXIT_PERMISSION",
+                     "sector=%d target=%s %s completed_layers=%d/%zu "
+                     "action=%s",
                      uav_id_, completed_laps_, activeSectorId(),
                      active_target_.id.c_str(),
-                     orbit_completion_reason.c_str());
-            if (current_layer_visit_index_ + 1U <
-                layer_visit_sequence_.size()) {
+                     orbit_completion_reason.c_str(), completed_layer_count_,
+                     layer_visit_sequence_.size(),
+                     next_layer_available
+                         ? "REQUEST_TRANSITION_PERMISSION"
+                         : "REQUEST_EXIT_PERMISSION");
+            if (next_layer_available) {
               // Always enter the explicit wait state when coordination owns
               // layer serialization. A previously published permission from
               // the just-finished orbit must never be consumed as a new
@@ -5398,7 +5512,7 @@ class SectorInspectionMissionNode {
       }
     } else if (state_ == MissionState::kLayerTransition) {
       if (layer_transition_index_ >= layer_transition_goals_.size()) {
-        if (!activatePendingLayerAfterTransition(now)) {
+        if (!activatePendingLayerAfterTransition()) {
           layer_transition_failure_pending_ = true;
           layer_transition_retry_pending_ = false;
           requestHold("NEXT_LAYER_ACTIVATION_FAILED");
@@ -6187,6 +6301,10 @@ class SectorInspectionMissionNode {
   bool exit_permission_{false};
   bool landing_permission_{false};
   bool low_altitude_mode_{false};
+  bool high_altitude_candidate_policy_{false};
+  ros::Subscriber downstream_handoff_sub_;
+  int downstream_handoff_layer_{-1};
+  ros::Time downstream_handoff_received_;
   int uav_id_{0};
   bool use_configured_staging_xy_{false};
   bool prefer_safe_overflight_{true};

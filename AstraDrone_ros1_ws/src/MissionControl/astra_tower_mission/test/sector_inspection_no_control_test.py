@@ -13,7 +13,7 @@ from mavros_msgs.msg import PositionTarget, State
 from nav_msgs.msg import Odometry
 from quadrotor_msgs.msg import PositionCommand
 from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Int32, Bool, String
 from std_srvs.srv import SetBool, SetBoolResponse, Trigger, TriggerResponse
 
 
@@ -41,6 +41,9 @@ class SectorInspectionNoControl(unittest.TestCase):
         self.recovery_goal_heights = []
         self.ascent_positions = []
         self.layer_transition_positions = []
+        self.final_handoff_goals = 0
+        self.handoff_guard_observed = False
+        self.exited_before_handoff = False
         self.normal_return_positions = []
         self.exit_gate_positions = []
         self.home_overhead_positions = []
@@ -63,6 +66,18 @@ class SectorInspectionNoControl(unittest.TestCase):
             "/planning/pos_cmd", PositionCommand, queue_size=10)
         self.status_pub = rospy.Publisher(
             "/planner/status", PlannerStatus, queue_size=10, latch=True)
+        self.orbit_staging_permission_pub = rospy.Publisher(
+            "/tower_mission/orbit_staging_permission", Bool,
+            queue_size=1, latch=True)
+        self.orbit_permission_pub = rospy.Publisher(
+            "/tower_mission/orbit_permission", Bool,
+            queue_size=1, latch=True)
+        self.downstream_handoff_pub = rospy.Publisher(
+            "/tower_mission/downstream_handoff_layer", Int32,
+            queue_size=1, latch=True)
+        self.transition_permission_pub = rospy.Publisher(
+            "/tower_mission/transition_permission", Bool,
+            queue_size=1, latch=True)
 
         rospy.Subscriber("/move_base_simple/goal", PoseStamped,
                          self.goal_callback, queue_size=10)
@@ -115,6 +130,14 @@ class SectorInspectionNoControl(unittest.TestCase):
                 message.pose.position.z,
             ))
             state = self.state
+            if (self.states.count("ORBIT_STAGING_READY") >= 4
+                    and abs(message.pose.position.z - 22.) < .05
+                    and abs(math.hypot(message.pose.position.x, message.pose.position.y)-8.) < .1):
+                self.final_handoff_goals += 1
+                if self.final_handoff_goals >= 2:
+                    self.handoff_guard_observed = True
+                    self.exited_before_handoff = any(s in self.states for s in
+                        ("WAIT_EXIT_PERMISSION", "GO_TO_EXIT_GATE", "NORMAL_RETURN"))
             if state == "ENTRY_GATE_TRANSIT":
                 self.approach_goal_count += 1
                 self.entry_gate_positions.append((
@@ -254,6 +277,10 @@ class SectorInspectionNoControl(unittest.TestCase):
                                                      occupancy_points)
         self.occupancy_pub.publish(occupancy)
         self.bridge_state_pub.publish(String(data=bridge_state))
+        self.orbit_staging_permission_pub.publish(Bool(data=True))
+        self.orbit_permission_pub.publish(Bool(data=True))
+        self.transition_permission_pub.publish(Bool(data=True))
+        self.downstream_handoff_pub.publish(Int32(data=1 if self.handoff_guard_observed else 0))
         mavros_state = State()
         mavros_state.header.stamp = now
         mavros_state.connected = True
@@ -294,6 +321,8 @@ class SectorInspectionNoControl(unittest.TestCase):
 
         with self.lock:
             self.assertEqual(self.state, "RETURN_HOME")
+            self.assertTrue(self.handoff_guard_observed)
+            self.assertFalse(self.exited_before_handoff)
             self.assertTrue(self.bridge_hold_injected)
             self.assertGreaterEqual(self.approach_goal_count, 2)
             self.assertGreaterEqual(len(self.entry_gate_positions), 1)
@@ -317,13 +346,36 @@ class SectorInspectionNoControl(unittest.TestCase):
             self.assertIn("SEGMENTED_HOME_DESCENT", self.states)
             self.assertNotIn("RETURN_EGRESS", self.states)
             self.assertGreaterEqual(len(self.exit_gate_positions), 1)
-            self.assertAlmostEqual(self.exit_gate_positions[-1][0],
+            # State and goal callbacks are asynchronous; a HOME_OVERHEAD goal
+            # may arrive while the last observed state is still GO_TO_EXIT_GATE.
+            # Identify the authoritative final-layer EXIT by its geometry.
+            final_exit_gates = [
+                item for item in self.exit_gate_positions
+                if abs(item[2] - 22.0) < 0.05
+                and abs(math.hypot(item[0], item[1]) - 15.0) < 0.1]
+            self.assertGreaterEqual(len(final_exit_gates), 1)
+            self.assertAlmostEqual(final_exit_gates[-1][0],
                                    selected_entry[0], places=2)
-            self.assertAlmostEqual(self.exit_gate_positions[-1][1],
+            self.assertAlmostEqual(final_exit_gates[-1][1],
                                    selected_entry[1], places=2)
-            self.assertAlmostEqual(self.exit_gate_positions[-1][2],
-                                   22.0, places=2)
+            self.assertAlmostEqual(final_exit_gates[-1][2], 22.0, places=2)
             self.assertIn("LAYER_TRANSITION", self.states)
+            # planned_cycles=2 over two layers yields four independently
+            # released orbits. Every actual layer arrival must rebuild the
+            # ORBIT_STAGING_READY latch instead of inheriting the prior lap.
+            self.assertGreaterEqual(
+                self.states.count("ORBIT_STAGING_READY"), 4)
+            first_transition_wait = self.states.index(
+                "WAIT_TRANSITION_PERMISSION")
+            first_exit = min(
+                self.states.index(state)
+                for state in ("WAIT_EXIT_PERMISSION", "GO_TO_EXIT_GATE")
+                if state in self.states)
+            self.assertLess(first_transition_wait, first_exit)
+            self.assertLess(
+                max(index for index, state in enumerate(self.states)
+                    if state == "ORBIT_STAGING_READY"),
+                first_exit)
             self.assertEqual(self.states.count("STAGING_POINT"), 1)
             self.assertEqual(self.sector_failure_goal_count, 2)
             self.assertEqual(len(self.recovery_goal_heights), 0)
@@ -334,19 +386,25 @@ class SectorInspectionNoControl(unittest.TestCase):
             self.assertGreaterEqual(
                 self.states.count("LAYER_TRANSITION"), 3)
             self.assertEqual(len(self.normal_return_positions), 0)
-            self.assertEqual(len(self.home_overhead_positions), 1)
-            self.assertAlmostEqual(
-                self.home_overhead_positions[0][0], 12.0, places=2)
-            self.assertAlmostEqual(
-                self.home_overhead_positions[0][1], 0.0, places=2)
-            self.assertAlmostEqual(
-                self.home_overhead_positions[0][2], 22.0, places=2)
+            home_overhead_indices = [
+                index for index, item in enumerate(self.goal_positions)
+                if abs(item[0] - 12.0) < 0.05
+                and abs(item[1]) < 0.05
+                and abs(item[2] - 22.0) < 0.05]
+            self.assertEqual(len(home_overhead_indices), 1)
+            home_overhead_index = home_overhead_indices[0]
+            post_overhead_vertical_goals = [
+                item for item in self.goal_positions[home_overhead_index + 1:]
+                if abs(item[0] - 12.0) < 0.05
+                and abs(item[1]) < 0.05
+                and (abs(item[2] - 18.0) < 0.05
+                     or abs(item[2] - 10.0) < 0.05)]
             self.assertEqual(
                 [round(item[2], 2)
-                 for item in self.segmented_descent_positions],
+                 for item in post_overhead_vertical_goals],
                 [18.0, 10.0],
             )
-            for item in self.segmented_descent_positions:
+            for item in post_overhead_vertical_goals:
                 self.assertAlmostEqual(item[0], 12.0, places=2)
                 self.assertAlmostEqual(item[1], 0.0, places=2)
             final_layer_gate_positions = [

@@ -9,11 +9,13 @@ from astra_swarm_manager.policy import (
     completed_predecessor_handoff_allowed,
     contiguous_role_segments,
     corridor_clear,
+    derive_layer_target_heights,
     directed_phase_gap_degrees,
     entry_ready_barrier,
     formation_phase_decision,
     formation_speed_scale_targets,
     incremental_entry_corridor_selection,
+    layer_transition_speed_config_valid,
     mission_geometry_clear,
     orbit_staging_ready_barrier,
     predicted_pair_clear,
@@ -22,9 +24,11 @@ from astra_swarm_manager.policy import (
     scheduled_takeoff_allowed,
     sequential_orbit_release_allowed,
     serialized_permissions,
-    serialized_transition_permissions,
     slew_speed_scale,
     task_start_barrier_ready,
+    target_layer_late_release_allowed,
+    async_role_transition_permissions,
+    downstream_handoff_ready,
 )
 from astra_swarm_msgs.msg import (
     CoordinationStatus,
@@ -32,7 +36,7 @@ from astra_swarm_msgs.msg import (
     SwarmState,
 )
 from astra_custom_msgs.msg import InspectionCandidateArray
-from std_msgs.msg import Bool, Float64, String
+from std_msgs.msg import Int32, Bool, Float64, String
 
 
 ACTIVE_ORBIT_PHASES = {
@@ -97,10 +101,16 @@ class SwarmManager:
             "~multi_layer_enabled", False))
         self.transition_order = [int(uid) for uid in rospy.get_param(
             "~transition_order", self.role_order)]
-        transition_targets = [float(value) for value in rospy.get_param(
-            "~transition_target_heights", self.heights)]
-        self.transition_target_heights = dict(zip(
-            self.uav_ids, transition_targets))
+        self.layer_offsets = [float(value) for value in rospy.get_param(
+            "~layer_offsets", [0.0])]
+        self.role_layers = {uid: 0 for uid in self.uav_ids}
+        self.released_layers = {uid: -1 for uid in self.uav_ids}
+        self.confirmed_release_layers = dict(self.released_layers)
+        self.transition_owner_started = False
+        self.active_layer_index = 0
+        self.transition_target_layer = 0
+        self.transition_target_heights = derive_layer_target_heights(
+            self.uav_ids, self.heights, self.layer_offsets, 0)
         self.transition_height_tolerance = float(rospy.get_param(
             "~transition_height_tolerance", 0.35))
         self.transition_maximum_speed = float(rospy.get_param(
@@ -146,7 +156,7 @@ class SwarmManager:
             "~takeoff_heights", self.heights)]
         expected = len(self.uav_ids)
         if not all(len(values) == expected for values in (
-                self.heights, self.phases, self.homes, transition_targets,
+                self.heights, self.phases, self.homes,
                 self.takeoff_heights)):
             raise rospy.ROSException("per-UAV coordination arrays mismatch")
         if not all(math.isfinite(v) for v in (
@@ -172,6 +182,7 @@ class SwarmManager:
                 or set(self.role_order) != set(self.uav_ids)
                 or self.transition_order != self.role_order
                 or set(self.transition_target_heights) != set(self.uav_ids)
+                or self.multi_layer_enabled != (len(self.layer_offsets) > 1)
                 or self.direction not in (-1, 1)
                 or not (0.0 < self.emergency_phase
                         <= self.warning_phase_min
@@ -184,9 +195,10 @@ class SwarmManager:
                 or self.entry_gate_radius <= 0.0
                 or self.entry_nominal_speed <= 0.0
                 or self.orbit_nominal_speed <= 0.0
-                or self.layer_transition_nominal_speed <= 0.0
-                or self.layer_transition_nominal_speed
-                > self.orbit_nominal_speed
+                or not layer_transition_speed_config_valid(
+                    self.multi_layer_enabled,
+                    self.layer_transition_nominal_speed,
+                    self.orbit_nominal_speed)
                 or self.transition_height_tolerance <= 0.0
                 or self.transition_maximum_speed < 0.0
                 or not (0.0 < self.minimum_warning_speed_scale <= 1.0)
@@ -215,6 +227,9 @@ class SwarmManager:
         self.orbit_released = set()
         self.orbit_release_times = {}
         self.orbit_completed = set()
+        # Preserve the initial-orbit late-arrival recovery without applying
+        # its extra 65--70 degree wait to asynchronous target-layer staging.
+        self.late_release_references = {}
         self.orbit_staging_started = False
         self.orbit_staging_start_time = None
         self.orbit_staging_granted = set()
@@ -223,6 +238,7 @@ class SwarmManager:
             uid: "WAITING_FOR_FIRST_ORBIT_POINT" for uid in self.uav_ids}
         self.formation_orbit_active = False
         self.transition_owner = 0
+        self.transition_round_active = False
         self.transition_started = set()
         self.transition_completed = set()
         self.transition_reasons = {
@@ -293,6 +309,10 @@ class SwarmManager:
                     "/uav{}/swarm/{}_permission".format(uid, category),
                     Bool, queue_size=1, latch=True)
                 for uid in self.uav_ids}
+        self.downstream_handoff_pubs = {
+            uid: rospy.Publisher("/uav{}/swarm/downstream_handoff_layer".format(uid),
+                                 Int32, queue_size=1, latch=True)
+            for uid in self.uav_ids}
         self.status_pub = rospy.Publisher(
             "/swarm/coordinator/status", CoordinationStatus,
             queue_size=1, latch=True)
@@ -312,6 +332,51 @@ class SwarmManager:
             "/swarm/entry_corridor_audit", String,
             queue_size=1, latch=True)
         rospy.Timer(rospy.Duration(0.1), self.timer_cb)
+
+    def update_async_transitions(self, health, globally_clear):
+        old_layers = dict(self.role_layers)
+        (grants, self.transition_owner, self.transition_owner_started,
+         self.role_layers, self.transition_reasons) = async_role_transition_permissions(
+            self.role_order, self.states, health,
+            dict(zip(self.uav_ids, self.heights)), self.layer_offsets,
+            self.role_layers, self.confirmed_release_layers,
+            self.transition_height_tolerance, self.transition_maximum_speed,
+            globally_clear, self.transition_owner, self.transition_owner_started)
+        for uid in self.role_order:
+            if self.role_layers[uid] != old_layers[uid]:
+                self.orbit_released.discard(uid)
+                self.orbit_completed.discard(uid)
+                self.orbit_release_times.pop(uid, None)
+                self.late_release_references = {
+                    pair: reference
+                    for pair, reference in self.late_release_references.items()
+                    if uid not in pair}
+                self.phase_held.discard(uid)
+                self.formation_orbit_active = False
+                self.orbit_started = False
+        self.active_layer_index = min(self.role_layers.values())
+        self.transition_round_active = bool(self.transition_owner)
+        self.transition_target_layer = (self.role_layers[self.transition_owner] + 1
+                                        if self.transition_owner else self.active_layer_index)
+        self.transition_target_heights = {
+            uid: self.heights[self.uav_ids.index(uid)] + self.layer_offsets[
+                min(self.role_layers[uid] + 1, len(self.layer_offsets) - 1)]
+            for uid in self.uav_ids}
+        self.transition_completed = {uid for uid in self.uav_ids if self.role_layers[uid] > 0}
+        self.transition_started = ({self.transition_owner}
+                                   if self.transition_owner_started else set())
+        return grants
+
+    def confirm_orbit_releases(self, health):
+        # A handoff must witness consumption of release, not just its decision.
+        # ORBIT_STAGING_READY is excluded until the mission leaves its wait.
+        for uid in self.role_order:
+            state = self.states.get(uid)
+            if (health.get(uid, False) and uid in self.orbit_released
+                    and state is not None and state.mission_phase in {
+                        "EVALUATING", "TARGET_LOCKED", "NAVIGATING",
+                        "RELOCATING", "RECOVERING"}):
+                self.confirmed_release_layers[uid] = self.released_layers[uid]
 
     def state_cb(self, uid, msg):
         self.states[uid] = msg
@@ -389,7 +454,8 @@ class SwarmManager:
             return False, float("nan"), float("nan"), {
                 "states_received": False}
         follower_ready = (
-            self.healthy(follower_uid, now)
+            self.role_layers[leader_uid] == self.role_layers[follower_uid]
+            and self.healthy(follower_uid, now)
             and follower.mission_phase == "ORBIT_STAGING_READY"
             and self.orbit_staging_ready_reasons.get(follower_uid) == "READY"
             and follower.flight_state not in {
@@ -416,7 +482,8 @@ class SwarmManager:
         if leader is None or follower is None:
             return False, {"states_received": False}
         follower_ready = (
-            self.healthy(follower_uid, now)
+            self.role_layers[leader_uid] == self.role_layers[follower_uid]
+            and self.healthy(follower_uid, now)
             and follower.mission_phase == "ORBIT_STAGING_READY"
             and self.orbit_staging_ready_reasons.get(follower_uid) == "READY"
             and follower.flight_state not in {
@@ -435,11 +502,72 @@ class SwarmManager:
             self.pair_prediction_clear(leader_uid, follower_uid),
             globally_clear, self.minimum_3d, self.clearance)
 
+    def update_late_release_reference(self, leader_uid, follower_uid, phase,
+                                      conditions):
+        """Latch/restart a layer-scoped phase origin for a late follower."""
+        key = (leader_uid, follower_uid)
+        layer = self.role_layers[leader_uid]
+        reference = self.late_release_references.get(key)
+        if reference is not None and reference[0] != layer:
+            self.late_release_references.pop(key, None)
+            reference = None
+        if (reference is None
+                and conditions.get("follower_ready", False)
+                and math.isfinite(phase)
+                and phase > self.release_phase_max):
+            leader = self.states[leader_uid]
+            reference = (
+                layer,
+                (leader.pose.position.x, leader.pose.position.y))
+            self.late_release_references[key] = reference
+            rospy.logwarn(
+                "[SWARM_COORD] UAV%d-UAV%d late follower phase reference "
+                "latched layer=%d physical_phase=%.3fdeg",
+                leader_uid, follower_uid, layer, phase)
+        return reference
+
+    def evaluate_late_follower_release(self, leader_uid, follower_uid,
+                                       reference, conditions):
+        """Evaluate the unchanged release/safety gates from a new phase origin."""
+        leader = self.states[leader_uid]
+        leader_position = (
+            leader.pose.position.x, leader.pose.position.y)
+        leader_velocity = (leader.velocity.x, leader.velocity.y)
+        allowed, progress, speed, late_conditions = (
+            sequential_orbit_release_allowed(
+                reference[1], leader_position, leader_velocity,
+                self.tower_center, self.direction,
+                self.release_phase_min, self.release_phase_max,
+                self.release_minimum_forward_speed,
+                conditions.get("leader_trajectory_fresh", False),
+                conditions.get("follower_ready", False),
+                conditions.get("predicted_clear", False),
+                conditions.get("globally_clear", False)))
+        return allowed, progress, speed, late_conditions
+
+    def restart_late_release_reference(self, leader_uid, follower_uid):
+        """Start another late-follower window from the current leader phase."""
+        leader = self.states[leader_uid]
+        reference = (
+            self.role_layers[leader_uid],
+            (leader.pose.position.x, leader.pose.position.y))
+        self.late_release_references[(leader_uid, follower_uid)] = reference
+        rospy.logwarn(
+            "[SWARM_COORD] UAV%d-UAV%d late follower phase reference "
+            "restarted after missed window",
+            leader_uid, follower_uid)
+        return reference
+
     def release_orbit(self, uid, now, reason):
         if uid in self.orbit_released:
             return
         self.orbit_released.add(uid)
+        self.released_layers[uid] = self.role_layers[uid]
         self.orbit_release_times[uid] = now
+        self.late_release_references = {
+            pair: reference
+            for pair, reference in self.late_release_references.items()
+            if pair[1] != uid}
         if uid in self.entry_corridor_commit_state:
             self.entry_corridor_commit_state[uid]["entered"] = True
             self.entry_corridor_commit_state[uid]["released"] = True
@@ -834,9 +962,16 @@ class SwarmManager:
             and now - self.entry_ready_started >=
             rospy.Duration(self.entry_ready_timeout))
 
+        transition_grants = {uid: False for uid in self.uav_ids}
+        if self.multi_layer_enabled:
+            transition_grants = self.update_async_transitions(health, globally_clear)
+        active_layer_heights = {
+            uid: self.heights[self.uav_ids.index(uid)] + self.layer_offsets[self.role_layers[uid]]
+            for uid in self.uav_ids}
         orbit_staging_ready, self.orbit_staging_ready_reasons = (
             orbit_staging_ready_barrier(
-                self.uav_ids, self.states, health, self.heights,
+                self.uav_ids, self.states, health,
+                [active_layer_heights[uid] for uid in self.uav_ids],
                 self.entry_height_tolerance, self.entry_maximum_speed,
                 globally_clear))
         leader_staging_ready = (
@@ -848,13 +983,13 @@ class SwarmManager:
                 self.leader_uav_id, now,
                 "leader reached its own ORBIT_STAGING_READY; released first")
 
-        # WAIT_EXIT_PERMISSION is emitted only after the independent closed
-        # lap predicate passes. Preserve that completion proof for the
-        # separately gated fallback handoff after the moving phase window.
+        # Both wait phases are emitted only after the independent closed lap.
+        # Retain this evidence solely for the exceptional completed handoff.
         for uid in self.role_order:
             state = self.states.get(uid)
             if (uid in self.orbit_released and state is not None
-                    and state.mission_phase == "WAIT_EXIT_PERMISSION"):
+                    and state.mission_phase in {
+                        "WAIT_TRANSITION_PERMISSION", "WAIT_EXIT_PERMISSION"}):
                 self.orbit_completed.add(uid)
 
         # UAV3 leads UAV2 to the 65-70 degree release window.  UAV2 then
@@ -862,13 +997,41 @@ class SwarmManager:
         # UAV remains latched at its first orbit point until its own release.
         release_pairs = list(zip(self.role_order[:-1], self.role_order[1:]))
         for leader_uid, follower_uid in release_pairs:
-            if (leader_uid not in self.orbit_released
+            if (self.role_layers[leader_uid] != self.role_layers[follower_uid]
+                    or leader_uid not in self.orbit_released
                     or follower_uid in self.orbit_released):
                 continue
             allowed, phase, forward_speed, conditions = (
                 self.evaluate_sequential_release(
                     leader_uid, follower_uid, now, globally_clear))
             release_mode = "PHASE_WINDOW"
+            late_progress = float("nan")
+            late_conditions = {}
+            if (not allowed and self.role_layers[leader_uid] > 0
+                    and target_layer_late_release_allowed(
+                        phase, self.release_phase_max, conditions)):
+                allowed = True
+                release_mode = "TARGET_LAYER_LATE_SAFE_HANDOFF"
+            reference = None
+            if not allowed and self.role_layers[leader_uid] == 0:
+                reference = self.update_late_release_reference(
+                    leader_uid, follower_uid, phase, conditions)
+            if not allowed and reference is not None:
+                (allowed, late_progress, forward_speed,
+                 late_conditions) = self.evaluate_late_follower_release(
+                    leader_uid, follower_uid, reference, conditions)
+                if allowed:
+                    release_mode = "LATE_FOLLOWER_PHASE_WINDOW"
+                elif (conditions.get("follower_ready", False)
+                      and math.isfinite(late_progress)
+                      and late_progress > self.release_phase_max):
+                    # A transient safety/freshness failure may consume one
+                    # reference-relative window.  Start another window from
+                    # the current leader phase instead of making the miss
+                    # permanent.
+                    reference = self.restart_late_release_reference(
+                        leader_uid, follower_uid)
+                    late_progress = 0.0
             handoff_conditions = {}
             if not allowed:
                 allowed, handoff_conditions = (
@@ -879,17 +1042,21 @@ class SwarmManager:
             key = "{}-{}".format(leader_uid, follower_uid)
             self.release_diagnostics[key] = {
                 "phase_deg": phase,
+                "late_reference_progress_deg": late_progress,
                 "leader_forward_speed": forward_speed,
                 "conditions": conditions,
+                "late_reference_conditions": late_conditions,
                 "release_mode": release_mode if allowed else "INHIBITED",
                 "completed_handoff_conditions": handoff_conditions,
             }
             if allowed:
                 rospy.logwarn(
                     "[SWARM_COORD] UAV%d-UAV%d release allowed mode=%s "
-                    "phase=%.3fdeg speed=%.3fm/s trajectory_fresh=%s "
+                    "phase=%.3fdeg late_progress=%.3fdeg speed=%.3fm/s "
+                    "trajectory_fresh=%s "
                     "predicted_conflict=%s handoff=%s",
                     leader_uid, follower_uid, release_mode, phase,
+                    late_progress,
                     forward_speed,
                     conditions.get("leader_trajectory_fresh", False),
                     not conditions.get("predicted_clear", False),
@@ -900,16 +1067,26 @@ class SwarmManager:
                         phase, self.release_phase_min,
                         self.release_phase_max)
                      if release_mode == "PHASE_WINDOW"
+                     else "target-layer late safe handoff at physical phase "
+                          "{:.3f}deg".format(phase)
+                     if release_mode == "TARGET_LAYER_LATE_SAFE_HANDOFF"
+                     else "late follower phase progress {:.3f}deg in "
+                          "[{:.1f},{:.1f}]".format(
+                              late_progress, self.release_phase_min,
+                              self.release_phase_max)
+                     if release_mode == "LATE_FOLLOWER_PHASE_WINDOW"
                      else "completed predecessor handoff with fresh "
                           "trajectory/current separation/global safety"))
             else:
                 rospy.logwarn_throttle(
                     1.0,
                     "[SWARM_COORD] ORBIT_RELEASE_UAV%d inhibited "
-                    "leader=UAV%d phase=%.3fdeg speed=%.3fm/s "
+                    "leader=UAV%d phase=%.3fdeg late_progress=%.3fdeg "
+                    "speed=%.3fm/s "
                     "trajectory_fresh=%s predicted_conflict=%s "
                     "follower_ready=%s globally_clear=%s failed=%s",
-                    follower_uid, leader_uid, phase, forward_speed,
+                    follower_uid, leader_uid, phase, late_progress,
+                    forward_speed,
                     conditions.get("leader_trajectory_fresh", False),
                     not conditions.get("predicted_clear", False),
                     conditions.get("follower_ready", False),
@@ -934,16 +1111,6 @@ class SwarmManager:
                  for uid, stamp in self.orbit_release_times.items()},
                 self.desired_phase, self.desired_phase)
 
-        (transition_grants, self.transition_owner,
-         self.transition_started, self.transition_completed,
-         self.transition_reasons) = serialized_transition_permissions(
-            self.transition_order, self.states, health,
-            self.transition_target_heights,
-            self.transition_height_tolerance,
-            self.transition_maximum_speed, globally_clear,
-            self.transition_owner, self.transition_started,
-            self.transition_completed, self.multi_layer_enabled)
-
         # Role-bound phase control never derives the leader from angular sort:
         # UAV3 remains leader across the 0/360 wrap, UAV2 follows UAV3 and UAV1
         # follows UAV2.  Safety HOLD propagation follows the same chain.
@@ -964,6 +1131,11 @@ class SwarmManager:
         next_phase_gaps = {}
         next_phase_bands = {}
         phase_decision_valid = True
+        if self.multi_layer_enabled:
+            active_segments = [
+                piece for layer in sorted(set(self.role_layers.values()))
+                for piece in contiguous_role_segments(self.role_order, [
+                    uid for uid in active_role_order if self.role_layers[uid] == layer])]
         for segment in active_segments:
             if len(segment) < 2:
                 next_phase_bands["uav{}".format(segment[0])] = (
@@ -1019,15 +1191,19 @@ class SwarmManager:
         # intentionally much slower than deceleration, so no vehicle suddenly
         # accelerates to catch up.
         scale_targets = {uid: 1.0 for uid in self.uav_ids}
+        scale_segments = active_segments if self.multi_layer_enabled else [active_role_order]
         if self.phase_gaps:
-            active_scales, scale_reason = formation_speed_scale_targets(
-                active_role_order, self.phase_gaps, self.phase_held,
-                self.emergency_phase, self.normal_phase_min,
-                self.minimum_warning_speed_scale)
-            if scale_reason != "OK":
-                scale_targets = {uid: 0.0 for uid in self.uav_ids}
-                self.phase_bands["speed_scale"] = scale_reason
-            else:
+            for segment in scale_segments:
+                if len(segment) < 2:
+                    continue
+                active_scales, scale_reason = formation_speed_scale_targets(
+                    segment, self.phase_gaps, self.phase_held.intersection(segment),
+                    self.emergency_phase, self.normal_phase_min,
+                    self.minimum_warning_speed_scale)
+                if scale_reason != "OK":
+                    scale_targets = {uid: 0.0 for uid in self.uav_ids}
+                    self.phase_bands["speed_scale"] = scale_reason
+                    break
                 scale_targets.update(active_scales)
         for uid in self.phase_held:
             scale_targets[uid] = 0.0
@@ -1059,6 +1235,8 @@ class SwarmManager:
             self.transition_reasons[self.transition_owner] = (
                 "OWNER_SPEED_SCALE_SETTLING")
 
+        self.confirm_orbit_releases(health)
+
         # Each completed vehicle owns a distinct EXIT gate.  Current/future
         # trajectory conflict checks remain global, so all clear exits may be
         # released together.  Landing stays serialized around the nearby home
@@ -1068,7 +1246,9 @@ class SwarmManager:
             if self.healthy(uid, now)
             and self.states[uid].mission_phase == "WAIT_EXIT_PERMISSION"]
         exit_grants = {
-            uid: bool(globally_clear and uid in exit_waiting)
+            uid: bool(globally_clear and uid in exit_waiting
+                      and (not self.multi_layer_enabled or downstream_handoff_ready(
+                          uid, self.role_order, self.role_layers, self.confirmed_release_layers)))
             for uid in self.uav_ids}
         if self.landing_owner and self.healthy(self.landing_owner, now):
             if self.states[self.landing_owner].mission_phase == "DONE":
@@ -1080,6 +1260,11 @@ class SwarmManager:
         landing_grants, self.landing_owner = serialized_permissions(
             landing_waiting, self.landing_owner)
 
+        for index, uid in enumerate(self.role_order):
+            follower_layer = (len(self.layer_offsets) - 1 if index + 1 == len(self.role_order)
+                              else self.confirmed_release_layers[self.role_order[index + 1]])
+            self.downstream_handoff_pubs[uid].publish(
+                Int32(data=follower_layer if globally_clear else -1))
         permissions = {
             "takeoff": takeoff,
             "task_start": {
@@ -1095,6 +1280,7 @@ class SwarmManager:
             "orbit": {
                 uid: bool(
                     globally_clear and uid in self.orbit_released
+                    and (not self.multi_layer_enabled or uid != self.transition_owner)
                     and uid not in self.phase_held)
                 for uid in self.uav_ids},
             "exit": {
@@ -1288,6 +1474,13 @@ class SwarmManager:
             "speed_scales": self.speed_scales,
             "speed_scale_targets": self.speed_scale_targets,
             "multi_layer_enabled": self.multi_layer_enabled,
+            "layer_offsets": self.layer_offsets,
+            "role_layers": self.role_layers,
+            "released_layers": self.released_layers,
+            "confirmed_release_layers": self.confirmed_release_layers,
+            "active_layer_index": self.active_layer_index,
+            "transition_target_layer": self.transition_target_layer,
+            "transition_round_active": self.transition_round_active,
             "transition_order": self.transition_order,
             "transition_owner": self.transition_owner,
             "transition_started": sorted(self.transition_started),

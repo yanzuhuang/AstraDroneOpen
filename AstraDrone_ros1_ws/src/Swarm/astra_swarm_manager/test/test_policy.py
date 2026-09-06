@@ -8,6 +8,7 @@ from astra_swarm_manager.policy import (
     completed_predecessor_handoff_allowed,
     contiguous_role_segments,
     corridor_clear,
+    derive_layer_target_heights,
     directed_phase_gap_degrees,
     entry_ready_barrier,
     eligible_entry_ids,
@@ -19,6 +20,7 @@ from astra_swarm_manager.policy import (
     incremental_entry_corridor_selection,
     joint_entry_corridor_selection,
     landing_permissions,
+    layer_transition_speed_config_valid,
     mission_geometry_clear,
     normalize_degrees,
     orbit_staging_ready_barrier,
@@ -34,12 +36,31 @@ from astra_swarm_manager.policy import (
     serialized_transition_permissions,
     slew_speed_scale,
     task_start_barrier_ready,
+    target_layer_late_release_allowed,
+    async_role_transition_permissions,
+    downstream_handoff_ready,
     transition_permissions,
     uav2_takeoff_allowed,
 )
 
 
 class PolicyTest(unittest.TestCase):
+    def test_single_layer_ignores_unused_faster_transition_speed(self):
+        self.assertTrue(layer_transition_speed_config_valid(
+            False, 0.30, 0.14))
+
+    def test_multi_layer_still_rejects_transition_faster_than_orbit(self):
+        self.assertFalse(layer_transition_speed_config_valid(
+            True, 0.30, 0.14))
+        self.assertTrue(layer_transition_speed_config_valid(
+            True, 0.30, 0.60))
+
+    def test_transition_speed_validation_rejects_nonpositive_values(self):
+        self.assertFalse(layer_transition_speed_config_valid(
+            False, 0.0, 0.14))
+        self.assertFalse(layer_transition_speed_config_valid(
+            False, 0.30, 0.0))
+
     @staticmethod
     def point(angle_degrees, radius=12.5, center=(-10.0, 20.0)):
         angle = math.radians(angle_degrees)
@@ -333,6 +354,89 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(selected[3]["id"], leader["id"])
         self.assertEqual(grants, {3: True, 2: True, 1: False})
         self.assertEqual(reason, "UAV2_OK_TIER_0")
+
+    def test_incremental_uav2_accepts_fixed_sector_directional_staging(self):
+        order = [3, 2, 1]
+        leader = self.entry_corridor(3, 348.0, 18.0, "sector0_minus12")
+        candidates = {
+            2: [self.entry_corridor(2, angle, 24.0,
+                                    "sector7_{:.0f}".format(angle))
+                for angle in (303.0, 315.0, 327.0)]}
+        starts = {
+            3: leader["pre"], 2: candidates[2][0]["pre"],
+            1: self.entry_corridor(1, 303.0, 30.0)["pre"],
+        }
+        selected, grants, reason, diagnostics = (
+            incremental_entry_corridor_selection(
+                candidates, {3: leader}, order,
+                {3: 337.5, 2: 315.0, 1: 292.5}, (0.0, 0.0),
+                starts, 1,
+                committed_prediction_paths={3: leader["path"]}))
+
+        self.assertEqual(set(selected), {3, 2})
+        self.assertEqual(selected[2]["angle_deg"], 327.0)
+        self.assertEqual(grants, {3: True, 2: True, 1: False})
+        self.assertEqual(reason, "UAV2_OK_TIER_1")
+        self.assertEqual(diagnostics["gaps"], [21.0])
+        self.assertGreaterEqual(diagnostics["minimum_pair_distance"], 3.0)
+
+        trailing_candidates = {
+            1: [self.entry_corridor(1, angle, 30.0,
+                                    "sector7_{:.0f}".format(angle))
+                for angle in (303.0, 315.0, 327.0)]}
+        selected, grants, reason, diagnostics = (
+            incremental_entry_corridor_selection(
+                trailing_candidates, selected, order,
+                {3: 337.5, 2: 315.0, 1: 292.5}, (0.0, 0.0),
+                starts, 1,
+                committed_prediction_paths={
+                    3: selected[3]["path"], 2: selected[2]["path"]}))
+        self.assertEqual(set(selected), {3, 2, 1})
+        self.assertEqual(selected[1]["angle_deg"], 303.0)
+        self.assertEqual(grants, {3: True, 2: True, 1: True})
+        self.assertEqual(reason, "UAV1_OK_TIER_1")
+        self.assertEqual(diagnostics["gaps"], [21.0, 24.0])
+        self.assertGreaterEqual(diagnostics["minimum_pair_distance"], 3.0)
+
+    def test_incremental_prefix_preserves_runtime_uav1_role_slot(self):
+        order = [3, 2, 1]
+        leader = self.entry_corridor(3, 348.0, 18.0, "runtime_uav3")
+        leader["clearance"] = 5.738
+        middle_candidates = [
+            self.entry_corridor(2, angle, 24.0,
+                                "runtime_uav2_{:.0f}".format(angle))
+            for angle in (320.0, 325.0, 327.0)]
+        for candidate, clearance in zip(
+                middle_candidates, (5.978, 6.059, 5.837)):
+            candidate["clearance"] = clearance
+        starts = {
+            3: leader["pre"], 2: middle_candidates[0]["pre"],
+            1: self.entry_corridor(1, 303.0, 30.0)["pre"],
+        }
+        nominal = {3: 337.5, 2: 315.0, 1: 292.5}
+        selected, grants, reason, diagnostics = (
+            incremental_entry_corridor_selection(
+                {2: middle_candidates}, {3: leader}, order, nominal,
+                (0.0, 0.0), starts, 1,
+                committed_prediction_paths={3: leader["path"]}))
+
+        self.assertEqual(selected[2]["angle_deg"], 325.0)
+        self.assertEqual(grants, {3: True, 2: True, 1: False})
+        self.assertEqual(reason, "UAV2_OK_TIER_1")
+        self.assertAlmostEqual(diagnostics["gaps"][0], 23.0)
+        self.assertAlmostEqual(diagnostics["role_gap_deviation"], 0.5)
+
+        trailing = self.entry_corridor(1, 303.0, 30.0, "runtime_uav1")
+        selected, grants, reason, diagnostics = (
+            incremental_entry_corridor_selection(
+                {1: [trailing]}, selected, order, nominal,
+                (0.0, 0.0), starts, 1,
+                committed_prediction_paths={
+                    3: selected[3]["path"], 2: selected[2]["path"]}))
+        self.assertEqual(set(selected), {3, 2, 1})
+        self.assertEqual(grants, {3: True, 2: True, 1: True})
+        self.assertEqual(reason, "UAV1_OK_TIER_1")
+        self.assertEqual(diagnostics["gaps"], [23.0, 22.0])
 
     def test_incremental_uav2_rejects_crossing_committed_uav3_corridor(self):
         order = [3, 2, 1]
@@ -882,6 +986,47 @@ class PolicyTest(unittest.TestCase):
             24.1, 24.0, 0.4, True)
         self.assertEqual((p1, p2, confirmed), (True, False, True))
 
+    def test_single_layer_offsets_preserve_initial_heights(self):
+        self.assertEqual(
+            derive_layer_target_heights(
+                [1, 2, 3], [34.0, 28.0, 22.0], [0.0], 0),
+            {1: 34.0, 2: 28.0, 3: 22.0})
+
+    def test_same_height_single_layer_baseline_remains_transition_free(self):
+        targets = derive_layer_target_heights(
+            [1, 2, 3], [3.0, 3.0, 3.0], [0.0], 0)
+        self.assertEqual(targets, {1: 3.0, 2: 3.0, 3: 3.0})
+        states = {
+            uid: SimpleNamespace(
+                mission_phase="WAIT_EXIT_PERMISSION", current_height=3.0,
+                velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0))
+            for uid in (1, 2, 3)}
+        grants, owner, started, completed, reasons = (
+            serialized_transition_permissions(
+                [3, 2, 1], states, {uid: True for uid in states},
+                targets, 0.35, 0.2, True, enabled=False))
+        self.assertFalse(any(grants.values()))
+        self.assertEqual((owner, started, completed), (0, set(), set()))
+        self.assertEqual(reasons[3], "MULTI_LAYER_DISABLED")
+
+    def test_two_layer_targets_are_derived_from_shared_offset(self):
+        self.assertEqual(
+            derive_layer_target_heights(
+                [1, 2, 3], [26.0, 20.0, 14.0], [0.0, -4.0], 1),
+            {1: 22.0, 2: 16.0, 3: 10.0})
+
+    def test_layer_target_formula_does_not_depend_on_uav_id(self):
+        self.assertEqual(
+            derive_layer_target_heights(
+                [7, 3, 11], [26.0, 20.0, 14.0], [0.0, -4.0], 1),
+            {7: 22.0, 3: 16.0, 11: 10.0})
+
+    def test_invalid_layer_offset_sequence_fails_closed(self):
+        self.assertEqual(
+            derive_layer_target_heights(
+                [1, 2, 3], [34.0, 28.0, 22.0], [0.0, -4.0, -2.0], 1),
+            {})
+
     def test_three_uav_transition_owner_is_sticky_and_ordered(self):
         def state(phase, height, speed=0.0):
             return SimpleNamespace(
@@ -941,6 +1086,45 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(completed, {3, 2})
         self.assertEqual(owner, 1)
         self.assertEqual(grants, {3: False, 2: False, 1: True})
+
+    def test_full_three_uav_transition_sequence_has_one_owner_maximum(self):
+        def state(phase, height):
+            return SimpleNamespace(
+                mission_phase=phase, current_height=height,
+                velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0))
+        order = [3, 2, 1]
+        starts = {1: 34.0, 2: 28.0, 3: 22.0}
+        targets = {1: 30.0, 2: 24.0, 3: 18.0}
+        states = {
+            uid: state("WAIT_TRANSITION_PERMISSION", starts[uid])
+            for uid in order}
+        health = {uid: True for uid in order}
+        owner, started, completed = 0, set(), set()
+        observed_owners = []
+        for expected_owner in order:
+            grants, owner, started, completed, _ = (
+                serialized_transition_permissions(
+                    order, states, health, targets, 0.35, 0.2, True,
+                    owner, started, completed))
+            self.assertEqual(owner, expected_owner)
+            self.assertEqual(sum(bool(value) for value in grants.values()), 1)
+            observed_owners.append(owner)
+            states[owner] = state("LAYER_TRANSITION", targets[owner] + 2.0)
+            grants, owner, started, completed, _ = (
+                serialized_transition_permissions(
+                    order, states, health, targets, 0.35, 0.2, True,
+                    owner, started, completed))
+            self.assertLessEqual(
+                sum(bool(value) for value in grants.values()), 1)
+            states[owner] = state("ORBIT_STAGING_READY", targets[owner])
+        grants, owner, started, completed, _ = (
+            serialized_transition_permissions(
+                order, states, health, targets, 0.35, 0.2, True,
+                owner, started, completed))
+        self.assertEqual(observed_owners, [3, 2, 1])
+        self.assertEqual(completed, {3, 2, 1})
+        self.assertEqual(owner, 0)
+        self.assertFalse(any(grants.values()))
 
     def test_transition_owner_requires_stable_target_and_fails_closed(self):
         def state(phase, height, speed=0.0):
@@ -1003,6 +1187,169 @@ class PolicyTest(unittest.TestCase):
             landing_permissions(True, True, True, 0), (True, False, 1))
         self.assertEqual(
             landing_permissions(False, True, True, 1), (False, False, 1))
+
+
+class AsyncRolePipelineTest(unittest.TestCase):
+    def setUp(self):
+        self.order = [3, 2, 1]
+        self.heights = {3: 14., 2: 20., 1: 26.}
+        self.offsets = [0., -4.]
+        self.layers = {u: 0 for u in self.order}
+        self.released = dict(self.layers)
+        self.health = {u: True for u in self.order}
+        self.states = {u: SimpleNamespace(
+            mission_phase="NAVIGATING", current_height=self.heights[u],
+            velocity=SimpleNamespace(x=0., y=0., z=0.)) for u in self.order}
+        self.owner = 0
+        self.started = False
+
+    def tick(self, clear=True):
+        result = async_role_transition_permissions(
+            self.order, self.states, self.health, self.heights, self.offsets,
+            self.layers, self.released, .35, .2, clear, self.owner, self.started)
+        grants, self.owner, self.started, self.layers, reasons = result
+        self.assertLessEqual(sum(grants.values()), 1)
+        return grants, reasons
+
+    def complete(self, uid):
+        self.states[uid].mission_phase = "LAYER_TRANSITION"
+        self.tick()
+        self.states[uid].mission_phase = "ORBIT_STAGING_READY"
+        self.states[uid].current_height = self.heights[uid] + self.offsets[self.layers[uid]+1]
+        self.tick()
+
+    def test_leader_descends_while_both_followers_are_still_orbiting(self):
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.released[2] = -1
+        self.released[1] = -1
+        self.assertTrue(self.tick()[0][3])
+        self.complete(3)
+        self.assertEqual(self.layers, {3: 1, 2: 0, 1: 0})
+        self.assertEqual(self.owner, 0)
+
+    def test_followers_need_their_immediate_predecessor_transition(self):
+        for uid in [2, 1]:
+            self.states[uid].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.assertFalse(any(self.tick()[0].values()))
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.assertTrue(self.tick()[0][3])
+        self.complete(3)
+        self.assertTrue(self.tick()[0][2])
+        self.complete(2)
+        self.assertTrue(self.tick()[0][1])
+        self.complete(1)
+        self.assertEqual(set(self.layers.values()), {1})
+
+    def test_follower_transition_needs_completion_not_predecessor_release(self):
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.assertTrue(self.tick()[0][3])
+        self.complete(3)
+        self.states[2].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        grants, reasons = self.tick()
+        self.assertTrue(grants[2], reasons)
+        self.assertEqual(reasons[2], "OWNER_GRANTED")
+
+    def test_follower_still_requires_own_source_release_and_freshness(self):
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.assertTrue(self.tick()[0][3])
+        self.complete(3)
+        self.states[2].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.released[2] = -1
+        grants, reasons = self.tick()
+        self.assertFalse(any(grants.values()))
+        self.assertEqual(reasons[2], "SOURCE_NOT_READY")
+        self.released[2] = 0
+        self.health[2] = False
+        self.assertFalse(any(self.tick()[0].values()))
+        self.health[2] = True
+        self.assertTrue(self.tick()[0][2])
+
+    def test_target_layer_late_release_retains_every_safety_gate(self):
+        conditions = {
+            "phase_in_window": False,
+            "leader_forward_stable": True,
+            "leader_trajectory_fresh": True,
+            "follower_ready": True,
+            "predicted_clear": True,
+            "globally_clear": True,
+        }
+        self.assertTrue(target_layer_late_release_allowed(86.6, 70., conditions))
+        self.assertFalse(target_layer_late_release_allowed(180., 70., conditions))
+        self.assertFalse(target_layer_late_release_allowed(None, 70., conditions))
+        self.assertFalse(target_layer_late_release_allowed(86.6, 70., None))
+        for name in (
+                "leader_forward_stable", "leader_trajectory_fresh",
+                "follower_ready", "predicted_clear", "globally_clear"):
+            blocked = dict(conditions)
+            blocked[name] = False
+            self.assertFalse(
+                target_layer_late_release_allowed(86.6, 70., blocked), name)
+
+    def test_unsettled_and_stale_owner_is_not_transferred(self):
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.states[3].velocity.x = .3
+        self.assertFalse(any(self.tick()[0].values()))
+        self.states[3].velocity.x = 0.
+        self.tick()
+        self.health[3] = False
+        self.assertFalse(any(self.tick()[0].values()))
+        self.assertEqual(self.owner, 3)
+        self.health[3] = True
+        self.assertFalse(any(self.tick(False)[0].values()))
+        self.assertEqual(self.owner, 3)
+
+    def test_unowned_descending_role_inhibits_all_new_grants(self):
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.states[1].mission_phase = "LAYER_TRANSITION"
+        self.assertFalse(any(self.tick()[0].values()))
+        self.assertEqual(self.owner, 0)
+        self.states[1].mission_phase = "NAVIGATING"
+        self.tick()
+        self.states[1].mission_phase = "LAYER_TRANSITION"
+        self.assertFalse(any(self.tick()[0].values()))
+        self.assertEqual(self.owner, 3)
+
+    def test_height_alone_never_completes_a_transition(self):
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.tick()
+        self.states[3].mission_phase = "ORBIT_STAGING_READY"
+        self.states[3].current_height = 10.
+        self.tick()
+        self.assertEqual(self.layers[3], 0)
+        self.assertEqual(self.owner, 3)
+
+    def test_handoff_is_layer_scoped_and_does_not_require_landing(self):
+        self.layers = {3: 1, 2: 1, 1: 0}
+        self.assertFalse(downstream_handoff_ready(3, self.order, self.layers, self.released))
+        self.released[2] = 1
+        self.assertTrue(downstream_handoff_ready(3, self.order, self.layers, self.released))
+        self.assertFalse(downstream_handoff_ready(2, self.order, self.layers, self.released))
+        self.released[1] = 1
+        self.assertTrue(downstream_handoff_ready(2, self.order, self.layers, self.released))
+        self.assertTrue(downstream_handoff_ready(1, self.order, self.layers, self.released))
+        self.assertTrue(all(s.mission_phase == "NAVIGATING" for s in self.states.values()))
+
+    def test_single_layer_has_no_transition_owner(self):
+        self.offsets = [0.]
+        self.states[3].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.assertFalse(any(self.tick()[0].values()))
+
+    def test_arbitrary_roles_can_pipeline_three_layers(self):
+        mapping = {3: 9, 2: 7, 1: 4}
+        self.order = [mapping[u] for u in self.order]
+        for attr in ["heights", "layers", "released", "health", "states"]:
+            setattr(self, attr, {mapping[u]: v for u,v in getattr(self, attr).items()})
+        self.offsets = [0., -4., -8.]
+        self.states[9].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.tick(); self.complete(9)
+        self.released[9] = 1
+        self.states[7].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.tick(); self.complete(7)
+        self.released[7] = 1
+        self.states[9].mission_phase = "WAIT_TRANSITION_PERMISSION"
+        self.assertTrue(self.tick()[0][9])
+        self.complete(9)
+        self.assertEqual(self.layers, {9: 2, 7: 1, 4: 0})
 
 
 if __name__ == "__main__":

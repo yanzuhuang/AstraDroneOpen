@@ -23,6 +23,23 @@
     <param name="mission/sector_limit" value="1"/>
     <param name="mission/inspection_laps" value="1"/>
     <param name="mission/planned_cycles" value="2"/>
+    <!-- This coarse obstacle intersects only the lower layer's projected
+         role gate. It is deliberately soft: reaching a new orbit layer must
+         not re-run ENTRY admission, while final EXIT still performs its live
+         map and hard-static checks. -->
+    <rosparam param="static_obstacles/names">[next_layer_soft_gate]</rosparam>
+    <rosparam param="static_obstacles/x">[0.0]</rosparam>
+    <rosparam param="static_obstacles/y">[-15.0]</rosparam>
+    <rosparam param="static_obstacles/z">[0.0]</rosparam>
+    <rosparam param="static_obstacles/radius">[0.5]</rosparam>
+    <rosparam param="static_obstacles/z_min">[21.0]</rosparam>
+    <rosparam param="static_obstacles/z_max">[23.0]</rosparam>
+    <rosparam param="static_obstacles/half_extent_x">[0.0]</rosparam>
+    <rosparam param="static_obstacles/half_extent_y">[0.0]</rosparam>
+    <rosparam param="static_obstacles/yaw">[0.0]</rosparam>
+    <param name="coordination/require_orbit_staging_permission" value="true"/>
+    <param name="coordination/require_orbit_permission" value="true"/>
+    <param name="coordination/require_transition_permission" value="true"/>
     <param name="entry_gate/entry_sector" value="7"/>
     <param name="entry_gate/minimum_radius" value="15.0"/>
     <param name="entry_gate/maximum_radius" value="15.0"/>

@@ -18,8 +18,8 @@ speed_scale_fall_rate: 1.5
 entry_height_tolerance: 0.35
 entry_maximum_speed: 0.20
 entry_ready_timeout: 360.0
-entry_nominal_speed: 0.20
-orbit_nominal_speed: 0.14
+entry_nominal_speed: 0.60
+orbit_nominal_speed: 0.60
 release_phase_min_deg: 65.0
 release_phase_max_deg: 70.0
 release_minimum_forward_speed: 0.03

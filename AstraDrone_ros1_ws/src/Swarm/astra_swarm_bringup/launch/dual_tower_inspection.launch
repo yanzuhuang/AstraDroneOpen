@@ -95,8 +95,7 @@
   <arg name="layer_transition_nominal_speed" default="0.30"/>
   <arg name="multi_layer_enabled" default="true"/>
   <arg name="swarm_transition_order" default="[2, 1]"/>
-  <arg name="swarm_transition_target_heights"
-       default="[$(arg uav1_final_height), $(arg uav2_final_height)]"/>
+  <arg name="swarm_layer_offsets" default="$(arg uav1_layer_offsets)"/>
   <arg name="formation_role_order" default="[2, 1]"/>
   <arg name="target_phase_deg" default="67.5"/>
   <arg name="normal_phase_min_deg" default="57.5"/>
@@ -586,8 +585,8 @@
     <param name="multi_layer_enabled" value="$(arg multi_layer_enabled)"/>
     <rosparam param="transition_order"
               subst_value="true">$(arg swarm_transition_order)</rosparam>
-    <rosparam param="transition_target_heights"
-              subst_value="true">$(arg swarm_transition_target_heights)</rosparam>
+    <rosparam param="layer_offsets"
+              subst_value="true">$(arg swarm_layer_offsets)</rosparam>
     <rosparam param="formation_role_order"
               subst_value="true">$(arg formation_role_order)</rosparam>
     <param name="target_phase_deg" value="$(arg target_phase_deg)"/>
@@ -598,10 +597,6 @@
     <param name="leader_wait_phase_deg" value="$(arg leader_wait_phase_deg)"/>
     <param name="entry_ready_timeout" value="$(arg entry_ready_timeout)"/>
     <param name="uav2_takeoff_height" value="$(arg uav2_takeoff_height)"/>
-    <param name="uav1_initial_height" value="$(arg uav1_top_height)"/>
-    <param name="uav1_final_height" value="$(arg uav1_final_height)"/>
-    <param name="uav2_initial_height" value="$(arg uav2_top_height)"/>
-    <param name="uav2_final_height" value="$(arg uav2_final_height)"/>
   </node>
   </group>
 
