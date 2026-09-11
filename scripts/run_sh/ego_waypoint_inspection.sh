@@ -23,6 +23,13 @@ usage() {
 飞行验证必须显式同时给出 --control 和 single/dual/tower；顺序应为
 dry-run -> 故障注入 -> single -> dual -> tower。
 默认世界为 worksite.world。
+默认 GUI/RViz/attach 关闭，waypoints=8；single/dual/tower 是单机任务场景名，
+不是无人机数量。本入口不支持 --record 或 --bag。
+默认结果：runtime_artifacts/ego_waypoint_inspection_<scenario>_<时间戳>/mission.csv；
+--report FILE 必须位于本仓库 runtime_artifacts/ 下。
+停止：另一个终端执行 ego_waypoint_inspection.sh --stop。
+--stop 是停止仿真进程，不是返航或降落指令；正常任务应先完成落地和解除武装。
+tmux 的 Ctrl+b d 仅脱离界面，任务继续运行。参见 docs/FINAL_RUNBOOK.md。
 EOF
 }
 

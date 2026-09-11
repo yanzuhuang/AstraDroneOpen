@@ -6,6 +6,7 @@ Panels:
         - /Global Options1
         - /Three UAV Models1
         - /Independent Point Clouds1
+        - /Local Inflated Occupancy1
         - /Independent EGO Trajectories1
         - /Actual Flight Paths1
         - /Mission Targets1
@@ -117,6 +118,98 @@ Visualization Manager:
           Size (m): 0.04
           Style: Points
           Use Fixed Frame: true
+    # Single-UAV reference: 1f9552a, ego_gazebo_bridge.rviz / Inflated Occupancy.
+    # Reuse the existing moving local occupancy output (including its map margin).
+    # Box size matches triple_tower_inspection.launch's default 0.25 m resolution.
+    # Decay 0 replaces each frame instead of accumulating a global obstacle trail.
+    - Class: rviz/Group
+      Name: Local Inflated Occupancy
+      Enabled: true
+      Displays:
+        - Alpha: 0.45
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 2
+            Min Value: 0
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 80; 80
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: uav1 inflated occupancy
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.25
+          Style: Boxes
+          Topic: /uav1/drone_0_ego_planner_node/grid_map/occupancy_inflate
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: false
+          Value: true
+        - Alpha: 0.45
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 2
+            Min Value: 0
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 80; 80
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: uav2 inflated occupancy
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.25
+          Style: Boxes
+          Topic: /uav2/drone_1_ego_planner_node/grid_map/occupancy_inflate
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: false
+          Value: true
+        - Alpha: 0.45
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 2
+            Min Value: 0
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 80; 80
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: uav3 inflated occupancy
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.25
+          Style: Boxes
+          Topic: /uav3/drone_2_ego_planner_node/grid_map/occupancy_inflate
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: false
+          Value: true
     - Class: rviz/Group
       Name: Independent EGO Trajectories
       Enabled: true

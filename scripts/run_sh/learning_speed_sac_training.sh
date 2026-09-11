@@ -22,8 +22,14 @@ while (($#)); do
       run_id="${1:-}"
       ;;
     --help)
-      echo "learning_speed_sac_training.sh [--gui] [--run-id UNIQUE_RUN_ID]"
+      echo "learning_speed_sac_training.sh [--gui] [--run-id sac_training_10000ep_YYYYMMDD_HHMMSS] [--help]"
       echo "Starts the formal 10000-Episode SAC training run and follows key logs."
+      echo "Defaults: GUI off; RUN_ID generated from the current timestamp; invoking without options starts training."
+      echo "Existing qualification/approval requirements still apply; this entry does not grant training approval."
+      echo "May prepare/build the Hector overlay. No --mode, --control, --rviz, --record, --stop or resume option."
+      echo "Output: runtime_artifacts/rl_training/RUN_ID/; existing directories are rejected."
+      echo "Stop with Ctrl+C in the launching terminal; this records an intentional interruption, not training completion."
+      echo "Read sac_runtime_summary.json; process exit code alone does not establish training success. See docs/FINAL_RUNBOOK.md."
       exit 0
       ;;
     *)

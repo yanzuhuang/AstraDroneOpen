@@ -34,8 +34,15 @@ traj_server、bridge 和阶段三任务管理器；PlannerStatus 由 EGO FSM 直
 preflight 和控制权唯一性证据全部通过并由项目负责人批准后才能使用。
 默认世界为 worksite.world。带控制运行只接受完整 8 扇区；较小 sector-limit
 仅保留给无控制的状态机测试，不作为阶段三飞行流程。
-每次通过 --stop 安全结束后，会用本轮 CSV 自动生成 3D 轨迹和高度曲线到
-本轮 `runtime_artifacts/<任务名称>_<时间戳>/` 目录。
+默认 GUI/RViz/attach 关闭，8 扇区、1 cycle，top-height=34.0，
+layer-offsets=[0.0, -4.0]，takeoff-height=4.0；不自动录包。
+--bag FILE 启用专项录包；本入口不支持 --record light/full。
+默认结果：runtime_artifacts/sector_inspection_control_<时间戳>/control.csv
+（无控制时为 sector_inspection_dry_run_<时间戳>/dry_run.csv）。
+--report 和 --bag 必须位于本仓库 runtime_artifacts/ 下。
+停止：另一个终端执行 sector_inspection.sh --stop，等待录包收尾及轨迹图生成。
+--stop 是停止仿真进程，不是返航或降落指令；正常任务应先完成落地和解除武装。
+tmux 的 Ctrl+b d 仅脱离界面，任务继续运行。参见 docs/FINAL_RUNBOOK.md。
 EOF
 }
 

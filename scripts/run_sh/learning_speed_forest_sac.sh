@@ -23,9 +23,17 @@ while (($#)); do
     --checkpoint-episode) shift; checkpoint_episode="${1:-}" ;;
     --help)
       echo "learning_speed_forest_sac.sh --mode preflight|training|smoke|evaluation [options]"
-      echo "  preflight: three-map reset lifecycle; no Replay, learner, or Episode execution"
+      echo "  options: --run-id UNIQUE_RUN_ID --gui --seed 8|9 --checkpoint PATH --checkpoint-episode N --help"
+      echo "  mode is required; GUI defaults to off; RUN_ID defaults to a mode-specific timestamped ID."
+      echo "  preflight: starts Gazebo and a three-map reset lifecycle; no Replay, learner, or Episode execution; not a read-only check"
+      echo "  training: starts 10000 completed training Episodes; existing qualification/approval requirements still apply"
       echo "  smoke: fixed 31 Episodes, 10 completed Episodes/map, three switches"
       echo "  evaluation: requires --seed 8|9 --checkpoint PATH --checkpoint-episode N"
+      echo "  --seed, --checkpoint and --checkpoint-episode are used only by evaluation. No demo mode is supported."
+      echo "  Non-help modes may prepare/build the Hector overlay. There is no --control, --rviz, --record or --stop option."
+      echo "  Outputs: runtime_artifacts/rl_training/RUN_ID (training), runtime_artifacts/rl_evaluation/RUN_ID (evaluation),"
+      echo "           runtime_artifacts/learning_speed/forest_randomization_training_integration_v2/RUN_ID (preflight/smoke)."
+      echo "  Stop with Ctrl+C in the launching terminal; interruption is not a completed run. See docs/FINAL_RUNBOOK.md."
       exit 0
       ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
