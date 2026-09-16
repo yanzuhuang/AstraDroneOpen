@@ -1,5 +1,8 @@
 # 用 AstraDroneOpen 从零认识 ROS
 
+> 入口定位更新（2026-09-16）：本文中的 pc_example.sh 与 echo.sh 已退役删除，record.sh 继续保留，不能作为当前正式任务默认入口。正常任务使用 [项目整理文档·运行说明](项目整理文档.md#runbook)；能力差异与迁移边界见 [项目整理文档·模块一](项目整理文档.md#模块一启动脚本与-run_sh-整理)。旧 pc_example 组合仅作历史说明，不再提供运行命令；其原默认行为包含旧自动控制。
+> 四路 MAVROS 监视现使用 [mavros_monitor.sh](scripts/run_sh/tools/mavros_monitor.sh)（DIAGNOSTIC）；默认根 namespace，可选 `--namespace /uav1`、`/uav2`、`/uav3`。旧 `echo.sh` 已退役删除。
+
 > 这是一份写给 ROS 零基础读者的项目导读。
 >
 > 快速路线：先读第 0 节和第 4 节，约 5 分钟；再回到第 1～3 节逐个理解术语。第 5～10 节解释本项目，第 11 节用于动手练习，其余内容可按需查阅。
@@ -544,14 +547,9 @@ Gazebo 虚拟 Mid360
 
 ## 6. 项目启动时发生了什么
 
-### 6.1 默认入口
+### 6.1 已退役的历史默认入口
 
-默认脚本是：
-
-```bash
-cd ~/AstraDroneOpen
-./scripts/run_sh/pc_example.sh
-```
+旧 `pc_example.sh` 一键组合已退役删除，以下仅保留历史流程说明；当前任务使用 [项目整理文档·运行说明](项目整理文档.md#runbook)。
 
 它用 tmux 建立 5 个窗格：
 
@@ -659,7 +657,7 @@ COMPLETED 上锁并退出
 
 ### 6.5 安全提醒
 
-`pc_example.sh` 和 `autoarming_control.launch` 不是纯观察命令。它们会尝试切换 OFFBOARD、解锁并发送飞行目标。
+已退役的 `pc_example.sh` 原来会启动 `autoarming_control.launch`；后者仍是底层历史控制组件，会尝试切换 OFFBOARD、解锁并发送飞行目标。
 
 - 仿真学习时，先只启动 PX4/Gazebo/MAVROS；
 - 实机上不要直接运行默认控制脚本；
@@ -821,7 +819,7 @@ rostopic info /livox/lidar
 
 按这个顺序阅读：
 
-1. `scripts/run_sh/pc_example.sh`：整个演示启动了什么；
+1. [项目整理文档·运行说明](项目整理文档.md#runbook)：当前三机用户入口；旧 pc_example shell 已退役；
 2. `simulation/px4_sim_files/px4_launch/astra_launch/astra_example.launch`：PX4、Gazebo 和 MAVROS；
 3. `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/launch/autoarming_control.launch`：节点和控制参数；
 4. `AstraDrone_ros1_ws/src/MissionControl/astra_uavoffbard_frame/offboard/src/autoarming_control.cpp`：默认飞行状态机；

@@ -1,5 +1,10 @@
 # AstraDrone 开发教程（入门指南）
 
+> 入口定位更新（2026-09-16）：本文中的 pc_example.sh 与 echo.sh 已退役删除，record.sh 继续保留，不能作为当前正式任务默认入口。正常任务使用 [项目整理文档·运行说明](../项目整理文档.md#runbook)；能力差异与迁移边界见 [项目整理文档·模块一](../项目整理文档.md#模块一启动脚本与-run_sh-整理)。旧 pc_example 组合仅作历史说明，不再提供运行命令；其原默认行为包含旧自动控制。
+> 四路 MAVROS 监视现使用 [mavros_monitor.sh](../scripts/run_sh/tools/mavros_monitor.sh)（DIAGNOSTIC）；默认根 namespace，可选 `--namespace /uav1`、`/uav2`、`/uav3`。旧 `echo.sh` 已退役删除。
+
+> 三机普通／多高度入口默认 `--record none`，不写 `--record` 不录 bag；显式 `light/full` 的 topic 集合及逻辑保持不变。正式命令：`./scripts/run_sh/three_uav/three_uav_multi_height_inspection.sh --multi-layer --control --gui --rviz --record light`。Forest SAC、Hector overlay 准备、record 与 MAVROS 监视入口继续保留；Worksite SAC shell、旧固定速度 baseline shell 和两个专项录包 shell 已退役，底层组件和历史工件保留。
+
 ## 1. 前言
 AstraDrone 是一个面向科研和教学的开源无人机平台，支持 ROS1 和 ROS2 两种系统，并提供从仿真到硬件的一体化方案。本教程旨在帮助初学者快速了解项目结构、搭建开发环境以及基本的gazebo仿真使用，同时理解无人机上位机与下位机的协同工作方式，并逐步掌握从基础操控到高级算法（如 Fast‑LIO2、EGO‑Planner、自主探索等）。
 
@@ -108,15 +113,7 @@ AstraDrone 采用典型的无人机分层架构：
 ### 5.1 基础环境搭建
 
 1. **Gazebo 世界选择**：在 `simulation/astra_gazebo_worlds` 目录下，提供 `cangku.world`、`forest.world`、`suv.world` 等仿真场景。选择所需场景并在启动文件中指定。 
-2. **启动仿真**：
-
-   ```bash
-   cd ~/AstraDroneOpen
-   source AstraDrone_ros1_ws/devel/setup.bash
-   # 运行示例仿真脚本
-   bash scripts/run_sh/pc_example.sh
-   ```
-   该脚本会启动 PX4 SITL、Gazebo 环境以及无人机控制相关节点，并在 RViz 中显示状态。
+2. **启动仿真**：使用 [项目整理文档·运行说明](../项目整理文档.md#runbook) 中的三机正式入口。旧 `pc_example.sh` 一键组合已退役；PX4、FAST-LIO、Offboard 和 QGC 底层文件保持。
 3. **可视化调试**：使用 RViz 查看无人机的位置、点云、轨迹等信息；使用 rqt_graph 检查话题连接。
 4. **构建新的世界**：可以利用gazebo中已有的模型和启动的世界文件，将相应的模型拖入世界当中，保存到指定路径后就可以作为新的世界运行。
 

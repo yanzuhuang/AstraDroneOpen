@@ -15,8 +15,8 @@ for argument in "$@"; do
     --help)
       echo "three_uav_multi_height_inspection.sh [--single-layer|--multi-layer] [three_uav_inspection options]"
       echo "Default: distinct top heights 26/20/14 m; --multi-layer enables 26->22, 20->16 and 14->10 m."
-      echo "Default is --single-layer; control, GUI and RViz are off; recording is light."
-      echo "Official: ./scripts/run_sh/three_uav_multi_height_inspection.sh --multi-layer --control --gui --rviz --record light"
+      echo "Default is --single-layer; control, GUI and RViz are off; recording is none (no bag)."
+      echo "Official: ./scripts/run_sh/three_uav/three_uav_multi_height_inspection.sh --multi-layer --control --gui --rviz --record light"
       echo "Learning Speed is forbidden for this profile. Stop with Ctrl+C in the launching terminal."
       echo "Shared options follow; the multi-height profile overrides the ordinary three-UAV heights."
       forwarded+=("$argument")

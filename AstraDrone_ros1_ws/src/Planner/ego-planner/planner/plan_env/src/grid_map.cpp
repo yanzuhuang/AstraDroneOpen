@@ -139,6 +139,8 @@ void GridMap::initMap(ros::NodeHandle &nh)
 
   map_pub_ = node.advertise<sensor_msgs::PointCloud2>("grid_map/occupancy", 10);
   map_inf_pub_ = node.advertise<sensor_msgs::PointCloud2>("grid_map/occupancy_inflate", 10);
+  local_inflated_obstacles_pub_ =
+      node.advertise<sensor_msgs::PointCloud2>("grid_map/inflated_cloud", 2);
   map_free_pub_ = node.advertise<sensor_msgs::PointCloud2>("grid_map/known_free", 2);
   map_unknown_pub_ = node.advertise<sensor_msgs::PointCloud2>("grid_map/unknown", 2);
   mapping_stats_pub_ = node.advertise<std_msgs::String>("grid_map/mapping_stats", 10);
@@ -884,6 +886,8 @@ void GridMap::clearAndInflateLocalMap()
 
 void GridMap::visCallback(const ros::TimerEvent & /*event*/)
 {
+  // Also emit an empty debug frame after reset, so RViz can discard the old view.
+  publishLocalInflatedObstacles();
   if (!md_.local_window_initialized_)
     return;
   publishMapInflate(true);
@@ -1237,6 +1241,46 @@ void GridMap::publishMapInflate(bool all_info)
   map_inf_pub_.publish(cloud_msg);
 
   // ROS_INFO("pub map");
+}
+
+pcl::PointCloud<pcl::PointXYZ> GridMap::makeLocalInflatedObstacleCloud()
+{
+  pcl::PointCloud<pcl::PointXYZ> cloud;
+  cloud.header.frame_id = mp_.frame_id_;
+  cloud.height = 1;
+  cloud.is_dense = true;
+  if (!md_.local_window_initialized_)
+    return cloud;
+
+  // Reuse the authoritative moving window, without local_map_margin. Read only:
+  // the planning map still includes the virtual ceiling and its hard constraints.
+  for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
+    for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)
+      for (int z = md_.local_bound_min_(2); z <= md_.local_bound_max_(2); ++z) {
+        const int address = toAddress(x, y, z);
+        // A virtual-ceiling-only voxel has no observed obstacle contributing to
+        // its inflation count. Keep real obstacle inflation even on that plane.
+        if (md_.occupancy_buffer_inflate_[address] == 0 ||
+            md_.occupancy_buffer_inflate_count_[address] == 0)
+          continue;
+        Eigen::Vector3d pos;
+        indexToPos(Eigen::Vector3i(x, y, z), pos);
+        if (pos.z() > mp_.visualization_truncate_height_)
+          continue;
+        cloud.push_back(pcl::PointXYZ(pos.x(), pos.y(), pos.z()));
+      }
+  cloud.width = cloud.points.size();
+  return cloud;
+}
+
+void GridMap::publishLocalInflatedObstacles()
+{
+  if (local_inflated_obstacles_pub_.getNumSubscribers() == 0)
+    return;
+  sensor_msgs::PointCloud2 cloud_msg;
+  pcl::toROSMsg(makeLocalInflatedObstacleCloud(), cloud_msg);
+  cloud_msg.header.stamp = md_.last_cloud_stamp_;
+  local_inflated_obstacles_pub_.publish(cloud_msg);
 }
 
 void GridMap::publishVoxelStateMap(

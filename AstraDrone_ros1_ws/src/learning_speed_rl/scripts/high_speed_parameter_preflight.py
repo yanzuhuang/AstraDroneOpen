@@ -73,7 +73,7 @@ def run_preflight(repo_root, requested_speeds, speed_ceiling, max_acc,
     advanced_launch = repo_root / (
         "AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/launch/"
         "advanced_param.xml")
-    runner = repo_root / "scripts/run_sh/learning_speed_manual_run.sh"
+    runner = repo_root / "scripts/run_sh/reinforcement_learning/learning_speed_manual_run.sh"
 
     _check(results, "reviewed_static_ceiling", math.isclose(speed_ceiling, EXPECTED_CEILING),
            speed_ceiling, EXPECTED_CEILING)

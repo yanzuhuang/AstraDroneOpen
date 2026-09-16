@@ -58,6 +58,41 @@ public:
 
   static void clear(GridMap& map) { map.clearForEnvironmentReset(); }
 
+  static void moveWindowWithCeiling(
+      GridMap& map, const Eigen::Vector3d& origin, double ceiling) {
+    map.mp_.virtual_ceil_height_ = ceiling;
+    map.updateLocalMapWindow(origin);
+    map.clearAndInflateLocalMap();
+  }
+
+  static void addObservedObstacle(GridMap& map, const Eigen::Vector3d& point) {
+    Eigen::Vector3i id;
+    map.posToIndex(point, id);
+    map.md_.occupancy_buffer_[map.toAddress(id)] = map.mp_.clamp_max_log_;
+    map.updateInflationForVoxel(id, 1);
+  }
+
+  static pcl::PointCloud<pcl::PointXYZ> debugCloud(GridMap& map) {
+    const auto raw = map.md_.occupancy_buffer_;
+    const auto inflated = map.md_.occupancy_buffer_inflate_;
+    const auto counts = map.md_.occupancy_buffer_inflate_count_;
+    const auto min_bound = map.md_.local_bound_min_;
+    const auto max_bound = map.md_.local_bound_max_;
+    const auto cloud = map.makeLocalInflatedObstacleCloud();
+    EXPECT_EQ(raw, map.md_.occupancy_buffer_);
+    EXPECT_EQ(inflated, map.md_.occupancy_buffer_inflate_);
+    EXPECT_EQ(counts, map.md_.occupancy_buffer_inflate_count_);
+    EXPECT_EQ(min_bound, map.md_.local_bound_min_);
+    EXPECT_EQ(max_bound, map.md_.local_bound_max_);
+    for (const auto& point : cloud) {
+      Eigen::Vector3i id;
+      map.posToIndex(Eigen::Vector3d(point.x, point.y, point.z), id);
+      EXPECT_TRUE((id.array() >= min_bound.array()).all());
+      EXPECT_TRUE((id.array() <= max_bound.array()).all());
+    }
+    return cloud;
+  }
+
   static size_t rawOccupied(const GridMap& map) {
     return map.md_.last_raw_occupied_count_;
   }
@@ -114,6 +149,55 @@ public:
 };
 
 namespace {
+
+bool cloudContains(const pcl::PointCloud<pcl::PointXYZ>& cloud,
+                   const Eigen::Vector3d& point) {
+  return std::any_of(cloud.begin(), cloud.end(), [&](const pcl::PointXYZ& p) {
+    return (Eigen::Vector3d(p.x, p.y, p.z) - point).norm() < 1.0e-5;
+  });
+}
+
+TEST(GridMapPointCloudMapping, DebugCloudOmitsVirtualPlaneButKeepsPlanningCeiling) {
+  GridMap map;
+  GridMapTestAccess::initialize(map, 0.25);
+  EXPECT_TRUE(GridMapTestAccess::debugCloud(map).empty());
+  GridMapTestAccess::moveWindowWithCeiling(map, Eigen::Vector3d(2, 0, 3), 4.5);
+  const Eigen::Vector3d ceiling_voxel(2.125, 0.125, 4.375);
+  ASSERT_TRUE(map.getPlanningOccupancy(ceiling_voxel));
+  EXPECT_TRUE(GridMapTestAccess::debugCloud(map).empty());
+  EXPECT_TRUE(map.getPlanningOccupancy(ceiling_voxel));
+}
+
+TEST(GridMapPointCloudMapping, DebugCloudRetainsRealInflationOnVirtualPlane) {
+  GridMap map;
+  GridMapTestAccess::initialize(map, 0.25);
+  GridMapTestAccess::moveWindowWithCeiling(map, Eigen::Vector3d(2, 0, 3), 4.5);
+  const Eigen::Vector3d obstacle(4.125, 0.125, 4.375);
+  GridMapTestAccess::addObservedObstacle(map, obstacle);
+  const auto cloud = GridMapTestAccess::debugCloud(map);
+  EXPECT_TRUE(cloudContains(cloud, obstacle));
+  EXPECT_TRUE(cloudContains(cloud, obstacle + Eigen::Vector3d(0.5, 0, 0)));
+  EXPECT_FALSE(cloudContains(cloud, Eigen::Vector3d(2.125, 0.125, 4.375)));
+  EXPECT_TRUE(map.getPlanningOccupancy(obstacle));
+}
+
+TEST(GridMapPointCloudMapping, DebugCloudFollowsExactWindowAndClearsOnReset) {
+  GridMap map;
+  GridMapTestAccess::initialize(
+      map, 0.25, 0.4, Eigen::Vector3d(0, -10, 0),
+      Eigen::Vector3d(30, 20, 10), Eigen::Vector3d(1, 1, 1));
+  GridMapTestAccess::moveWindowWithCeiling(map, Eigen::Vector3d(2.125, 0.125, 3.125), -1);
+  // This observed voxel is outside the exact window but inside its old margin.
+  const Eigen::Vector3d obstacle(3.375, 0.125, 3.125);
+  GridMapTestAccess::addObservedObstacle(map, obstacle);
+  const auto before = GridMapTestAccess::debugCloud(map);
+  EXPECT_FALSE(before.empty());  // Its inflation overlaps the active window.
+  EXPECT_FALSE(cloudContains(before, obstacle));
+  GridMapTestAccess::moveWindowWithCeiling(map, Eigen::Vector3d(3.125, 0.125, 3.125), -1);
+  EXPECT_TRUE(cloudContains(GridMapTestAccess::debugCloud(map), obstacle));
+  GridMapTestAccess::clear(map);
+  EXPECT_TRUE(GridMapTestAccess::debugCloud(map).empty());
+}
 
 void repeatScan(
     GridMap& map, const std::vector<Eigen::Vector3d>& points,

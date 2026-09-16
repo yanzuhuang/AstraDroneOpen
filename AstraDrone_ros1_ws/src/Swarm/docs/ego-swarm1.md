@@ -88,18 +88,7 @@ AstraDrone_ros1_ws/src/Swarm/scripts/run_dual_tower.sh --stop
 
 无界面控制运行可加 `--headless`；即使 Gazebo 无界面，也可以组合 `--headless --rviz` 单独保留 RViz。
 
-单机模式保持原入口：
-
-```bash
-# 单机 dry-run
-scripts/run_sh/sector_inspection.sh
-
-# 单机完整8扇区控制任务
-scripts/run_sh/sector_inspection.sh --control --sector-limit 8
-
-# 停止单机 tmux 编排
-scripts/run_sh/sector_inspection.sh --stop
-```
+单机独立 shell 入口已退役，当前任务使用 [项目整理文档·运行说明](../../../../项目整理文档.md#runbook)。`sector_inspection_mission_node`、`sector_inspection.yaml`、occupancy adapter 和 EGO bridge 仍由三机直接复用，底层 launch、节点及测试保留。
 
 ## 4. PX4、端口、命名空间与坐标
 

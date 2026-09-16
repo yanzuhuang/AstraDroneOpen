@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/../.." && pwd)"
+repo_root="$(cd "$script_dir/../../.." && pwd)"
 px4_root="${ASTRA_PX4_ROOT:-/home/yanzu/PX4-Autopilot}"
 calibration_root="$repo_root/runtime_artifacts/learning_speed/calibration"
 summary_script="$repo_root/AstraDrone_ros1_ws/src/learning_speed_rl/scripts/summarize_manual_calibration.py"

@@ -164,16 +164,13 @@ source.  It is mutually exclusive with the mock input and with any future RL
 backend, and it still passes through the finite/range-only `SpeedSafetyFilter`
 before EGO:
 
-```bash
-# Preview is non-controlling.  --control is required for a real run.
-scripts/run_sh/fixed_speed_baseline.sh --v-max 0.12 --run-id preview_012
-scripts/run_sh/fixed_speed_baseline.sh --control --v-max 0.12 --run-id v012_r01
-```
+The old fixed-speed baseline shell has been retired. Its launch, nodes and
+historical experiment artifacts remain available for source review.
 
-The audited levels are 0.08, 0.12, 0.16 and 0.20 m/s.  Every run keeps EGO's
+The audited levels are 0.08, 0.12, 0.16 and 0.20 m/s.  Historical runs kept EGO's
 static ceiling at 0.20 m/s and changes only the fixed source.  Per-run JSON,
-CSV, bag and logs are written below
-`runtime_artifacts/fixed_speed_baseline/runs/<run_id>/`; the wrapper rebuilds
+CSV, bag and logs were written below
+`runtime_artifacts/fixed_speed_baseline/runs/<run_id>/`; the retired wrapper rebuilt
 `baseline_runs.csv`, `baseline_summary.csv`, `baseline_summary.json` and the
 training-data field-availability audit at the baseline root.
 
@@ -429,19 +426,13 @@ mapped in `AstraDroneOpen_项目技术演进与LearningSpeed阶段汇总.md`.
 
 `training/sac.py` and `training/sac_replay.py` provide the optional SAC
 training path. They are not imported by `speed_adapter_node.py` and do not add
-a neural inference mode to flight/full-stack launches. The worksite entry is:
-
-```bash
-cd /home/yanzu/AstraDroneOpen
-scripts/run_sh/learning_speed_sac_training.sh
-```
+a neural inference mode to flight/full-stack launches. The Worksite operator shell has been retired; the underlying
+`hector_worksite_sac_training.launch`, nodes and configuration are preserved.
+This does not change the existing training qualification restrictions.
 
 Every formal training run uses a unique directory below
 `runtime_artifacts/rl_training/`; the runner refuses to reuse a prior training
-directory. The operator script performs preflight, creates the run directory,
-launches the unchanged formal SAC stack, saves the full console, and follows
-key runner/coordinator Episode, transition, reset, checkpoint and failure logs
-in the same terminal. Independent evaluation reads a checkpoint from that training run
+directory. Independent evaluation reads a checkpoint from that training run
 and writes to a separate `runtime_artifacts/rl_evaluation/<EVAL_ID>/` directory.
 The existing `runtime_artifacts/sac_python_packages/` directory remains the
 Python dependency location and is not a training run directory.
@@ -476,7 +467,7 @@ training boundary are in the repository-root
 Attach the read-only manual calibration recorder to an already running stack:
 
 ```bash
-scripts/run_sh/learning_speed_calibration.sh --namespace uav1 --run-id manual_001
+scripts/run_sh/reinforcement_learning/learning_speed_calibration.sh --namespace uav1 --run-id manual_001
 ```
 
 The stack must have been started with Learning Speed explicitly enabled; the
@@ -497,22 +488,14 @@ add `--observation-c-running`. Output is written only below
 The recorder finalizes one second after the latched mission-done signal, or on
 normal ROS shutdown/`Ctrl+C` for a deliberately truncated manual run.
 
-For the controlled UAV1 two-environment fixed-speed calibration matrix, the
-batch wrapper uses the same task configuration within each environment and
-changes only the immutable fixed source value:
-
-```bash
-scripts/run_sh/learning_speed_manual_batch.sh
-```
-
-It runs `0.30, 0.50, 0.75, 1.00, 1.25, 1.50 m/s` once in environment A
-(`outdoor_village.world`, UAV1 spawn `(-14, 0)`) and once in environment B
-(`worksite.world`, UAV1 spawn `(0, 0)`).  A second attempt is allowed only when
-the first attempt ended without a mission/safety terminal or planner/safety
-failure evidence.  Experimental failures are retained without retry.  The
-result table and data-quality-only analysis are written to
-`runtime_artifacts/learning_speed/calibration/manual_calibration_runs.csv` and
-`manual_calibration_report.md`; neither script defines a reward or starts SAC.
+Historical / retired experiment protocol: the former two-environment
+fixed-speed batch and five other historical orchestration scripts are retired
+from current operating instructions. See
+[项目整理文档·模块一](../../../项目整理文档.md#模块一启动脚本与-run_sh-整理)
+for the consolidated retirement history, key protocol differences and pinned
+Git source; consult that source for exact historical experiment contracts. The single-run executors and their
+recorders/analyzers remain in place. This documentation change does not alter
+SAC qualification or authorize replaying historical experiments.
 
 The obstacle density is the fraction of 3200 angular bins labelled known
 obstacle, and the clutter count is the corresponding occupied-bin count. They

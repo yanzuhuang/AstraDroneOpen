@@ -116,7 +116,7 @@ simulation/sim_workspace/src/sensors/Mid360_simulation_plugin/livox_laser_simula
 修改以下脚本，使不同开发机可以通过环境变量指定 PX4，同时保留队友原默认路径：
 
 ```text
-scripts/run_sh/three_uav_inspection.sh
+scripts/run_sh/three_uav/three_uav_inspection.sh
 ```
 
 使用方式：
@@ -180,7 +180,7 @@ catkin_make -j2
 ```bash
 cd /path/to/AstraDroneOpen
 export ASTRA_PX4_ROOT=/path/to/PX4-Autopilot
-./scripts/run_sh/three_uav_inspection.sh --gui --record none
+./scripts/run_sh/three_uav/three_uav_inspection.sh --gui --record none
 ```
 
 启用三机自动控制：
@@ -188,7 +188,7 @@ export ASTRA_PX4_ROOT=/path/to/PX4-Autopilot
 ```bash
 cd /path/to/AstraDroneOpen
 export ASTRA_PX4_ROOT=/path/to/PX4-Autopilot
-./scripts/run_sh/three_uav_inspection.sh --control --gui --record none
+./scripts/run_sh/three_uav/three_uav_inspection.sh --control --gui --record none
 ```
 
 注意：`--control` 会在 Gazebo/PX4 SITL 中解锁并控制无人机。仅查看场景或验证 YOLO ROS 链路时不要添加该参数。
@@ -326,7 +326,7 @@ simulation/astra_gazebo_models/helmet_worker_standing/
 simulation/astra_gazebo_models/worker_no_helmet/
 simulation/sim_workspace/src/sensors/Mid360_simulation_plugin/livox_laser_simulation/CMakeLists.txt
 AstraDrone_ros1_ws/src/SLAM/FAST_LIO/CMakeLists.txt
-scripts/run_sh/three_uav_inspection.sh
+scripts/run_sh/three_uav/three_uav_inspection.sh
 docs/05-三机YOLO部署与交接说明.md
 ```
 

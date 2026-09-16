@@ -6,7 +6,7 @@
 
 ```bash
 cd /home/yanzu/AstraDroneOpen
-scripts/run_sh/three_uav_inspection.sh --control --gui --rviz --record light
+scripts/run_sh/three_uav/three_uav_inspection.sh --control --gui --rviz --record light
 ```
 
 - `--control`：允许三架无人机自动解锁、起飞并执行绕塔任务。

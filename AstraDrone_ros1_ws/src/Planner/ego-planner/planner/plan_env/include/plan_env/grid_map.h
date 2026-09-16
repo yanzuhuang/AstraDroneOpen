@@ -267,6 +267,9 @@ private:
   void initializeMapBuffers();
   void publishMappingStats();
   void publishVoxelStateMap(VoxelState state, const ros::Publisher& publisher);
+  // RViz-only view: sensed obstacle inflation, without synthetic safety planes.
+  pcl::PointCloud<pcl::PointXYZ> makeLocalInflatedObstacleCloud();
+  void publishLocalInflatedObstacles();
   void updateInflationForVoxel(const Eigen::Vector3i& occupied_id, int delta);
 
   inline void inflatePoint(const Eigen::Vector3i& pt, int step, vector<Eigen::Vector3i>& pts);
@@ -293,6 +296,7 @@ private:
 
   ros::Subscriber indep_cloud_sub_, indep_odom_sub_, extrinsic_sub_;
   ros::Publisher map_pub_, map_inf_pub_, map_free_pub_, map_unknown_pub_, mapping_stats_pub_;
+  ros::Publisher local_inflated_obstacles_pub_;
   ros::Timer occ_timer_, vis_timer_;
 
   //

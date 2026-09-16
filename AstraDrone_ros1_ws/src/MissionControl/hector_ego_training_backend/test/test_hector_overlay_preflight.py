@@ -14,6 +14,7 @@ class HectorOverlayPreflightTest(unittest.TestCase):
             Path(__file__).resolve().parents[5]
             / "scripts"
             / "run_sh"
+            / "reinforcement_learning"
             / "prepare_hector_training_overlay.sh"
         )
 

@@ -84,7 +84,7 @@ AstraDroneOpen 是一个以 ROS1 为核心的无人机自主巡检研究工程�
 | `simulation/px4_sim_files/` | PX4 SITL airframe、SDF 和 launch 部署资产 |
 | `simulation/astra_gazebo_worlds/` | `worksite.world`、`outdoor_village.world`、Learning Speed 验证场景等 |
 | `simulation/astra_gazebo_models/` | 仿真模型与 PPE 人物/平台资源 |
-| `scripts/run_sh/` | 面向操作者的 bringup、实验和录制入口；默认入口应无控制或显式要求 `--control` |
+| `scripts/run_sh/` | 按 `three_uav/`、`reinforcement_learning/`、`tools/` 分组的操作者入口（旧平铺路径已移除）；默认入口应无控制或显式要求 `--control` |
 | `runtime_artifacts/` | 唯一运行产物根目录，永不提交 Git；正式 SAC training 固定使用 `rl_training/<RUN_ID>/`，独立 evaluation 使用 `rl_evaluation/<EVAL_ID>/` |
 | `docs/`、根目录专题报告、`essay/` | 使用说明、验收报告和论文学习资料；详细事实需回到源码/工件复核 |
 
@@ -153,6 +153,7 @@ D435 不参与当前 Mid-360 → FAST-LIO → EGO-Swarm 规划链。YOLO 只消�
 
 - 三机模型均有独立 PX4/MAVROS、Mid-360、D435、FAST-LIO、TF、局部 EGO-Swarm 和命名空间隔离。
 - `triple_tower.rviz` 能显示三机姿态、点云、占据地图、目标、轨迹、任务/编队/安全状态；Gazebo GUI 与 RViz 可同时启动，但会竞争 GPU/CPU，GUI FPS 不等于仿真 RTF。
+- 三机局部障碍膨胀显示使用各机 EGO 的 `grid_map/inflated_cloud`：只读当前局部窗口内有真实障碍贡献的膨胀格子，排除仅由虚拟限高产生的平面。规划／任务仍使用原 `occupancy_inflate`，限高及碰撞逻辑不变；显示修复已实现，真实 RViz 效果待验证，详见 [项目整理文档·RViz 膨胀显示](项目整理文档.md#rviz-inflation)。
 - `outdoor_village.world` 已有三机**初始化专用**入口：保留 Gazebo/PX4/MAVROS、传感器、FAST-LIO、EGO 和 RViz，硬关闭任务/控制；已验证三机连接、在地面未解锁且无 raw setpoint publisher。
 - `outdoor_village.world` 也已用于 UAV1 Learning Speed 环境 A 的 6 次正式飞行；这不等于“三机 outdoor_village 巡塔闭环已验收”。
 
@@ -356,20 +357,19 @@ training 目录。独立 evaluation 只读加载上述目录中的 checkpoint，
 
 ## 10. 主要入口
 
+后续用户任务入口以三机为主。七个单机独立 shell 及旧 pc_example 一键组合已正式退役，见 [项目整理文档·模块一](项目整理文档.md#模块一启动脚本与-run_sh-整理)。这不影响三机直接复用的 `sector_inspection_mission_node`、`sector_inspection.yaml`、`occupancy_stamp_adapter_node`、`ego_gazebo_bridge`；全部底层 launch、节点、测试继续保留；本轮指定的两个 RL shell 和两个专项录包 shell 已退役。
+
 | 用途 | 入口与安全语义 |
 |---|---|
-| 三机 worksite 巡塔 | `scripts/run_sh/three_uav_inspection.sh`；默认无控制，自动飞行必须显式 `--control` |
-| 三机 outdoor 初始化 | `scripts/run_sh/three_uav_outdoor_village.sh`；专用入口拒绝 `--control`，不得启动任务/飞行 |
-| 单机八扇区 | `scripts/run_sh/sector_inspection.sh`；控制需显式授权 |
-| 单机 EGO waypoint | `scripts/run_sh/ego_waypoint_inspection.sh`；默认 dry-run |
-| 固定航线环塔 | `scripts/run_sh/fixed_orbit_inspection.sh`；默认 preview |
-| Learning Speed 固定速度矩阵 | `scripts/run_sh/learning_speed_manual_batch.sh`；真实飞行前检查场景、路线指纹和进程 |
-| 单次固定速度标定/qualification | `scripts/run_sh/learning_speed_manual_run.sh`；Environment A/B、速度、ceiling/acceleration 代际为显式参数；高速档仍需 `--control` 与 live preflight |
+| 三机 worksite 巡塔 | `scripts/run_sh/three_uav/three_uav_inspection.sh`；默认无控制，自动飞行必须显式 `--control` |
+| 三机 outdoor 初始化 | `scripts/run_sh/three_uav/three_uav_outdoor_village.sh`；专用入口拒绝 `--control`，不得启动任务/飞行 |
+| 历史 Learning Speed 实验矩阵 | Historical / retired experiment protocol，见 [项目整理文档·模块一](项目整理文档.md#模块一启动脚本与-run_sh-整理)；六个旧编排外壳退出当前运行方式，底层单次执行器保留 |
+| 单次固定速度标定/qualification | `scripts/run_sh/reinforcement_learning/learning_speed_manual_run.sh`；Environment A/B、速度、ceiling/acceleration 代际为显式参数；高速档仍需 `--control` 与 live preflight |
 | Hector training-only backend | `hector_ego_training_backend/launch/hector_ego_training_backend.launch`；默认 `enable_control=false`、`run_qualification=false`，必须显式授权才执行 qualification；不启动 PX4/MAVROS/FAST-LIO/bridge |
-| Worksite SAC training | 操作者入口为 `scripts/run_sh/learning_speed_sac_training.sh`；底层唯一使用 `hector_worksite_sac_training.launch` 和 `sac_training_v1.yaml`。正式参数为 10000 completed Episodes、每 500 Episodes checkpoint、每 Episode 最多 500 step、随机 XY reset、`v_max=[0.30,1.75]`；独立 evaluation 为 100 Episodes。当前 fixed-v_max qualification NO-GO，命令只作文档准备，禁止启动正式 training/evaluation |
+| Worksite SAC training | 操作者 shell 已退役；底层唯一使用 `hector_worksite_sac_training.launch` 和 `sac_training_v1.yaml`。正式参数为 10000 completed Episodes、每 500 Episodes checkpoint、每 Episode 最多 500 step、随机 XY reset、`v_max=[0.30,1.75]`；独立 evaluation 为 100 Episodes。当前 fixed-v_max qualification NO-GO，禁止启动正式 training/evaluation |
 | 三路 YOLO | `AstraDrone_ros1_ws/src/Detection/yolo_detect/launch/ppe_yolo_three_uav.launch`；必须显式给模型路径/Python/设备 |
 
-`three_uav_inspection.sh` 的 `light/full` 录制写入 `runtime_artifacts/`，`none` 不创建正式结果目录。不要仅相信 wrapper 的“started/success”文字；应检查 `roslaunch.log`、`gzserver/gzclient`、MAVROS 状态、任务节点和 setpoint publisher。
+普通与多高度三机入口默认 `--record none`，不写 `--record` 或显式 `none` 均不录 bag；正式多高度命令仍为 `./scripts/run_sh/three_uav/three_uav_multi_height_inspection.sh --multi-layer --control --gui --rviz --record light`。`three_uav_inspection.sh` 的 `light/full` 录制写入 `runtime_artifacts/`，`none` 不创建正式结果目录。不要仅相信 wrapper 的“started/success”文字；应检查 `roslaunch.log`、`gzserver/gzclient`、MAVROS 状态、任务节点和 setpoint publisher。
 
 两个 catkin 工作空间按 `simulation/sim_workspace` 后 `AstraDrone_ros1_ws` 的顺序构建。安装器和 `.bin` 构建器可能修改系统或清理构建目录，未经明确批准不得运行。
 

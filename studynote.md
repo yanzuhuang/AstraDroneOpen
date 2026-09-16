@@ -902,7 +902,7 @@ set -e
 export ASTRA_ROOT=/home/yanzu/AstraDroneOpen
 export HECTOR_OVERLAY=/tmp/astra_hector_training_overlay
 
-"$ASTRA_ROOT/scripts/run_sh/prepare_hector_training_overlay.sh" \
+"$ASTRA_ROOT/scripts/run_sh/reinforcement_learning/prepare_hector_training_overlay.sh" \
   --overlay "$HECTOR_OVERLAY"
 
 cd "$ASTRA_ROOT"
@@ -924,38 +924,13 @@ export PYTHONPATH="$ASTRA_ROOT/runtime_artifacts/sac_python_packages${PYTHONPATH
 ```
 
 外层圆括号让准备命令在隔离的子 shell 中执行；即使构建失败，也只会结束子 shell，
-不会关闭当前交互终端。下一步的一键脚本会自行重新加载所需环境，不依赖本步骤留下
-变量。
+不会关闭当前交互终端。原一键 shell 已退役，以下保留环境准备与历史结果说明。
 
-### 步骤 2：一键启动 training 并自动显示关键日志
+### 步骤 2：原 Worksite shell 已退役
 
-仍在同一个终端只执行这一条命令：
-
-```bash
-/home/yanzu/AstraDroneOpen/scripts/run_sh/learning_speed_sac_training.sh
-```
-
-`learning_speed_sac_training.sh` 是今后的正式操作者入口。它会自动完成：
-
-1. 检查 Hector/Astra/simulation build 环境和 PyTorch dependency；
-2. 拒绝与已有 ROS master、Gazebo 或 SAC/reset 进程混跑；
-3. 生成唯一 RUN_ID，并创建 `runtime_artifacts/rl_training/<RUN_ID>/`；
-4. 设置 `ROS_HOME/ROS_LOG_DIR`，用冻结的正式参数启动 10000-Episode roslaunch；
-5. 把完整 console 写入 `logs/training_console.log`；
-6. 自动定位 runner/coordinator ROS 日志，并在**同一个终端**只显示
-   `[SAC TRAINING] transition/episode/replay/updates/reward/action/v_max` 以及
-   `EPISODE_START/TRUNCATED`、`RESET_BEGIN/READY`、checkpoint 和 failure。
-
-脚本启动后会先打印 `RUN_ID=...`、`SAC_OUTPUT=...` 和
-`FULL_CONSOLE_LOG=...`、`KEY_LOG_MONITOR=automatic`。大量 roslaunch/Gazebo/EGO replan
-原始输出只写入 full console 文件，不再淹没主终端；如果 launch 在关键节点日志出现前
-失败，脚本会自动打印 full console 最后 80 行。不需要第二个终端，也不需要手工
-`find` 或 `tail` 才能看 Episode。关键日志筛选使用 Ubuntu 自带的
-`grep --line-buffered -E`，不依赖 Codex 环境里的 `rg`。需要 Gazebo GUI 时只执行：
-
-```bash
-/home/yanzu/AstraDroneOpen/scripts/run_sh/learning_speed_sac_training.sh --gui
-```
+2026-09-16 起不再提供 Worksite SAC shell 启动命令；底层 launch、节点和配置保留，
+训练资格限制不变。当前维护的 Forest 入口见 [项目整理文档·Forest SAC](项目整理文档.md#forest-sac)，
+其环境合同不等同于 Worksite。下文 RUN_ID、日志和结果说明用于查阅历史实验。
 
 RUN_ID 的固定格式是：
 

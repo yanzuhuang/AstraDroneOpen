@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/../.." && pwd)"
+repo_root="$(cd "$script_dir/../../.." && pwd)"
 # Keep the audited developer default while allowing another workstation to
 # select its existing, version-locked PX4 tree without editing this script.
 px4_root="${ASTRA_PX4_ROOT:-/home/yanzu/PX4-Autopilot}"
@@ -14,7 +14,7 @@ learning_speed=false
 d435_enabled=true
 lidar_downsample=1
 world_file="$repo_root/simulation/astra_gazebo_worlds/worksite.world"
-record_mode="light"
+record_mode="none"
 results_dir=""
 results_dir_requested=false
 duration_seconds=0
@@ -76,11 +76,11 @@ while (($#)); do
       echo "three_uav_inspection.sh [--control] [--gui] [--rviz] [--learning-speed] [--disable-d435] [--lidar-downsample N] [--world FILE] [--record none|light|full] [--duration SEC] [--results-dir DIR]"
       echo "Default ordinary profile: three UAVs at 3.0 m, single layer, worksite.world."
       echo "Defaults: control=false, gui=false, rviz=false, learning-speed=false, D435 enabled, lidar-downsample=1, no duration limit."
-      echo "Without --control, simulation/nodes still start and artifacts are written; this is not a read-only check."
-      echo "The default --record light mode stores state and trajectory evidence without point clouds or Gazebo model states."
+      echo "Without --control, simulation/nodes still start; light/full modes write artifacts; this is not a read-only check."
+      echo "Default recording is none (no bag). Explicit --record light stores state and trajectory evidence without point clouds or Gazebo model states."
       echo "Use --record none to retain no task evidence, bag, CSV, summary, launch log or trajectory plots."
       echo "Light and full modes save trajectory_xy.png and trajectory_3d.png when swarm.csv contains samples."
-      echo "Default output: runtime_artifacts/three_uav_inspection_control_<timestamp>/ (or dry_run without --control)."
+      echo "Light/full default output: runtime_artifacts/three_uav_inspection_control_<timestamp>/ (or dry_run without --control)."
       echo "--results-dir requires an absolute path under this repository matching runtime_artifacts/three_uav_inspection_*; use a new directory."
       echo "--duration SEC is a wall-clock stop limit, not a mission-success condition. Stop manually with Ctrl+C in the launching terminal; --stop is not supported."
       echo "Use --learning-speed to opt in all three EGO planners and start one mock speed adapter per UAV."

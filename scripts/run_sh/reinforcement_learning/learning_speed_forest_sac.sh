@@ -3,9 +3,9 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "${script_dir}/../.." && pwd)"
+repo_root="$(cd "${script_dir}/../../.." && pwd)"
 hector_overlay="${ASTRA_HECTOR_OVERLAY:-/tmp/astra_hector_training_overlay}"
-hector_overlay_preparer="$repo_root/scripts/run_sh/prepare_hector_training_overlay.sh"
+hector_overlay_preparer="$repo_root/scripts/run_sh/reinforcement_learning/prepare_hector_training_overlay.sh"
 mode=""
 run_id=""
 gui=false
