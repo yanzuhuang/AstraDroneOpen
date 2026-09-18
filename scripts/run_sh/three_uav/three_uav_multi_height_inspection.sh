@@ -25,6 +25,6 @@ for argument in "$@"; do
   esac
 done
 
-export ASTRA_THREE_UAV_LAUNCH=triple_tower_multi_height_inspection.launch
-export ASTRA_MULTI_LAYER_ENABLED="$multi_layer_enabled"
-exec "$script_dir/three_uav_inspection.sh" "${forwarded[@]}"
+layer_option=--single-layer
+if "$multi_layer_enabled"; then layer_option=--multi-layer; fi
+exec "$script_dir/three_uav_inspection.sh" --profile multi_height_legacy "$layer_option" "${forwarded[@]}"

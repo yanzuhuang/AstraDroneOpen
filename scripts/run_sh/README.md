@@ -28,6 +28,32 @@
 
 Forest `preflight` 会准备／可能构建 Hector overlay，启动 Gazebo 并执行三地图 reset 生命周期，不执行 Episode/Replay/learner；`smoke` 会实际执行 31 个训练 Episodes，每 10 个 completed Episodes 换图，共三次切换。二者均不属于只读检查。Forest SAC 入口可能调用 overlay 准备工具。
 
+### 三机巡检高度 profile
+
+统一入口 `three_uav/three_uav_inspection.sh --profile NAME`：
+
+| NAME | UAV1 / UAV2 / UAV3 首层 | 模式 |
+|---|---|---|
+| `same_3m`（默认） | 3 / 3 / 3 m | 同层单圈 |
+| `same_30m` | 30 / 30 / 30 m | 同层单圈 |
+| `multi_height_low_3m` | 15 / 9 / 3 m | 异层各单圈 |
+
+仅展开参数和检查高度合同，不启动任何节点：
+
+```bash
+./scripts/run_sh/three_uav/three_uav_inspection.sh --profile same_30m --check-height-profile
+```
+
+人工飞行命令（新高度尚待飞行验证）：
+
+```bash
+./scripts/run_sh/three_uav/three_uav_inspection.sh --profile same_3m --control --gui --rviz --record light
+./scripts/run_sh/three_uav/three_uav_inspection.sh --profile same_30m --control --gui --rviz --record light
+./scripts/run_sh/three_uav/three_uav_inspection.sh --profile multi_height_low_3m --control --gui --rviz --record light
+```
+
+入口每次启动前校验最终展开参数，light/full 会保存 `height_contract.txt`。不再读取 `ASTRA_THREE_UAV_LAUNCH` 和 `ASTRA_MULTI_LAYER_ENABLED`；高度切换只用显式 profile，不需要编辑源码。三个新 profile 均拒绝 `--multi-layer`，防止最低 3 m 再下降到 -1 m。原异层脚本仍默认 26/20/14 m，保留 `--single-layer` / `--multi-layer`，内部显式选择 `multi_height_legacy`。详细参数和验证边界见 [高度参数化改造报告](../../三机巡检高度参数化改造报告.md)。
+
 ### 结果和收尾
 
 下列路径均相对于仓库根目录；以脚本当次打印的路径为准。

@@ -5,6 +5,7 @@ find_package(catkin REQUIRED)
 catkin_package()
 
 catkin_install_python(PROGRAMS
+  scripts/check_height_profile.py
   scripts/px4_param_guard.py
   scripts/spawn_model_verified.py
   scripts/swarm_conflict_injector.py

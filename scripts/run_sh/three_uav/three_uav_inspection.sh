@@ -7,6 +7,9 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 # select its existing, version-locked PX4 tree without editing this script.
 px4_root="${ASTRA_PX4_ROOT:-/home/yanzu/PX4-Autopilot}"
 
+height_profile=same_3m
+multi_layer_enabled=false
+check_height_profile=false
 enable_control=false
 gui=false
 rviz=false
@@ -20,6 +23,17 @@ results_dir_requested=false
 duration_seconds=0
 while (($#)); do
   case "$1" in
+    --profile)
+      shift
+      if (($# == 0)); then echo "--profile requires a name" >&2; exit 2; fi
+      case "$1" in
+        same_3m|same_30m|multi_height_low_3m|multi_height_legacy) height_profile="$1" ;;
+        *) echo "unknown height profile: $1" >&2; exit 2 ;;
+      esac
+      ;;
+    --multi-layer) multi_layer_enabled=true ;;
+    --single-layer) multi_layer_enabled=false ;;
+    --check-height-profile) check_height_profile=true ;;
     --control) enable_control=true ;;
     --gui) gui=true ;;
     --rviz) rviz=true ;;
@@ -74,6 +88,8 @@ while (($#)); do
       ;;
     --help)
       echo "three_uav_inspection.sh [--control] [--gui] [--rviz] [--learning-speed] [--disable-d435] [--lidar-downsample N] [--world FILE] [--record none|light|full] [--duration SEC] [--results-dir DIR]"
+      echo "--profile same_3m|same_30m|multi_height_low_3m selects a complete height contract. --check-height-profile expands/checks parameters only; no nodes start."
+      echo "multi_height_legacy preserves the existing 26/20/14 m profile and accepts --multi-layer."
       echo "Default ordinary profile: three UAVs at 3.0 m, single layer, worksite.world."
       echo "Defaults: control=false, gui=false, rviz=false, learning-speed=false, D435 enabled, lidar-downsample=1, no duration limit."
       echo "Without --control, simulation/nodes still start; light/full modes write artifacts; this is not a read-only check."
@@ -97,6 +113,14 @@ while (($#)); do
   shift
 done
 
+if "$multi_layer_enabled" && [[ "$height_profile" != multi_height_legacy ]]; then
+  echo "--multi-layer is supported only with --profile multi_height_legacy" >&2
+  exit 2
+fi
+if [[ "$height_profile" == multi_height_* ]] && "$learning_speed"; then
+  echo "multi-height profiles forbid Learning Speed" >&2
+  exit 2
+fi
 mode="dry_run"
 if "$enable_control"; then
   mode="control"
@@ -151,7 +175,7 @@ else
     git -C "$repo_root" branch --show-current
     git -C "$repo_root" rev-parse HEAD
     git -C "$repo_root" status --short --branch
-    echo "mode=$mode gui=$gui rviz=$rviz learning_speed=$learning_speed d435_enabled=$d435_enabled lidar_downsample=$lidar_downsample world=$world_file record_mode=$record_mode duration_seconds=$duration_seconds"
+    echo "height_profile=$height_profile multi_layer_enabled=$multi_layer_enabled mode=$mode gui=$gui rviz=$rviz learning_speed=$learning_speed d435_enabled=$d435_enabled lidar_downsample=$lidar_downsample world=$world_file record_mode=$record_mode duration_seconds=$duration_seconds"
   } >"$results_dir/run_metadata.txt"
 fi
 
@@ -196,15 +220,13 @@ if [[ "$record_mode" != none ]]; then
   uav3_report_file="$results_dir/uav3.csv"
   evidence_record_enabled=true
 fi
-launch_file="${ASTRA_THREE_UAV_LAUNCH:-triple_tower_inspection.launch}"
-case "$launch_file" in
-  triple_tower_inspection.launch|triple_tower_multi_height_inspection.launch) ;;
-  *)
-    echo "unsupported three-UAV launch profile: $launch_file" >&2
-    exit 2
-    ;;
-esac
-launch_args=(astra_swarm_bringup "$launch_file"
+launch_file=triple_tower_height_profile.launch
+profile_args=("height_profile:=$height_profile")
+if [[ "$height_profile" == multi_height_legacy ]]; then
+  launch_file=triple_tower_multi_height_inspection.launch
+  profile_args=("multi_layer_enabled:=$multi_layer_enabled")
+fi
+launch_args=(astra_swarm_bringup "$launch_file" "${profile_args[@]}"
   "enable_control:=$enable_control" "gui:=$gui" "start_rviz:=$rviz"
   "world:=$world_file"
   "learning_speed_enabled:=$learning_speed"
@@ -215,8 +237,15 @@ launch_args=(astra_swarm_bringup "$launch_file"
   "uav3_report_file:=$uav3_report_file"
   "evidence_record_enabled:=$evidence_record_enabled"
   "evidence_candidate_record_mode:=$record_mode")
-if [[ "$launch_file" == triple_tower_multi_height_inspection.launch ]]; then
-  launch_args+=("multi_layer_enabled:=${ASTRA_MULTI_LAYER_ENABLED:-false}")
+# Parameter expansion executes xacro only, never launch nodes or a ROS master.
+height_checker="$repo_root/AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/scripts/check_height_profile.py"
+if [[ "$record_mode" == none ]]; then
+  python3 "$height_checker" "${launch_args[@]:1}"
+else
+  python3 "$height_checker" "${launch_args[@]:1}" | tee "$results_dir/height_contract.txt"
+fi
+if "$check_height_profile"; then
+  exit 0
 fi
 if [[ "$record_mode" == none ]]; then
   roslaunch "${launch_args[@]}" &

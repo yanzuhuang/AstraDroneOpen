@@ -1,6 +1,18 @@
 <launch>
   <!-- Mission-profile wrapper only. All PX4/MAVROS/FAST-LIO/EGO wiring stays
        owned by triple_tower_inspection.launch. -->
+  <arg name="uav1_top_height" default="26.0"/>
+  <arg name="uav1_takeoff_height" default="$(eval min(4.0, float(arg('uav1_top_height')) - 0.5))"/>
+  <arg name="uav1_staging_height" default="$(arg uav1_takeoff_height)"/>
+  <arg name="uav1_ascent_intermediate_heights" default="$(eval ([10.0] if float(arg('uav1_staging_height')) &lt; 10.0 &lt; float(arg('uav1_top_height')) else []) + ([18.0] if float(arg('uav1_staging_height')) &lt; 18.0 &lt; float(arg('uav1_top_height')) else []))"/>
+  <arg name="uav2_top_height" default="20.0"/>
+  <arg name="uav2_takeoff_height" default="$(eval min(4.0, float(arg('uav2_top_height')) - 0.5))"/>
+  <arg name="uav2_staging_height" default="$(arg uav2_takeoff_height)"/>
+  <arg name="uav2_ascent_intermediate_heights" default="$(eval ([10.0] if float(arg('uav2_staging_height')) &lt; 10.0 &lt; float(arg('uav2_top_height')) else []) + ([18.0] if float(arg('uav2_staging_height')) &lt; 18.0 &lt; float(arg('uav2_top_height')) else []))"/>
+  <arg name="uav3_top_height" default="14.0"/>
+  <arg name="uav3_takeoff_height" default="$(eval min(4.0, float(arg('uav3_top_height')) - 0.5))"/>
+  <arg name="uav3_staging_height" default="$(arg uav3_takeoff_height)"/>
+  <arg name="uav3_ascent_intermediate_heights" default="$(eval ([10.0] if float(arg('uav3_staging_height')) &lt; 10.0 &lt; float(arg('uav3_top_height')) else []) + ([18.0] if float(arg('uav3_staging_height')) &lt; 18.0 &lt; float(arg('uav3_top_height')) else []))"/>
   <arg name="multi_layer_enabled" default="false"/>
   <arg name="enable_control" default="false"/>
   <arg name="start_sim" default="true"/>
@@ -59,20 +71,18 @@
     <arg name="max_acc" value="0.50"/>
     <arg name="bridge_max_velocity" value="0.60"/>
     <arg name="bridge_max_acceleration" value="0.50"/>
-    <arg name="uav1_top_height" value="26.0"/>
-    <arg name="uav2_top_height" value="20.0"/>
-    <arg name="uav3_top_height" value="14.0"/>
-    <arg name="uav1_takeoff_height" value="4.0"/>
-    <arg name="uav2_takeoff_height" value="4.0"/>
-    <arg name="uav3_takeoff_height" value="4.0"/>
-    <arg name="uav1_staging_height" value="4.0"/>
-    <arg name="uav2_staging_height" value="4.0"/>
-    <arg name="uav3_staging_height" value="4.0"/>
-    <arg name="uav1_ascent_intermediate_heights" value="[10.0, 18.0]"/>
-    <arg name="uav2_ascent_intermediate_heights" value="[10.0, 18.0]"/>
-    <!-- UAV3's 14 m layer-0 endpoint is below 18 m, so its strictly ascending
-         segmented-climb intermediates stop at 10 m. -->
-    <arg name="uav3_ascent_intermediate_heights" value="[10.0]"/>
+    <arg name="uav1_top_height" value="$(arg uav1_top_height)"/>
+    <arg name="uav2_top_height" value="$(arg uav2_top_height)"/>
+    <arg name="uav3_top_height" value="$(arg uav3_top_height)"/>
+    <arg name="uav1_takeoff_height" value="$(arg uav1_takeoff_height)"/>
+    <arg name="uav2_takeoff_height" value="$(arg uav2_takeoff_height)"/>
+    <arg name="uav3_takeoff_height" value="$(arg uav3_takeoff_height)"/>
+    <arg name="uav1_staging_height" value="$(arg uav1_staging_height)"/>
+    <arg name="uav2_staging_height" value="$(arg uav2_staging_height)"/>
+    <arg name="uav3_staging_height" value="$(arg uav3_staging_height)"/>
+    <arg name="uav1_ascent_intermediate_heights" value="$(arg uav1_ascent_intermediate_heights)"/>
+    <arg name="uav2_ascent_intermediate_heights" value="$(arg uav2_ascent_intermediate_heights)"/>
+    <arg name="uav3_ascent_intermediate_heights" value="$(arg uav3_ascent_intermediate_heights)"/>
     <arg name="uav1_descent_intermediate_heights" value="[18.0, 10.0]"/>
     <arg name="uav2_descent_intermediate_heights" value="[18.0, 10.0]"/>
     <arg name="uav3_descent_intermediate_heights" value="[18.0, 10.0]"/>
