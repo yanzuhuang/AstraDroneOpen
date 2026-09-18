@@ -1,7 +1,0 @@
-# 通用相对航点任务：所有位置均为相对 home 的 ENU 偏移（米）；yaw_deg 是 map/ENU 绝对航向角。
-# 第 3 个动作与第 2 个动作位置相同，用来练习“到点后原地转向”。
-waypoints:
-  - {x: 2.0, y: 0.0, z: 5.0, yaw_deg: 0.0, hold_sec: 2.0}
-  - {x: 2.0, y: 2.0, z: 5.0, yaw_deg: 90.0, hold_sec: 2.0}
-  - {x: 2.0, y: 2.0, z: 3.0, yaw_deg: 180.0, hold_sec: 2.0}
-  - {x: 0.0, y: 2.0, z: 3.0, yaw_deg: 180.0, hold_sec: 2.0}

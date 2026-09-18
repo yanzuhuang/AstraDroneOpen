@@ -42,21 +42,8 @@ catkin_package(
 catkin_install_python(PROGRAMS
   scripts/speed_adapter_node.py
   scripts/observation_v2_node.py
-  scripts/observation_v2_evaluator.py
   scripts/observation_c_node.py
-  scripts/observation_c_offline_validation.py
-  scripts/fixed_speed_baseline_recorder.py
   scripts/calibration_data_recorder.py
-  scripts/enrich_fixed_speed_baseline.py
-  scripts/summarize_fixed_speed_baseline.py
-  scripts/summarize_high_speed_exploration.py
-  scripts/summarize_manual_calibration.py
-  scripts/summarize_observation_c_final.py
-  scripts/high_speed_parameter_preflight.py
-  scripts/summarize_high_speed_progressive_qualification.py
-  scripts/analyze_reward_v3.py
-  scripts/replay_stage1_reward.py
-  scripts/astra_drone_episode_runner.py
   scripts/sac_training_runner.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
@@ -82,7 +69,6 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_action_capability_contract.py)
   catkin_add_nosetests(test/test_formal_training_contract.py)
   catkin_add_nosetests(test/test_forest_schedule.py)
-  catkin_add_nosetests(test/test_high_speed_parameter_chain.py)
   add_rostest(test/observation_c_integration.test)
   add_rostest(test/observation_v2_stamp_integration.test)
   add_rostest(test/speed_action_integration.test)

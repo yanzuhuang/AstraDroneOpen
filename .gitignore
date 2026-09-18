@@ -73,3 +73,6 @@ third_party/**/obj/
 third_party/**/CMakeFiles/
 third_party/**/.cache/
 AstraDrone_ros1_ws/src/SLAM/FAST_LIO/PCD/*.pcd
+
+# Local nested checkout excluded from the RL-only branch; retained on disk.
+/AstraDrone_ros1_ws/src/Utils/livox_ros_driver/

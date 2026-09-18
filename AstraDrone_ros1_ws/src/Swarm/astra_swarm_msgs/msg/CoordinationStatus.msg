@@ -1,9 +1,0 @@
-std_msgs/Header header
-string coordinator_state
-bool uav1_takeoff_allowed
-bool uav2_takeoff_allowed
-bool uav1_transition_allowed
-bool uav2_transition_allowed
-bool uav1_landing_allowed
-bool uav2_landing_allowed
-string reason

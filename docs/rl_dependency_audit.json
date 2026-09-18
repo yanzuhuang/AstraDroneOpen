@@ -1,0 +1,43 @@
+{
+  "base_branch": "三机巡检最小可运行整理",
+  "base_commit": "9b5b2049899e421b2c728e2c7547615ddc0501f7",
+  "retained_packages": {
+    "astra_custom_msgs": "AstraDrone_ros1_ws/src/Utils/astra_custom_msgs",
+    "bspline_opt": "AstraDrone_ros1_ws/src/Planner/ego-planner/planner/bspline_opt",
+    "cv_bridge": "AstraDrone_ros1_ws/src/Utils/cv_bridge",
+    "ego_planner": "AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage",
+    "hector_ego_training_backend": "AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend",
+    "learning_speed_rl": "AstraDrone_ros1_ws/src/learning_speed_rl",
+    "livox_laser_simulation": "simulation/sim_workspace/src/sensors/Mid360_simulation_plugin/livox_laser_simulation",
+    "livox_ros_driver2": "AstraDrone_ros1_ws/src/Utils/livox_ros_driver2",
+    "path_searching": "AstraDrone_ros1_ws/src/Planner/ego-planner/planner/path_searching",
+    "plan_env": "AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_env",
+    "quadrotor_msgs": "AstraDrone_ros1_ws/src/Planner/ego-planner/uav_simulator/Utils/quadrotor_msgs",
+    "traj_utils": "AstraDrone_ros1_ws/src/Planner/ego-planner/planner/traj_utils"
+  },
+  "deleted_tracked_files": 9404,
+  "retained_original_files": 959,
+  "deleted_by_top_level": {
+    "AstraDroneOpen_项目技术演进与LearningSpeed阶段汇总.md": 1,
+    "AstraDrone_ros1_ws": 2875,
+    "docs": 12,
+    "ego_planner_工程落地学习.md": 1,
+    "essay": 9,
+    "gpt上下文1m配置.md": 1,
+    "hardware": 3,
+    "legacy_ego_integration.md": 1,
+    "media": 6,
+    "ros.md": 1,
+    "rule.md": 1,
+    "scripts": 34,
+    "simulation": 2288,
+    "studynote.md": 1,
+    "third_party": 4165,
+    "三机巡检最小可运行代码审计.md": 1,
+    "三机巡检高度参数化改造报告.md": 1,
+    "三机绕塔项目依赖与目录说明.md": 1,
+    "无人蜂群协同感知与自主巡检_验证报告支撑材料.md": 1,
+    "项目整理文档.md": 1
+  },
+  "policy": "Delete tracked files only; ignored runtime evidence and build caches excluded by .gitignore, not destroyed. sac_python_packages retained as runtime dependency."
+}

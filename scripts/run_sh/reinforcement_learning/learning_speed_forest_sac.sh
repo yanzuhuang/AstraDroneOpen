@@ -33,7 +33,7 @@ while (($#)); do
       echo "  Non-help modes may prepare/build the Hector overlay. There is no --control, --rviz, --record or --stop option."
       echo "  Outputs: runtime_artifacts/rl_training/RUN_ID (training), runtime_artifacts/rl_evaluation/RUN_ID (evaluation),"
       echo "           runtime_artifacts/learning_speed/forest_randomization_training_integration_v2/RUN_ID (preflight/smoke)."
-      echo "  Stop with Ctrl+C in the launching terminal; interruption is not a completed run. See docs/FINAL_RUNBOOK.md."
+      echo "  Stop with Ctrl+C in the launching terminal; interruption is not a completed run. See 强化学习训练代码说明.md."
       exit 0
       ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -48,11 +48,11 @@ fi
 
 "$hector_overlay_preparer" --overlay "$hector_overlay"
 
+rl_overlay="${ASTRA_RL_OVERLAY:-/tmp/astra_rl_minimal_overlay}"
 required_setup_files=(
   /opt/ros/noetic/setup.bash
-  "$repo_root/simulation/sim_workspace/devel/setup.bash"
-  "$repo_root/AstraDrone_ros1_ws/devel/setup.bash"
   "$hector_overlay/devel/setup.bash"
+  "$rl_overlay/devel/setup.bash"
 )
 for setup_file in "${required_setup_files[@]}"; do
   if [[ ! -f "$setup_file" ]]; then
@@ -66,9 +66,8 @@ if [[ ! -d "$repo_root/runtime_artifacts/sac_python_packages" ]]; then
 fi
 
 source /opt/ros/noetic/setup.bash
-source "$repo_root/simulation/sim_workspace/devel/setup.bash"
 source "$hector_overlay/devel/setup.bash" --extend
-source "$repo_root/AstraDrone_ros1_ws/devel/setup.bash" --extend
+source "$rl_overlay/devel/setup.bash" --extend
 export PYTHONPATH="$repo_root/runtime_artifacts/sac_python_packages${PYTHONPATH:+:$PYTHONPATH}"
 export ROS_MASTER_URI="${FOREST_ROS_MASTER_URI:-http://127.0.0.1:11331}"
 export GAZEBO_MASTER_URI="${FOREST_GAZEBO_MASTER_URI:-http://127.0.0.1:11365}"

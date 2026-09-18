@@ -246,7 +246,7 @@ class EpisodeResetContractTest(unittest.TestCase):
     def test_sac_launch_has_one_episode_stop_owner_and_no_transition_target(self):
         package = Path(__file__).resolve().parents[1]
         sac_launch = ET.parse(
-            package / "launch/hector_worksite_sac_training.launch"
+            package / "launch/hector_forest_sac_training.launch"
         ).getroot()
         arguments = {
             element.attrib["name"]: element.attrib.get("default")
@@ -322,7 +322,6 @@ class EpisodeResetContractTest(unittest.TestCase):
         )
 
         for launch_name in (
-            "hector_worksite_sac_training.launch",
             "hector_forest_sac_training.launch",
         ):
             text = (package / "launch" / launch_name).read_text(encoding="utf-8")

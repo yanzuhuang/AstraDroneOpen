@@ -1,0 +1,54 @@
+{
+  "parse_counts": {
+    "python": 114,
+    "yaml": 13,
+    "xml": 34
+  },
+  "parse_errors": [],
+  "changed_retained_source_or_config": [
+    "AstraDrone_ros1_ws/src/MissionControl/hector_ego_training_backend/test/test_episode_reset_contract.py"
+  ],
+  "unit_tests": {
+    "learning_speed_rl": 167,
+    "hector_ego_training_backend": 39,
+    "failures": 0
+  },
+  "clean_build": "12 audited packages, catkin_make -j2 Release, PASS",
+  "hector_overlay_build": "PASS",
+  "training_launch_expansion": "PASS",
+  "evaluation_launch_file_resolution": "PASS",
+  "expanded_parameters_semantically_identical": true,
+  "path_only_differences": [
+    "/forest_map_manager/world_dir",
+    "/forest_map_manager/forest_config",
+    "/uav1/sac_training_runner/forest/config_path",
+    "/uav1/training_episode_reset_coordinator/forest_config",
+    "/robot_description"
+  ],
+  "robot_description_xml_identical_ignoring_generated_comment": true,
+  "gazebo_preflight": {
+    "artifact": "runtime_artifacts/learning_speed/forest_randomization_training_integration_v2/rl_minimal_cleanup_preflight_20260918_r02/qualification_summary.json",
+    "sha256": "378d1ecd64cf79470b7e4f77b92c463dbccc76d65ae68ca6e99b2899e4fc292d",
+    "verdict": "FOREST MAP-SWITCH PREFLIGHT PASS",
+    "episode_count": 0,
+    "forest_map_switch_count": 3,
+    "collision_count": 0,
+    "controller_failure_count": 0,
+    "acceptance_failures": []
+  },
+  "sandbox_attempt": "r01: ROS netifaces PermissionError before startup; retained, retried as infrastructure failure under new ID r02",
+  "sac_startup_contract": {
+    "artifact": "runtime_artifacts/learning_speed/rl_minimal_startup_20260918/sac_runtime_summary.json",
+    "sha256": "2747ab8c636692d59d16301f1c502095cf647234ecb69d85897ffab22bd4cf70",
+    "status": "completed",
+    "verdict": "STARTUP ACTION/CAPABILITY CONTRACT PASS",
+    "episode_count": 0,
+    "global_environment_step": 0,
+    "gradient_update_step": 0,
+    "map_request_count": 0
+  },
+  "runtime_log_limitations": [
+    "Mid360 CSV cannot convert str message; followed by successful 800000-row load",
+    "Hector pose/twist unload errors after preflight completion; lifecycle not modified"
+  ]
+}

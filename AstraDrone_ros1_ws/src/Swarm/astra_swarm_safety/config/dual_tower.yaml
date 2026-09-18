@@ -1,4 +1,0 @@
-minimum_vertical_separation: 4.0
-minimum_3d_separation: 3.0
-trajectory_prediction_horizon: 4.0
-heartbeat_timeout: 1.0
