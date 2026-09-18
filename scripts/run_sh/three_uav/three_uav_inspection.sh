@@ -8,6 +8,10 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 px4_root="${ASTRA_PX4_ROOT:-/home/yanzu/PX4-Autopilot}"
 
 height_profile=same_3m
+public_mode=""
+altitude=""
+layer_descent=false
+legacy_options=false
 multi_layer_enabled=false
 check_height_profile=false
 enable_control=false
@@ -23,7 +27,21 @@ results_dir_requested=false
 duration_seconds=0
 while (($#)); do
   case "$1" in
+    --same-layer|--multi-layer)
+      requested_mode="$1"
+      if [[ -n "$public_mode" && "$public_mode" != "$requested_mode" ]]; then
+        echo "--same-layer and --multi-layer are mutually exclusive" >&2; exit 2
+      fi
+      public_mode="$requested_mode"
+      ;;
+    --altitude)
+      shift
+      if (($# == 0)); then echo "--altitude requires metres (3 to 30)" >&2; exit 2; fi
+      altitude="$1"
+      ;;
+    --layer-descent) layer_descent=true ;;
     --profile)
+      legacy_options=true
       shift
       if (($# == 0)); then echo "--profile requires a name" >&2; exit 2; fi
       case "$1" in
@@ -31,8 +49,8 @@ while (($#)); do
         *) echo "unknown height profile: $1" >&2; exit 2 ;;
       esac
       ;;
-    --multi-layer) multi_layer_enabled=true ;;
-    --single-layer) multi_layer_enabled=false ;;
+    --legacy-layer-descent) legacy_options=true; multi_layer_enabled=true ;;
+    --single-layer) legacy_options=true; multi_layer_enabled=false ;;
     --check-height-profile) check_height_profile=true ;;
     --control) enable_control=true ;;
     --gui) gui=true ;;
@@ -87,9 +105,12 @@ while (($#)); do
       duration_seconds="$1"
       ;;
     --help)
-      echo "three_uav_inspection.sh [--control] [--gui] [--rviz] [--learning-speed] [--disable-d435] [--lidar-downsample N] [--world FILE] [--record none|light|full] [--duration SEC] [--results-dir DIR]"
+      echo "three_uav_inspection.sh [--same-layer --altitude H | --multi-layer [--layer-descent]] [--control] [--gui] [--rviz] [--learning-speed] [--disable-d435] [--lidar-downsample N] [--world FILE] [--record none|light|full] [--duration SEC] [--results-dir DIR]"
+      echo "--same-layer --altitude H: same-height single orbit (default H=3, range 3..30 m)."
+      echo "--multi-layer: distinct 26/20/14 m single orbit; add --layer-descent for 22/16/10 m second orbit."
+      echo "New mode/altitude/descent options cannot be mixed with legacy --profile/--single-layer options."
       echo "--profile same_3m|same_30m|multi_height_low_3m selects a complete height contract. --check-height-profile expands/checks parameters only; no nodes start."
-      echo "multi_height_legacy preserves the existing 26/20/14 m profile and accepts --multi-layer."
+      echo "multi_height_legacy preserves the existing 26/20/14 m profile for the compatibility wrapper."
       echo "Default ordinary profile: three UAVs at 3.0 m, single layer, worksite.world."
       echo "Defaults: control=false, gui=false, rviz=false, learning-speed=false, D435 enabled, lidar-downsample=1, no duration limit."
       echo "Without --control, simulation/nodes still start; light/full modes write artifacts; this is not a read-only check."
@@ -113,9 +134,31 @@ while (($#)); do
   shift
 done
 
-if "$multi_layer_enabled" && [[ "$height_profile" != multi_height_legacy ]]; then
-  echo "--multi-layer is supported only with --profile multi_height_legacy" >&2
-  exit 2
+if "$legacy_options"; then
+  if [[ -n "$public_mode" || -n "$altitude" ]] || "$layer_descent"; then
+    echo "do not mix new mode options with legacy profile options" >&2; exit 2
+  fi
+  if "$multi_layer_enabled" && [[ "$height_profile" != multi_height_legacy ]]; then
+    echo "legacy layer descent requires multi_height_legacy" >&2; exit 2
+  fi
+elif [[ "$public_mode" == --multi-layer ]]; then
+  if [[ -n "$altitude" ]]; then echo "--altitude requires same-layer mode" >&2; exit 2; fi
+  height_profile=multi_height_legacy
+  multi_layer_enabled="$layer_descent"
+else
+  if "$layer_descent"; then echo "--layer-descent requires --multi-layer" >&2; exit 2; fi
+  altitude="${altitude:-3}"
+  if ! python3 - "$altitude" <<'PYHEIGHT'
+import math, sys
+try:
+    h = float(sys.argv[1])
+    if not math.isfinite(h) or not 3 <= h <= 30:
+        sys.exit(2)
+except ValueError:
+    sys.exit(2)
+PYHEIGHT
+  then echo "--altitude must be finite and within 3..30 metres" >&2; exit 2; fi
+  height_profile=same_custom
 fi
 if [[ "$height_profile" == multi_height_* ]] && "$learning_speed"; then
   echo "multi-height profiles forbid Learning Speed" >&2
@@ -151,11 +194,15 @@ else
   if [[ -z "$results_dir" ]]; then
     results_dir="$repo_root/runtime_artifacts/three_uav_inspection_${mode}_$(date +%Y%m%d_%H%M%S)"
   fi
+  results_dir="$(realpath -m "$results_dir")"
   if [[ "$results_dir" != "$repo_root"/runtime_artifacts/three_uav_inspection_* ]]; then
     echo "results directory must be a timestamped runtime_artifacts/three_uav_inspection_* path" >&2
     exit 2
   fi
-  mkdir -p "$results_dir/ros_logs"
+  # Refuse existing run directories so retained experiment evidence is never overwritten.
+  mkdir -p "$(dirname "$results_dir")"
+  mkdir "$results_dir"
+  mkdir "$results_dir/ros_logs"
 fi
 
 source /opt/ros/noetic/setup.bash
@@ -175,7 +222,7 @@ else
     git -C "$repo_root" branch --show-current
     git -C "$repo_root" rev-parse HEAD
     git -C "$repo_root" status --short --branch
-    echo "height_profile=$height_profile multi_layer_enabled=$multi_layer_enabled mode=$mode gui=$gui rviz=$rviz learning_speed=$learning_speed d435_enabled=$d435_enabled lidar_downsample=$lidar_downsample world=$world_file record_mode=$record_mode duration_seconds=$duration_seconds"
+    echo "height_profile=$height_profile altitude=$altitude multi_layer_enabled=$multi_layer_enabled mode=$mode gui=$gui rviz=$rviz learning_speed=$learning_speed d435_enabled=$d435_enabled lidar_downsample=$lidar_downsample world=$world_file record_mode=$record_mode duration_seconds=$duration_seconds"
   } >"$results_dir/run_metadata.txt"
 fi
 
@@ -222,6 +269,7 @@ if [[ "$record_mode" != none ]]; then
 fi
 launch_file=triple_tower_height_profile.launch
 profile_args=("height_profile:=$height_profile")
+if [[ "$height_profile" == same_custom ]]; then profile_args+=("same_altitude:=$altitude"); fi
 if [[ "$height_profile" == multi_height_legacy ]]; then
   launch_file=triple_tower_multi_height_inspection.launch
   profile_args=("multi_layer_enabled:=$multi_layer_enabled")

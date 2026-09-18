@@ -33,7 +33,7 @@ while (($#)); do
       echo "  Non-help modes may prepare/build the Hector overlay. There is no --control, --rviz, --record or --stop option."
       echo "  Outputs: runtime_artifacts/rl_training/RUN_ID (training), runtime_artifacts/rl_evaluation/RUN_ID (evaluation),"
       echo "           runtime_artifacts/learning_speed/forest_randomization_training_integration_v2/RUN_ID (preflight/smoke)."
-      echo "  Stop with Ctrl+C in the launching terminal; interruption is not a completed run. See docs/FINAL_RUNBOOK.md."
+      echo "  Stop with Ctrl+C in the launching terminal; interruption is not a completed run. See AGENTS.md."
       exit 0
       ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;

@@ -56,6 +56,12 @@ class HeightProfilesTest(unittest.TestCase):
             unexpected = [key for key in differences if not any(key.endswith('/' + s) for s in allowed)]
             self.assertEqual(unexpected, [], (name, unexpected))
 
+    def test_custom_height_preserves_named_profile_parameters(self):
+        for height, name in [(3, 'same_3m'), (30, 'same_30m')]:
+            values = contract.expand('triple_tower_height_profile.launch',
+                                     ['height_profile:=same_custom', 'same_altitude:=' + str(height)])
+            self.assertEqual(values, self.profiles[name])
+
     def test_rejects_top_only_change(self):
         values = copy.deepcopy(self.profiles['same_3m'])
         values['/uav1/tower_mission/mission/inspection_top_height'] = 30.0

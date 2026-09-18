@@ -1,6 +1,7 @@
 <launch>
   <!-- Named, complete height contracts. Unknown names fail during expansion. -->
   <arg name="height_profile" default="same_3m"/>
+  <arg name="same_altitude" default="3.0"/>
   <arg name="enable_control" default="false" />
   <arg name="start_sim" default="true" />
   <arg name="gui" default="true" />
@@ -19,9 +20,9 @@
   <arg name="evidence_candidate_file" default="$(find astra_swarm_bringup)/../../../../runtime_artifacts/direct_triple_tower/candidates.jsonl" />
   <arg name="evidence_record_enabled" default="true" />
   <arg name="evidence_candidate_record_mode" default="full" />
-  <arg name="top1" value="$(eval {'same_3m': 3.0, 'same_30m': 30.0, 'multi_height_low_3m': 15.0}[arg('height_profile')])"/>
-  <arg name="top2" value="$(eval {'same_3m': 3.0, 'same_30m': 30.0, 'multi_height_low_3m': 9.0}[arg('height_profile')])"/>
-  <arg name="top3" value="$(eval {'same_3m': 3.0, 'same_30m': 30.0, 'multi_height_low_3m': 3.0}[arg('height_profile')])"/>
+  <arg name="top1" value="$(eval {'same_custom': float(arg('same_altitude')), 'same_3m': 3.0, 'same_30m': 30.0, 'multi_height_low_3m': 15.0}[arg('height_profile')])"/>
+  <arg name="top2" value="$(eval {'same_custom': float(arg('same_altitude')), 'same_3m': 3.0, 'same_30m': 30.0, 'multi_height_low_3m': 9.0}[arg('height_profile')])"/>
+  <arg name="top3" value="$(eval {'same_custom': float(arg('same_altitude')), 'same_3m': 3.0, 'same_30m': 30.0, 'multi_height_low_3m': 3.0}[arg('height_profile')])"/>
   <include file="$(eval find('astra_swarm_bringup') + '/launch/' + ('triple_tower_multi_height_inspection.launch' if arg('height_profile') == 'multi_height_low_3m' else 'triple_tower_inspection.launch'))">
     <arg name="enable_control" value="$(arg enable_control)"/>
     <arg name="start_sim" value="$(arg start_sim)"/>
@@ -56,19 +57,19 @@
        cover the same targets; recovery and fallback return stay at the layer. -->
   <param name="/uav1/ego_mavros_bridge/min_relative_height" value="0.3"/>
   <param name="/uav1/ego_mavros_bridge/max_relative_height" value="$(eval float(arg('top1')) + 1.5)"/>
-  <param name="/uav1/ego_mavros_bridge/takeoff_timeout" value="$(eval 120.0 if arg('height_profile') == 'same_30m' else 60.0)"/>
+  <param name="/uav1/ego_mavros_bridge/takeoff_timeout" value="$(eval max(60.0, 4.0 * float(arg('top1'))))"/>
   <param name="/uav1/tower_mission/mission/recovery_height_max" value="$(arg top1)"/>
   <param name="/uav1/tower_mission/recovery/recovery_height" value="$(arg top1)"/>
   <param name="/uav1/tower_mission/return_egress/transit_height" value="$(arg top1)"/>
   <param name="/uav2/ego_mavros_bridge/min_relative_height" value="0.3"/>
   <param name="/uav2/ego_mavros_bridge/max_relative_height" value="$(eval float(arg('top2')) + 1.5)"/>
-  <param name="/uav2/ego_mavros_bridge/takeoff_timeout" value="$(eval 120.0 if arg('height_profile') == 'same_30m' else 60.0)"/>
+  <param name="/uav2/ego_mavros_bridge/takeoff_timeout" value="$(eval max(60.0, 4.0 * float(arg('top2'))))"/>
   <param name="/uav2/tower_mission/mission/recovery_height_max" value="$(arg top2)"/>
   <param name="/uav2/tower_mission/recovery/recovery_height" value="$(arg top2)"/>
   <param name="/uav2/tower_mission/return_egress/transit_height" value="$(arg top2)"/>
   <param name="/uav3/ego_mavros_bridge/min_relative_height" value="0.3"/>
   <param name="/uav3/ego_mavros_bridge/max_relative_height" value="$(eval float(arg('top3')) + 1.5)"/>
-  <param name="/uav3/ego_mavros_bridge/takeoff_timeout" value="$(eval 120.0 if arg('height_profile') == 'same_30m' else 60.0)"/>
+  <param name="/uav3/ego_mavros_bridge/takeoff_timeout" value="$(eval max(60.0, 4.0 * float(arg('top3'))))"/>
   <param name="/uav3/tower_mission/mission/recovery_height_max" value="$(arg top3)"/>
   <param name="/uav3/tower_mission/recovery/recovery_height" value="$(arg top3)"/>
   <param name="/uav3/tower_mission/return_egress/transit_height" value="$(arg top3)"/>

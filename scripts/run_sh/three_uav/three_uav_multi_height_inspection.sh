@@ -26,5 +26,5 @@ for argument in "$@"; do
 done
 
 layer_option=--single-layer
-if "$multi_layer_enabled"; then layer_option=--multi-layer; fi
+if "$multi_layer_enabled"; then layer_option=--legacy-layer-descent; fi
 exec "$script_dir/three_uav_inspection.sh" --profile multi_height_legacy "$layer_option" "${forwarded[@]}"
