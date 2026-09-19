@@ -45,9 +45,6 @@ cd ..
 # 同层 3 m，一圈后返航降落
 ./scripts/run_sh/three_uav/three_uav_inspection.sh --same-layer --altitude 3 --control --gui --rviz --record light
 
-# 同层 30 m，一圈后返航降落
-./scripts/run_sh/three_uav/three_uav_inspection.sh --same-layer --altitude 30 --control --gui --rviz --record light
-
 # 异层：UAV1/2/3 = 26/20/14 m，各一圈后返航降落
 ./scripts/run_sh/three_uav/three_uav_inspection.sh --multi-layer --control --gui --rviz --record light
 
