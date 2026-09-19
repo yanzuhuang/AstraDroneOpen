@@ -1,6 +1,8 @@
 <launch>
   <!-- Current AstraDroneOpen worksite UAV1 training checkpoint and ENTRY gate. -->
   <arg name="gui" default="false"/>
+  <arg name="hover_x" default="0.0"/>
+  <arg name="hover_y" default="0.0"/>
   <arg name="episode_count" default="5"/>
   <arg name="runner_mode" default="qualification"/>
   <arg name="fixed_v_max" default="0.30"/>
@@ -40,8 +42,8 @@
     <arg name="reward_config" value="$(arg reward_config)"/>
     <arg name="world_name"
          value="$(find env_map)/../../../astra_gazebo_worlds/worksite.world"/>
-    <arg name="hover_x" value="0.0"/>
-    <arg name="hover_y" value="0.0"/>
+    <arg name="hover_x" value="$(arg hover_x)"/>
+    <arg name="hover_y" value="$(arg hover_y)"/>
     <arg name="hover_z" value="3.0"/>
     <arg name="hover_yaw" value="0.0"/>
     <arg name="entry_x" value="-4.3148485145"/>

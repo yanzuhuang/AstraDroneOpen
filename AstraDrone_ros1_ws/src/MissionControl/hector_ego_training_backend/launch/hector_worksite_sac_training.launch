@@ -2,8 +2,11 @@
   <!-- Training-only SAC qualification/training/evaluation; no PX4/MAVROS/FAST-LIO. -->
   <arg name="output_dir"/>
   <arg name="gui" default="false"/>
+  <arg name="hover_x" default="0.0"/>
+  <arg name="hover_y" default="0.0"/>
   <arg name="episode_count" default="20"/>
   <arg name="evaluation_episodes" default="100"/>
+  <arg name="evaluation_fixed_vmax" default="0.0"/>
   <arg name="total_training_episodes" default="10000"/>
   <!-- Training and qualification/evaluation have separate Episode-count
        inputs; completed Episode count is the sole normal stop unit. -->
@@ -28,6 +31,8 @@
 
   <include file="$(find hector_ego_training_backend)/launch/hector_worksite_training_episode_reset.launch">
     <arg name="gui" value="$(arg gui)"/>
+    <arg name="hover_x" value="$(arg hover_x)"/>
+    <arg name="hover_y" value="$(arg hover_y)"/>
     <arg name="episode_count" value="$(arg coordinator_episode_count)"/>
     <arg name="runner_mode" value="$(arg runner_mode)"/>
     <arg name="fixed_v_max" value="$(arg v_max_max)"/>
@@ -55,6 +60,7 @@
              value="$(arg total_training_episodes)"/>
       <param name="environment/reset_randomization_enabled"
              value="$(arg random_start_enabled)"/>
+      <param name="evaluation/fixed_vmax" value="$(arg evaluation_fixed_vmax)"/>
       <param name="evaluation/checkpoint_path"
              value="$(arg evaluation_checkpoint_path)"/>
       <param name="evaluation/checkpoint_episode"

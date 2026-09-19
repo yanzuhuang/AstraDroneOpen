@@ -2,6 +2,7 @@
 """Training-only SAC owner layered on AstraDroneEnv and reset coordinator."""
 
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -379,6 +380,10 @@ class SacTrainingRunner:
                 "SAC action/capability contract failed: {}".format(error)
             )
         self.mapping = ActionMapping(expected_min, expected_max)
+        self.evaluation_fixed_vmax = float(rospy.get_param("~evaluation/fixed_vmax", 0.0))
+        if self.evaluation_fixed_vmax != 0.0:
+            if self.mode != "evaluation" or self.evaluation_fixed_vmax not in (0.60, 1.00, 1.40):
+                raise rospy.ROSInitException("fixed comparison policy requires evaluation and 0.60/1.00/1.40")
 
         config = SacConfig(
             observation_dim=int(rospy.get_param("~sac/observation_dim", 3267)),
@@ -464,6 +469,7 @@ class SacTrainingRunner:
                 raise rospy.ROSInitException(
                     "evaluation checkpoint Episode does not match requested Episode"
                 )
+        self._evaluation_network_hash_at_load = self._network_hash() if self.mode == "evaluation" else None
         self._evaluation_agent_counters_at_load = (
             int(self.agent.global_environment_step), int(self.agent.update_step)
         )
@@ -1500,9 +1506,10 @@ class SacTrainingRunner:
             lock_wait_started = time.monotonic()
             with self.agent.lock:
                 lock_acquired = time.monotonic()
-                normalized = self.agent.sample_action(
-                    vector,
-                    deterministic=deterministic,
+                normalized = (
+                    self.mapping.to_normalized(self.evaluation_fixed_vmax)
+                    if self.mode == "evaluation" and self.evaluation_fixed_vmax
+                    else self.agent.sample_action(vector, deterministic=deterministic)
                 )
                 inference_finished = time.monotonic()
             usage = resource.getrusage(resource.RUSAGE_SELF)
@@ -2092,6 +2099,16 @@ class SacTrainingRunner:
         if failures:
             raise RuntimeError("training final audit failed: {}".format(failures))
 
+    def _network_hash(self):
+        digest = hashlib.sha256()
+        for module in (self.agent.actor, self.agent.critic1, self.agent.critic2,
+                       self.agent.target_critic1, self.agent.target_critic2):
+            for name, value in sorted(module.state_dict().items()):
+                digest.update(name.encode())
+                digest.update(value.detach().cpu().numpy().tobytes())
+        digest.update(self.agent.log_alpha.detach().cpu().numpy().tobytes())
+        return digest.hexdigest()
+
     def _finalize_evaluation(self):
         failures = self._episode_contract_failures()
         if len(self.episodes) != self.evaluation_episode_count:
@@ -2105,6 +2122,9 @@ class SacTrainingRunner:
         )
         if not evaluation_counters_unchanged:
             failures.append("evaluation_changed_training_counters")
+        networks_unchanged = self._network_hash() == self._evaluation_network_hash_at_load
+        if not networks_unchanged:
+            failures.append("evaluation_changed_network_parameters")
         self.summary.update(
             {
                 "status": "completed" if not failures else "failed",
@@ -2121,6 +2141,9 @@ class SacTrainingRunner:
                 "evaluation_checkpoint_path": self.evaluation_checkpoint_path,
                 "episode_contract_failures": self._episode_contract_failures(),
                 "training_counters_unchanged": evaluation_counters_unchanged,
+                "evaluation_fixed_vmax": self.evaluation_fixed_vmax,
+                "network_parameters_unchanged": networks_unchanged,
+                "network_sha256_at_load": self._evaluation_network_hash_at_load,
                 "replay_buffer_created": self.replay is not None,
                 "learner_created": self.learner is not None,
             }

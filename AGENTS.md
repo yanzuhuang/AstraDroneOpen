@@ -84,7 +84,7 @@ cd ..
 
 ## 三机代码结构与共享依赖
 
-以下路径相对仓库根目录。主链：Mid360/IMU → FAST-LIO → frame adapter/自机与队友过滤 → EGO-Swarm → traj_server → ego_mavros_bridge → MAVROS/PX4。每机拥有独立定位、地图、规划与控制命名空间；公共 world 共享状态和带绝对时间的轨迹，用于协同避碰。
+以下路径相对仓库根目录。主链：Mid360/IMU → FAST-LIO2 → frame adapter/自机与队友过滤 → EGO-Swarm → traj_server → ego_mavros_bridge → MAVROS/PX4。每机拥有独立定位、地图、规划与控制命名空间；公共 world 共享状态和带绝对时间的轨迹，用于协同避碰。
 
 | 模块 / 文件 | 核心文件及作用 |
 |---|---|
@@ -93,7 +93,7 @@ cd ..
 | 总 launch | `AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/launch/triple_tower_inspection.launch`：三机总入口、高度/速度/地图和安全参数传递；`AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/launch/uav_tower_stack.launch`：单机任务、规划和 bridge 接线 |
 | PX4 启动 | `AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/launch/triple_px4_mavros.launch`；同目录 `dual_px4_mavros.launch`、`single_vehicle_spawn_verified.launch`：模型与 PX4/MAVROS 启动 |
 | 传感器模型 | `AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/models/iris_mid360_d435.sdf.xacro`；`AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/launch/uav_sensor_frames.launch`：传感器模型、频率和 TF |
-| FAST-LIO | `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/launch/mapping_mid360.launch`；`AstraDrone_ros1_ws/src/SLAM/FAST_LIO/config/mid360.yaml`；`AstraDrone_ros1_ws/src/SLAM/FAST_LIO/src/laserMapping.cpp`：激光惯性定位建图 |
+| FAST-LIO2（项目适配版） | `AstraDrone_ros1_ws/src/SLAM/FAST_LIO/launch/mapping_mid360.launch`；`AstraDrone_ros1_ws/src/SLAM/FAST_LIO/config/mid360.yaml`；`AstraDrone_ros1_ws/src/SLAM/FAST_LIO/src/laserMapping.cpp`：激光惯性定位建图 |
 | EGO-Swarm | `AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_manage/src/ego_replan_fsm.cpp`；同级 `planner_manager.cpp`、`traj_server.cpp`；`AstraDrone_ros1_ws/src/Planner/ego-planner/planner/bspline_opt/src/bspline_optimizer.cpp`；`AstraDrone_ros1_ws/src/Planner/ego-planner/planner/plan_env/src/grid_map.cpp`；`AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/config/swarm_low_altitude_ego.yaml`：共享轨迹、地图、优化和输出 |
 | 控制桥 | `AstraDrone_ros1_ws/src/MissionControl/ego_gazebo_bridge/src/ego_mavros_bridge.cpp`；`AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/config/uav1_bridge.yaml`、同目录 `uav2_bridge.yaml`、`uav3_bridge.yaml`：控制状态机与执行限制；最终值服从总 launch 与异层 launch 覆盖 |
 | 协调与许可 | `AstraDrone_ros1_ws/src/Swarm/astra_swarm_manager/scripts/swarm_manager_node.py`；同目录 `swarm_state_publisher.py`；`AstraDrone_ros1_ws/src/Swarm/astra_swarm_manager/src/astra_swarm_manager/policy.py`；`AstraDrone_ros1_ws/src/Swarm/astra_swarm_manager/config/three_uav_inspection_formation.yaml`：状态、角色、许可和切层交接 |
@@ -104,9 +104,13 @@ cd ..
 | 异层配置 | `AstraDrone_ros1_ws/src/Swarm/astra_swarm_bringup/launch/triple_tower_multi_height_inspection.launch`：26/20/14 m profile、两层开关、禁止 Learning Speed |
 | 任务状态机 | `AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/src/sector_inspection_mission_node.cpp`；`AstraDrone_ros1_ws/src/MissionControl/astra_tower_mission/config/low_altitude_inspection.yaml`；同目录 `sector_inspection.yaml`；本文件设计基准：候选、进出场、绕塔、切层和返航语义 |
 
+算法归属：当前三机采用**基于官方 FAST-LIO2 的项目适配版本**，融合 Mid-360 点云与 IMU 数据，提供位姿估计和注册点云。官方仓库仍名为 `hku-mars/FAST_LIO`，本项目目录 `FAST_LIO`、ROS 包 `fast_lio` 和节点可执行程序 `fastlio_mapping` 保留原名，不代表使用第一代算法。三机实际加载 `mapping_mid360.launch`，设置 `feature_extract_enable=0`，使用 ikd-Tree 增量建图、直接 scan-to-map 点到平面残差及迭代滤波更新；这些与[官方 FAST-LIO 2.0 说明](https://github.com/hku-mars/FAST_LIO/tree/7cc4175de6f8ba2edf34bab02a42195b141027e9#fast-lio-20-2021-07-05-update)一致。
+
+源码对比基准为官方提交 `7cc4175de6f8ba2edf34bab02a42195b141027e9`：`src/IMU_Processing.hpp`、`src/preprocess.cpp`、`src/preprocess.h`、`include/use-ikfom.hpp` 和 `include/common_lib.h` 五个文件完全一致；`src/laserMapping.cpp` 仅增加一个空行并启用 `publish_map(pubLaserCloudMap)`。项目构建文件另增加 OpenCV/cv_bridge、彩色建图可执行程序及构建依赖；当前三机启动的是 `fastlio_mapping`，不是彩色扩展节点。该结论限定于已比较的文件，不声称整个包与官方提交完全一致，也不将这次静态对比作为新增运行验证。
+
 三机总 launch 继续 include `dual_tower_inspection.launch`，每机复用 `uav_tower_stack.launch` 与 `sector_inspection_mission_node.cpp`。dual、sector、single_vehicle 等命名不代表可删除。地图膨胀显示 `grid_map/inflated_cloud` 只用于局部真实障碍可视化；规划仍使用原占据图与虚拟限高。
 
-ROS frame 契约为公共 `world`、各机 `uavN/map`、`uavN/camera_init`、机体/传感器 frame。仿真单位对齐和静态 TF 不等于真机外参标定。D435/YOLO 是独立感知扩展，不参与当前 Mid360→FAST-LIO→EGO 规划控制主链。
+ROS frame 契约为公共 `world`、各机 `uavN/map`、`uavN/camera_init`、机体/传感器 frame。仿真单位对齐和静态 TF 不等于真机外参标定。D435/YOLO 是独立感知扩展，不参与当前 Mid360→FAST-LIO2→EGO 规划控制主链。
 
 ## SAC / Learning Speed 核心文件与作用
 
@@ -126,7 +130,7 @@ RL 仅决策 EGO 最大速度约束，不选择航点、不替代碰撞检查或
 
 主配置计划 10000 completed Episodes、每 500 Episodes checkpoint、Replay 100000、learning_starts=1000；这些是配置，不是已完成规模。已有 100 Episode endurance 与 87 Episode rollback 记录，但总体仍 NO-GO；不得描述为收敛策略、正式训练放行或三机部署，不恢复旧失败 run。后续正式训练与独立 evaluation 仍需专门资格验证。
 
-三机与 RL 共用 EGO 地图/规划/B 样条、Gazebo world/model、Mid360 插件、ROS 消息和速度安全过滤。full-stack RL 共用 FAST-LIO→MAVROS/PX4 执行；training-only 则使用明确标记 `gazebo_truth_training` 的 truth odometry 与 Hector 控制，不启动 FAST-LIO/PX4/MAVROS/bridge。两种 `/uav1/Odometry` 与控制发布者必须互斥。Hector 控制器是独立依赖，不可因三机不用而删。
+三机与 RL 共用 EGO 地图/规划/B 样条、Gazebo world/model、Mid360 插件、ROS 消息和速度安全过滤。full-stack RL 共用 FAST-LIO2→MAVROS/PX4 执行；training-only 则使用明确标记 `gazebo_truth_training` 的 truth odometry 与 Hector 控制，不启动 FAST-LIO2/PX4/MAVROS/bridge。两种 `/uav1/Odometry` 与控制发布者必须互斥。Hector 控制器是独立依赖，不可因三机不用而删。
 
 ## 保留的实验数据及用途
 
@@ -193,7 +197,7 @@ SAC 已有真实统计可单独列示，但应放在创新模块验证边界中�
 
 开始任务先检查 Git 分支、HEAD、status 与相关 diff，保护已有用户修改，特别是 FAST_LIO/Log/mat_pre.txt。源码/配置决定当前行为，运行原始数据决定验证范围。只维护本项目说明，不再另建平行项目 runbook。
 
-不得按文件名、没有文本引用或“无运行依赖”推断可删除；特别保留 dual launch、sector mission、单机基础链、RL/Hector、EGO、FAST-LIO、PX4/MAVROS、模型和实验数据。runtime_artifacts 不加入 Git；比赛交付必须另外携带此节列出的数据与必要外部依赖，单独 Git clone 不包含它们。
+不得按文件名、没有文本引用或“无运行依赖”推断可删除；特别保留 dual launch、sector mission、单机基础链、RL/Hector、EGO、FAST-LIO2、PX4/MAVROS、模型和实验数据。runtime_artifacts 不加入 Git；比赛交付必须另外携带此节列出的数据与必要外部依赖，单独 Git clone 不包含它们。
 
 不编辑生成 build/devel 文件，不升级外部 PX4 或锁定依赖，不降低 3 m 机间安全门、1.5 m swarm_clearance 或现有净空规则，不启动未经授权的 Gazebo/训练。默认不提交或 push；本轮用户已要求提供 commit hash，允许提交本轮变更，禁止 push。真实失败保留，静态/编译/飞行证据分开表述。
 
@@ -205,7 +209,7 @@ SAC 已有真实统计可单独列示，但应放在创新模块验证边界中�
 ### AstraDrone 统一扇区、航点与净空规则
 
 版本：1.0
-适用范围：ROS1 Noetic、PX4 SITL/真机适配层、FAST-LIO、EGO-Planner、EGO-Swarm 任务层
+适用范围：ROS1 Noetic、PX4 SITL/真机适配层、FAST-LIO2、EGO-Planner、EGO-Swarm 任务层
 性质：设计规范，不是运行时输入文件
 
 #### 1. 文档与参数职责
@@ -238,7 +242,7 @@ SAC 已有真实统计可单独列示，但应放在创新模块验证边界中�
 
 #### 2. 坐标、塔心与角度
 
-任务几何使用规划坐标系中的 `map` 绝对位置；FAST-LIO/EGO 适配层负责把输入转换到任务规划 frame，不能在任务节点中假设 Gazebo API。
+任务几何使用规划坐标系中的 `map` 绝对位置；FAST-LIO2/EGO 适配层负责把输入转换到任务规划 frame，不能在任务节点中假设 Gazebo API。
 
 - 塔心：`C=(tower.center.x, tower.center.y)`，当前 worksite 默认 `(-10.0551, 19.7104)`。
 - 角度零点：从塔心指向 `+X` 为 `0°`。
@@ -339,9 +343,9 @@ inspection_height = 3.0 m
 3. 根据地图表示选择 `0.5 m` 或 `1.0 m` 的正确任务层净空；
 4. 候选评分、锁存、重试计数和任务状态机。
 
-EGO/FAST-LIO 负责：
+EGO/FAST-LIO2 负责：
 
-1. FAST-LIO 提供带正确 frame 和时戳的里程计/点云；
+1. FAST-LIO2 提供带正确 frame 和时戳的里程计/点云；
 2. EGO 对局部占据图生成局部轨迹和重规划；
 3. EGO 对膨胀地图执行轨迹级碰撞检查；
 4. EGO `dist0` 作为优化代价，不向任务层伪装成硬安全保证。

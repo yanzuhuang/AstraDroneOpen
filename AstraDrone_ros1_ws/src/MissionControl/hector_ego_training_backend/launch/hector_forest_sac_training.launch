@@ -5,6 +5,7 @@
   <arg name="runner_mode" default="training"/>
   <arg name="total_training_episodes" default="10000"/>
   <arg name="evaluation_episodes" default="100"/>
+  <arg name="evaluation_fixed_vmax" default="0.0"/>
   <arg name="evaluation_forest_seed" default="8"/>
   <arg name="evaluation_checkpoint_path" default=""/>
   <arg name="evaluation_checkpoint_episode" default="0"/>
@@ -105,6 +106,7 @@
       <param name="training/startup_contract_only"
              value="$(arg startup_contract_only)"/>
       <param name="environment/reset_randomization_enabled" value="$(arg random_start_enabled)"/>
+      <param name="evaluation/fixed_vmax" value="$(arg evaluation_fixed_vmax)"/>
       <param name="evaluation/checkpoint_path" value="$(arg evaluation_checkpoint_path)"/>
       <param name="evaluation/checkpoint_episode" value="$(arg evaluation_checkpoint_episode)"/>
       <param name="evaluation/episode_count" value="$(arg evaluation_episodes)"/>
